@@ -10,6 +10,7 @@ from server import Workbench
 from yoosee import (Account, CloudTransport, Config, DEVICES_PATH, IntegrationError,
                     LOGIN_PATH, NoRedirect, YooseeClient, packed_version,
                     sdk_password_hash, login_username)
+from yoosee import probe
 
 
 class FakeTransport:
@@ -137,6 +138,32 @@ class ProtocolTests(unittest.TestCase):
             transport.post(self.config().host, LOGIN_PATH, {"Pwd": "sensitive-hash"})
         self.assertNotIn("sensitive", str(error.exception))
         self.assertIn("403", str(error.exception))
+
+    def test_probe_checks_api_without_authentication(self):
+        from unittest.mock import MagicMock
+        opener = MagicMock()
+        response = opener.open.return_value.__enter__.return_value
+        response.status = 200
+        response.read.return_value = b'{"error_code":"10901020","error":"missing params"}'
+        with patch("yoosee.urllib.request.build_opener", return_value=opener):
+            observations = probe()
+        self.assertTrue(all(row["protocol_response"] for row in observations))
+        self.assertTrue(all(not row["authentication_tested"] for row in observations))
+        for call in opener.open.call_args_list:
+            url = call.args[0]
+            self.assertTrue(url.endswith("/Users/LoginCheck.ashx"))
+            self.assertNotIn("?", url)
+
+    def test_probe_does_not_confuse_html_with_api(self):
+        from unittest.mock import MagicMock
+        opener = MagicMock()
+        response = opener.open.return_value.__enter__.return_value
+        response.status = 200
+        response.read.return_value = b'<html>API landing page</html>'
+        with patch("yoosee.urllib.request.build_opener", return_value=opener):
+            observations = probe()
+        self.assertTrue(all(row["reachable"] for row in observations))
+        self.assertTrue(all(not row["protocol_response"] for row in observations))
 
 
 class BrowserTests(unittest.TestCase):

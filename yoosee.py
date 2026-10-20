@@ -245,13 +245,27 @@ def probe() -> list[dict]:
     opener = urllib.request.build_opener(NoRedirect())
     results = []
     for host in HOSTS:
+        observation = {"host": host, "authentication_tested": False,
+                       "protocol_response": False}
         try:
-            with opener.open("https://" + host + "/", timeout=8) as response:
-                results.append({"host": host, "http": response.status, "reachable": True})
+            # An HTML landing page does not establish that the API exists.
+            # GET without any parameters is a credential-free endpoint check.
+            with opener.open("https://" + host + "/" + LOGIN_PATH, timeout=8) as response:
+                observation.update(http=response.status, reachable=True)
+                raw = response.read(8193)
+                try:
+                    payload = json.loads(raw.decode("utf-8-sig")) if len(raw) <= 8192 else None
+                except (ValueError, UnicodeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    code = str(payload.get("error_code", ""))
+                    if re.fullmatch(r"[0-9A-Fa-f]{1,12}", code):
+                        observation.update(protocol_response=True, provider_code=code)
         except urllib.error.HTTPError as exc:
-            results.append({"host": host, "http": exc.code, "reachable": True})
+            observation.update(http=exc.code, reachable=True)
         except (urllib.error.URLError, OSError, TimeoutError):
-            results.append({"host": host, "reachable": False, "reason": "proxy, rede ou TLS"})
+            observation.update(reachable=False, reason="proxy, rede ou TLS")
+        results.append(observation)
     return results
 
 

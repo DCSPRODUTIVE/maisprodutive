@@ -80,13 +80,20 @@ Destinos HTTP identificados no SDK:
 - `api3.cloud-links.net`
 - `api4.cloud-links.net`
 
-O diagnóstico atual não conseguiu conectar aos serviços testados: o proxy retornou
-403 no túnel HTTPS. Salvar uma lista de domínios no rascunho não aplica a alteração
-à máquina e não comprova que a nuvem aceita o protocolo legado.
+Na investigação mais recente, `api3.cloud-links.net/Users/LoginCheck.ashx`
+respondeu HTTP 200 e `error_code=10901020` a um GET sem parâmetros. A mensagem
+indica parâmetros ausentes: comprova acesso ao endpoint, sem validar autenticação.
+`python yoosee.py probe` consulta esse caminho sem credenciais e distingue uma
+resposta JSON da API de uma página HTML. `authentication_tested` permanece falso.
+Salvar uma lista de domínios no rascunho não aplica a alteração à máquina e não
+comprova que a nuvem aceita o protocolo legado.
 
-Para obter o app atual, a página do APKPure aponta para o pacote `com.yoosee` e
-para `download.yoosee.com`. O download do APK/XAPK não foi concluído. A assinatura
-do app atual não foi verificada. Não foi instalado nem executado um APK.
+O site oficial `download.yoosee.com` agora está acessível. Seu código público
+consulta `https://upg.cloudlinks.cn/latestVersions?clientIp=0.0.0.0` e constrói
+links de APK em `https://upg-cdn.yoosee.co/yoosee-{version}-release.apk`.
+O proxy ainda bloqueia esses dois destinos. Não foi obtida a versão desse
+catálogo nem baixado um APK oficial. A assinatura do app atual não foi verificada.
+Não foi instalado nem executado um APK.
 
 ## Próximo marco de validação
 

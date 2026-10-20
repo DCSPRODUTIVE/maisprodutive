@@ -78,3 +78,27 @@ local. Não representam login ou vídeo real. O diagnóstico de rede separado re
 a disponibilidade dos quatro hosts sem credenciais. Rede liberada, identificação
 de aplicativo válida e credenciais de usuário continuam necessárias para o teste
 real. Nenhuma detecção de pessoas ou notificação foi implementada.
+
+## Nova verificação após a liberação parcial da rede
+
+`https://api3.cloud-links.net/Users/LoginCheck.ashx` respondeu HTTP 200 a um GET
+sem parâmetros, com `error_code=10901020` e mensagem de parâmetros ausentes.
+Nenhum nome de usuário, senha, token de aplicativo ou sessão foi enviado.
+Isso confirma que o endpoint responde, mas não que o login legado funciona.
+
+A página `https://download.yoosee.com` também está acessível. Foram inspecionados
+os recursos públicos `/statics/js/app.32a4fc75.js` e
+`/statics/js/chunk-6ba6cdf0.63a44603.js`. A tabela de strings do primeiro foi
+resolvida estaticamente, sem executar o JavaScript do site. O segundo revela:
+
+- GET `https://upg.cloudlinks.cn/latestVersions?clientIp=0.0.0.0` para catálogo;
+- GET `https://upg.cloudlinks.cn/lastCms?clientIp=0.0.0.0` para cliente de PC;
+- URL de Android `https://upg-cdn.yoosee.co/yoosee-{version}-release.apk`, com
+  versão obtida do catálogo, sem valor adivinhado.
+
+O proxy retorna erro 403 no túnel HTTPS para `upg.cloudlinks.cn` e
+`upg-cdn.yoosee.co`. Esses destinos foram acrescentados ao rascunho de rede para
+permitir continuar a obtenção oficial. Não houve download ou verificação de um
+APK novo. Credenciais de usuário e credenciais válidas de aplicativo continuam
+ausentes. Nenhuma senha foi adivinhada e nenhum mecanismo de autenticação foi
+contornado.
