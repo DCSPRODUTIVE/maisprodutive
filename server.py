@@ -229,7 +229,10 @@ class Handler(BaseHTTPRequestHandler):
                             self.server.active_streams.discard(stream)
                         self.server.video_guard.release()
                     try:
-                        stream = LiveStream(client.account, device_id, state["expires"], release_slot)
+                        mosaic = body.get("mosaic", False)
+                        if not isinstance(mosaic, bool):
+                            raise IntegrationError("input", "Modo de mosaico inválido.")
+                        stream = LiveStream(client.account, device_id, state["expires"], release_slot, preview_width=640 if mosaic else 960)
                         state["streams"][device_id] = stream
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)

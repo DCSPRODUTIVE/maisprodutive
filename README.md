@@ -103,7 +103,13 @@ confira a importação do perfil e reinicie o processo do servidor.
 ## Operação e limites
 
 Há até oito conexões nativas simultâneas no servidor, cada uma com um processo do
-SDK Wine e um conversor FFmpeg. O mosaico começa pelas primeiras oito câmeras da
+SDK Wine e um conversor FFmpeg. No máximo duas câmeras iniciam a conexão ao mesmo
+tempo; as demais aparecem como **Na fila** até que uma abertura termine ou receba
+o primeiro quadro. Depois de conectadas, as oito podem continuar transmitindo.
+A espera na fila não consome os 45 segundos de tentativa do primeiro quadro.
+Todos os pools de threads do FFmpeg são limitados. A prévia do mosaico tem até
+640 pixels de largura; a abertura individual mantém até 960 pixels. Isso altera
+somente a conversão local, sem modificar a qualidade enviada pela câmera. O mosaico começa pelas primeiras oito câmeras da
 conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
 alteração automática de qualidade ou configuração das câmeras.
 
@@ -146,7 +152,7 @@ node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-64 testes Python e 13 de interface passaram. Também foram exercitados o binário
+69 testes Python e 14 de interface passaram. Também foram exercitados o binário
 nativo no Wine sem rede, o pipeline com quadros contínuos sintéticos e a interface
 no Chromium em desktop/Chromebook e celular. Esses resultados não validam oito
 conexões reais simultâneas. `YOOSEE_DESKTOP_PROFILE` permite indicar outro caminho

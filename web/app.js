@@ -50,7 +50,7 @@ function paint(id) {
   const image = feed ? feed.image : snapshot;
   const fresh = feed && feed.image && frameAge(feed) <= 3;
   view.card.className = "camera-card" + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
-  view.badge.textContent = feed ? fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
+  view.badge.textContent = feed ? fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image;
   view.placeholder.hidden = !!image;
   if (image) view.img.src = image;
@@ -166,12 +166,12 @@ async function stopAll() {
   try { await post("/api/video/stop", {}); $("message").textContent = "Todas as transmissões foram encerradas."; }
   catch (error) { $("message").textContent = error.message; }
 }
-async function startOne(id) {
+async function startOne(id, mosaic = false) {
   if (busy || feeds.has(id)) return;
   const feed = { id, handle: null, sequence: 0, image: null, age: null, updatedAt: null, timer: null, caption: "Conectando. Aguardando o primeiro quadro…" };
   feeds.set(id, feed); errors.delete(id); render();
   try {
-    const data = await post("/api/video/start", { device_id: id });
+    const data = await post("/api/video/start", { device_id: id, mosaic });
     feed.handle = data.stream_id;
     if (feeds.get(id) !== feed) {
       await post("/api/video/stop", { device_id: id, stream_id: feed.handle });
@@ -195,7 +195,7 @@ async function startAll() {
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
   for (const camera of (currentStatus?.devices || []).slice(0, 8)) {
     if (token !== batchToken) break;
-    await startOne(camera.id);
+    await startOne(camera.id, true);
   }
   if (token === batchToken) { bulk = false; $("message").textContent = "Mosaico iniciado. Cada câmera recebe imagens de forma independente."; buttons(); }
 }
@@ -208,10 +208,11 @@ async function pollFeed(feed) {
     if (typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) {
       feed.image = data.image; feed.sequence = data.sequence;
     }
+    feed.state = data.state;
     feed.age = data.age_seconds;
     feed.updatedAt = Date.now();
     feed.caption = data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
-      : feed.image ? "Recebendo imagens contínuas · até 5 imagens/s · sem áudio." : "Conectando. Aguardando o primeiro quadro…";
+      : feed.image ? "Recebendo imagens contínuas · até 5 imagens/s · sem áudio." : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
     paint(feed.id); buttons();
     feed.timer = setTimeout(() => pollFeed(feed), 200);
   } catch (error) {

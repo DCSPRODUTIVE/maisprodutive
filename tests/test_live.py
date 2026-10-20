@@ -43,11 +43,11 @@ for i in range(150):
  time.sleep(.05)
 '''
 
-    def create_stream(self, expires=None):
+    def create_stream(self, expires=None, preview_width=960):
         closed = []
         with patch('live.video.readiness', return_value=(True, '')):
             stream = LiveStream(DesktopAccount('123', 'live-token-test'), 'owned',
-                                expires or time.monotonic()+10, lambda: closed.append(True))
+                                expires or time.monotonic()+10, lambda: closed.append(True), preview_width=preview_width)
         original = stream._launch
         launched = []
         def launch(args, **kwargs):
@@ -104,3 +104,93 @@ for i in range(150):
         stream, _, _ = self.create_stream()
         for value in (-1, True, '0', None):
             with self.assertRaises(IntegrationError):stream.frame(value)
+
+
+    def test_queued_camera_does_not_start_processes_or_consume_first_frame_timeout(self):
+        gate = threading.BoundedSemaphore(1)
+        gate.acquire()
+        stream, closed, processes = self.create_stream()
+        stream.startup_gate = gate
+        with patch('live.FIRST_FRAME_TIMEOUT', .05):
+            try:
+                stream.start()
+                self.assertEqual(stream.frame(0, wait=False)['state'], 'queued')
+                self.assertFalse(stream.done.wait(.35))
+                self.assertIsNone(stream.error)
+                self.assertIsNone(stream.connect_started)
+                self.assertEqual(processes, [])
+            finally:
+                stream.stop()
+        self.assertEqual(closed, [True])
+        self.assertFalse(gate.acquire(blocking=False))
+        gate.release()
+
+    def test_startup_slot_is_released_after_first_frame_while_stream_remains_open(self):
+        gate = threading.BoundedSemaphore(1)
+        one, _, _ = self.create_stream()
+        two, _, _ = self.create_stream()
+        one.startup_gate = two.startup_gate = gate
+        try:
+            one.start(); two.start()
+            deadline = time.monotonic()+5
+            while (not one.sequence or not two.sequence) and time.monotonic()<deadline:
+                one.frame(0, wait=False);two.frame(0, wait=False)
+                time.sleep(.03)
+            self.assertGreater(one.sequence,0)
+            self.assertGreater(two.sequence,0)
+            self.assertFalse(one.stopped.is_set())
+            self.assertFalse(two.stopped.is_set())
+            self.assertTrue(gate.acquire(blocking=False))
+            gate.release()
+        finally:
+            one.stop();two.stop()
+
+    def test_eight_real_conversion_pipelines_keep_receiving_with_bounded_threads(self):
+        source = '''import sys,time
+for i in range(3):sys.stdin.buffer.readline()
+sys.stdout.buffer.write(b'YUV4MPEG2 W640 H360 F5:1 Ip C420jpeg\\n')
+for i in range(100):
+ sys.stdout.buffer.write(b'FRAME\\n'+bytes([40+i%5*20])*(640*360)+b'\\x80'*(640*360//2))
+ sys.stdout.buffer.flush()
+ time.sleep(.2)
+'''
+        streams=[]
+        with patch.object(self,'source',source):
+            try:
+                for _ in range(8):
+                    stream,_,processes=self.create_stream(preview_width=640)
+                    streams.append((stream,processes));stream.start()
+                deadline=time.monotonic()+8
+                while time.monotonic()<deadline:
+                    for stream,_ in streams:stream.frame(0,wait=False)
+                    if all(s.sequence>=2 for s,_ in streams):break
+                    time.sleep(.05)
+                self.assertTrue(all(s.sequence>=2 for s,_ in streams))
+                self.assertTrue(all(s.error is None and not s.stopped.is_set() for s,_ in streams))
+                for _,processes in streams:
+                    encoder=processes[1][0]
+                    path=Path(f'/proc/{encoder.pid}/status')
+                    if path.exists():
+                        threads=int(next(line.split(':')[1] for line in path.read_text().splitlines() if line.startswith('Threads:')))
+                        self.assertLessEqual(threads,8)
+            finally:
+                for stream,_ in streams:stream.stop()
+
+
+class EncoderDiagnosticTests(unittest.TestCase):
+    def create_stream(self):
+        with patch('live.video.readiness',return_value=(True,'')):
+            return LiveStream(DesktopAccount('123','private-token'),'owned',time.monotonic()+10,lambda:None)
+
+    def test_resource_error_is_classified_without_forwarding_stderr(self):
+        stream=self.create_stream()
+        stream._read_encoder_errors(ChunkPipe([b'private-token resource tempor',b'arily unavailable']))
+        error=stream._pipeline_error(21,1)
+        self.assertEqual(error.kind,'video_resources')
+        self.assertNotIn('private-token',str(error))
+        self.assertFalse(hasattr(stream,'stderr'))
+
+    def test_encoder_exit_code_is_reported_instead_of_assuming_clean_native_exit(self):
+        error=self.create_stream()._pipeline_error(0,1)
+        self.assertIn('código 1',str(error))
+        self.assertNotIn('interrompida antes',str(error))

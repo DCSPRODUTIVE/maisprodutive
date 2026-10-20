@@ -14,7 +14,8 @@ from yoosee import IntegrationError
 
 class FakeStream:
     instances = []
-    def __init__(self, account, device_id, expires, on_close):
+    def __init__(self, account, device_id, expires, on_close, preview_width=960):
+        self.preview_width = preview_width
         self.device_id, self.expires, self.callback = device_id, expires, on_close
         self.handle = 'local-handle-'+device_id+'-'+str(len(self.instances))
         self.stopped = threading.Event()
@@ -64,8 +65,10 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(len(FakeStream.instances),0)
         handles={}
         for i in range(8):
-            code,data=self.post('/api/video/start',{'device_id':str(i)})
+            code,data=self.post('/api/video/start',{'device_id':str(i), 'mosaic': i==0})
             self.assertEqual(code,200);handles[str(i)]=data['stream_id']
+        self.assertEqual(FakeStream.instances[0].preview_width,640)
+        self.assertEqual(FakeStream.instances[1].preview_width,960)
         self.assertEqual(len(self.server.active_streams),8)
         self.assertEqual(self.post('/api/video/start',{'device_id':'8'})[0],422)
         self.assertEqual(self.post('/api/video/start',{'device_id':'0'})[1]['stream_id'],handles['0'])

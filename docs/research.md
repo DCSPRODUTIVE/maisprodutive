@@ -420,3 +420,39 @@ Login, listagem e captura real são confirmados pelo usuário. A transmissão
 contínua, a estabilidade do mosaico com oito câmeras e o caminho de formato 5
 nas câmeras que falharam aguardam o próximo teste dele. Detecção, alertas, áudio,
 PTZ, gravação e hospedagem pública continuam fora desta entrega.
+
+## Correção da abertura simultânea do mosaico
+
+O usuário confirmou que todas as câmeras abrem individualmente, mas algumas
+falham no mosaico com interrupção genérica e outras com timeout P2P. Isso confirma
+compatibilidade individual e falha sob concorrência; não identifica sozinho se
+a causa é CPU/memória, negociação de rede ou limite do SDK/provedor.
+
+A revisão encontrou dois problemas de concorrência no código anterior: todos os
+workers iniciavam imediatamente e `-threads 1` limitava somente o encoder de saída,
+sem limitar os pools de filtros do FFmpeg. A versão atual usa `-filter_threads 1`,
+`-filter_complex_threads 1` e `-threads 1` antes e depois da entrada. No mosaico,
+preview_width=640 reduz o custo de redimensionamento/JPEG; abertura individual
+continua em 960. O fluxo/qualidade na câmera não é alterado.
+
+Uma semáfora global de duas aberturas protege a negociação e a criação inicial
+do pipeline. É liberada no primeiro JPEG, em falha ou ao cancelar; o limite de oito
+fluxos ativos é separado e permanece. O watchdog conta os 45 segundos de tentativa
+somente após obter a vaga, sem penalizar quem aguarda na fila. As consultas de
+quadros mantêm a expiração por falta de visualização durante a espera. Parar uma
+câmera enfileirada não libera a vaga pertencente a outra câmera.
+
+Apenas o stderr do FFmpeg é drenado e classificado em memória por padrões fixos,
+sem retenção em arquivo ou encaminhamento de linhas ao navegador. Saídas do SDK
+continuam suprimidas. Falta de recursos do conversor, falha ao abrir encoder,
+código de saída do conversor e erro nativo são diferenciados. Uma saída nativa 0
+não é mais usada para mascarar a falha do conversor como interrupção inespecífica.
+Não foram adicionados retries de login, mudanças de host ou reconexões automáticas.
+
+69 testes Python e 14 de interface passaram. O teste de carga iniciou oito
+pipelines locais reais com FFmpeg e fonte YUV sintética 640×360, verificando que
+todos receberam pelo menos dois quadros e continuaram abertos, com threads
+limitadas. Também foram verificados liberação da vaga no primeiro quadro, cancelamento
+na fila sem liberar vaga alheia e preservação do timeout durante espera. Esses
+testes não reproduzem as câmeras, a conexão 4G ou o SDK real sob oito registros;
+a resolução do problema no Chromebook ainda depende do teste do usuário.

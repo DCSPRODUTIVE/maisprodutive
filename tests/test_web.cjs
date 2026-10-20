@@ -196,6 +196,7 @@ test('watch all starts at most eight cameras and enables focus layout', async ()
   const { get, calls, timers } = await setup(null, { ...liveStatus, devices }, null, null, liveResponses());
   await get('watch-all').handlers.click();
   assert.equal(calls.filter((c) => c.url === '/api/video/start').length, 8);
+  assert.ok(calls.filter((c) => c.url === '/api/video/start').every((c) => JSON.parse(c.options.body).mosaic === true));
   assert.equal(get('dashboard').className, 'focus-mode');
   assert.equal(timers.size, 8);
   await get('stop-all').handlers.click();
@@ -220,4 +221,16 @@ test('an old image loses the live indicator even if the next network response is
   assert.equal(get('live-count').textContent, '0');
   assert.ok(descendants(get('cameras').children[0]).some((el) => /Sem novos quadros há 4/.test(el.textContent)));
   assert.equal(descendants(get('cameras').children[0]).some((el) => /AO VIVO/.test(el.textContent)), false);
+});
+
+
+test('queued camera is shown as waiting for its startup slot without a failure badge', async () => {
+  const responses=liveResponses();
+  responses['/api/video/frame']={ok:true,json:async()=>({device_id:'a',sequence:0,image:null,age_seconds:null,state:'queued'})};
+  const {get,runTimer}=await setup(null,liveStatus,null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  assert.ok(descendants(get('cameras').children[0]).some((el)=>el.textContent==='NA FILA'));
+  assert.ok(descendants(get('cameras').children[0]).some((el)=>/Na fila de conexão/.test(el.textContent)));
+  assert.equal(get('live-count').textContent,'0');
+  assert.equal(cardButton(get,0,'Parar').disabled,false);
 });
