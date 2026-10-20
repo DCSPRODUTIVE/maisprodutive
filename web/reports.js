@@ -22,10 +22,9 @@ async function load(reset=false) {
         card.append(media);
       }
       const info=node('div',null,'report-info');
-      info.append(node('h2',event.kind==='person'?'Pessoa detectada':event.kind==='vehicle'?'Veículo detectado':'Câmera aberta'));
+      info.append(node('h2',event.kind==='person'?'Pessoa detectada':'Câmera aberta'));
       info.append(node('p',`${event.name} · ${new Date(event.created*1000).toLocaleString('pt-BR')}`));
       if(event.confidence)info.append(node('p',`Confiança do detector: ${Math.round(event.confidence*100)}%`));
-      if(event.plate)info.append(node('p',`Placa sugerida: ${event.plate} · NÃO CONFERIDA`));
       card.append(info);$("report-list").append(card);before=event.id;
     }
     $("older-reports").hidden=data.events.length<24;

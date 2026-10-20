@@ -19,9 +19,8 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
 - **Confirmação real:** o usuário mostrou transmissões reais em parte do mosaico.
   A correção dos buffers e os novos modos HD/FHD ainda precisam ser testados nas
   câmeras que falhavam; testes sintéticos não substituem essa confirmação.
-- **Reports:** registro de câmeras abertas e fotos de detecção local de pessoas e
-  veículos. Requer instalar o modelo e OpenCV conforme abaixo. OCR de placa é
-  experimental, com sugestão não conferida. Alertas externos não estão ativos.
+- **Reports:** registro de câmeras abertas e fotos de detecção local de pessoas.
+  Requer instalar o modelo e OpenCV conforme abaixo. Alertas externos não estão ativos.
 - **Economia de dados:** por câmera, 5 minutos conectada e 25 pausada, preservando
   o último quadro. As demais câmeras continuam independentes. Hospedagem pública,
   áudio, PTZ e gravação contínua não estão implementados.
@@ -208,7 +207,7 @@ funcionamento ininterrupto nem recuperação de autenticação sem credenciais.
 Depois de atualizar o código, no Terminal Linux do Chromebook:
 
 ```sh
-sudo apt install -y python3-opencv python3-numpy tesseract-ocr
+sudo apt install -y python3-opencv python3-numpy
 ```
 
 ```sh
@@ -227,13 +226,12 @@ o histórico de aberturas funciona e a página explica que a detecção está in
 O modelo pode gerar falsos positivos/negativos; não determina identidade.
 
 A análise usa o último quadro recente, no máximo a cada 5 segundos por câmera.
-Uma foto por câmera e categoria é registrada no máximo a cada 60 segundos para
-reduzir repetições. Esse intervalo não identifica se uma pessoa/carro é diferente
-do anterior; objetos breves podem passar entre amostras. Classes suportadas:
-pessoa, carro, ônibus, moto e trem. O OCR tenta encontrar padrão de placa brasileira
-no recorte do veículo, sem garantia de leitura: **Placa sugerida · NÃO CONFERIDA**.
-Placas pequenas ou desfocadas provavelmente não serão lidas; prefira HD/FHD para
-câmeras destinadas a isso. Não há identificação facial nem cadastro de identidades.
+Uma foto por câmera é registrada no máximo a cada 60 segundos para reduzir
+repetições. Esse intervalo não identifica se uma pessoa é diferente da anterior;
+pessoas que passam rapidamente podem não aparecer entre as amostras. Apenas a
+classe pessoa é utilizada. Não há detecção de veículos, leitura de placas nem
+identificação facial. Registros antigos de veículos ficam ocultos em Reports,
+sem apagar o banco existente. O modelo instalado anteriormente pode ser reutilizado.
 
 Fotos, horário, câmera, caixas e confiança ficam em `.local/reports/events.sqlite3`,
 com acesso pelo painel autenticado e separação por conta. A senha/token não são

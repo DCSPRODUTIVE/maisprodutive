@@ -5,10 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
-import shutil
 import sqlite3
-import subprocess
 import threading
 import time
 
@@ -30,7 +27,7 @@ def readiness():
                 return False, 'Modelo de detecção ausente ou inválido. Execute configure_reports.py.'
     except OSError:
         return False, 'Modelo de detecção ausente. Execute configure_reports.py.'
-    return True, 'Detecção local ativa: pessoas e veículos; amostragem a cada 5 segundos por câmera.'
+    return True, 'Detecção local ativa: pessoas; amostragem a cada 5 segundos por câmera.'
 
 
 class EventStore:
@@ -52,29 +49,26 @@ class EventStore:
         finally:
             conn.close()
 
-    def add(self, owner, camera, name, kind, image=None, confidence=None, plate=None, boxes=()):
+    def add(self, owner, camera, name, kind, image=None, confidence=None, boxes=()):
+        if kind not in ('person', 'opened'):
+            raise ValueError('Apenas pessoas e aberturas de câmera são registradas.')
         with self.guard, self.connect() as db:
             db.execute('INSERT INTO events(owner,camera,name,created,kind,confidence,plate,boxes,image) VALUES (?,?,?,?,?,?,?,?,?)',
-                       (owner, camera, name, time.time(), kind, confidence, plate, json.dumps(boxes), image))
+                       (owner, camera, name, time.time(), kind, confidence, None, json.dumps(boxes), image))
             # Keep at most 1,000 images/events per account and 30 days of history.
             db.execute('DELETE FROM events WHERE created < ?', (time.time()-30*86400,))
             db.execute('DELETE FROM events WHERE owner=? AND id NOT IN (SELECT id FROM events WHERE owner=? ORDER BY id DESC LIMIT 1000)', (owner, owner))
 
     def list(self, owner, before=None):
         with self.guard, self.connect() as db:
-            rows = db.execute('SELECT id,camera,name,created,kind,confidence,plate,boxes,image IS NOT NULL AS has_image FROM events WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
+            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind IN ('person','opened') AND id<? ORDER BY id DESC LIMIT 24",
                               (owner, before or 9223372036854775807)).fetchall()
             return [dict(row, boxes=json.loads(row['boxes'])) for row in rows]
 
     def image(self, owner, event_id):
         with self.guard, self.connect() as db:
-            row = db.execute('SELECT image FROM events WHERE owner=? AND id=?', (owner, event_id)).fetchone()
+            row = db.execute("SELECT image FROM events WHERE owner=? AND id=? AND kind='person'", (owner, event_id)).fetchone()
             return bytes(row[0]) if row and row[0] is not None else None
-
-
-def plate_candidate(text):
-    # Brazilian old/Mercosul patterns only; OCR is a suggestion, never verified identity.
-    return next(iter(re.findall(r'(?<![A-Z0-9])[A-Z]{3}[ -]?[0-9][A-Z0-9][0-9]{2}(?![A-Z0-9])', text.upper())), None)
 
 
 class Detector:
@@ -93,7 +87,7 @@ class Detector:
         self.net.setInput(self.cv.dnn.blobFromImage(frame, 0.007843, (300,300), 127.5))
         detections = self.net.forward().reshape(-1,7)
         rows = []
-        classes = {15:'person', 7:'vehicle', 6:'vehicle', 14:'vehicle', 19:'vehicle'}
+        classes = {15:'person'}
         for row in detections:
             label = classes.get(int(row[1])); confidence = float(row[2])
             if not label or confidence < .65:
@@ -104,23 +98,6 @@ class Detector:
             rows.append({'kind':label,'confidence':round(confidence,3),'box':[x1,y1,x2,y2]})
         return rows, frame
 
-    def read_plate(self, frame, box):
-        if not shutil.which('tesseract'):
-            return None
-        h,w=frame.shape[:2]; x1,y1,x2,y2=box
-        crop=frame[int(y1*h):int(y2*h),int(x1*w):int(x2*w)]
-        if crop.shape[1]<120 or crop.shape[0]<50:
-            return None
-        ok, png=self.cv.imencode('.png',crop)
-        if not ok:
-            return None
-        try:
-            result=subprocess.run(['tesseract','stdin','stdout','--psm','11','-l','eng'], input=png.tobytes(),
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
-            candidate=plate_candidate(result.stdout.decode(errors='ignore'))
-            return candidate.replace(' ','').replace('-','') if candidate else None
-        except (OSError,subprocess.TimeoutExpired):
-            return None
 
 
 class ReportMonitor:
@@ -160,13 +137,12 @@ class ReportMonitor:
                         age=now-stream.last_frame if stream.last_frame is not None else 999
                     if not jpeg or age>3:continue
                     rows,frame=detector.detect(jpeg)
-                    for kind in ('person','vehicle'):
+                    for kind in ('person',):
                         matches=[row for row in rows if row['kind']==kind]
                         event_key=key+(kind,)
                         if not matches or now-self.saved.get(event_key,0)<60:continue
-                        plate=detector.read_plate(frame,matches[0]['box']) if kind=='vehicle' else None
                         self.store.add(owner,stream.device_id,stream.report_name,kind,jpeg,
-                                       max(row['confidence'] for row in matches),plate,[row['box'] for row in matches])
+                                       max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
                         self.saved[event_key]=now
                 active={(getattr(s,'report_owner',None),s.device_id) for s in streams}
                 self.last={k:v for k,v in self.last.items() if k in active}

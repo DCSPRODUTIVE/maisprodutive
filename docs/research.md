@@ -538,3 +538,13 @@ Validação final: 77 testes Python e 19 de interface passaram; Chromium verific
 login oculto após autenticação, oito cartões sem sobreposição, visão completa,
 Reports com fotos/caixas e largura móvel sem overflow. Casos de teste usam contas
 e imagens públicas/sintéticas, não credenciais ou vídeo privado do usuário.
+
+## Reports somente de pessoas
+
+A pedido do usuário, o detector passa a aceitar somente classe VOC 15 (pessoa).
+O monitor ignora demais classes mesmo se retornadas por um detector substituto.
+Removidos OCR, execução de Tesseract e exibição de placas/veículos. O modelo com
+hash já instalado continua compatível. O esquema SQLite conserva a coluna plate
+por compatibilidade com bancos existentes, sem a preencher ou retornar na API.
+A listagem filtra pessoa/abertura antes de paginar e o acesso a imagens bloqueia
+registros antigos de veículos; nenhum histórico é apagado nesta migração.
