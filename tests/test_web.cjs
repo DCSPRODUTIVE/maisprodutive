@@ -33,6 +33,7 @@ async function setup(networkResponse, statusOverride = {}, loginResponse = null,
     calls.push({ url, options });
     if (extra[url]) return typeof extra[url] === "function" ? extra[url](options) : extra[url];
     if (url === "/api/status") return { ok: true, json: async () => status };
+    if (url === "/api/preferences") return {ok:true,json:async()=>({message:"Salvo"})};
     if (url === "/api/connectivity") return networkResponse;
     if (url === "/api/login" && loginResponse) return loginResponse;
     if (url === "/api/video/snapshot" && snapshotResponse) return snapshotResponse;
@@ -322,4 +323,41 @@ test("15-second native frame failure reconnects but economy pause cancels retrie
   assert.ok(![...timers.values()].some(t=>t.ms===5000||t.ms===10000));
   await get('stop-all').handlers.click();
   assert.equal(timers.size,0);
+});
+
+
+test("saved 12-camera layout and economy preferences restore on a new browser visit", async () => {
+  const devices=Array.from({length:13},(_,i)=>({id:String(i),name:'Camera '+i}));
+  const {get,calls,timers}=await setup(null,{...liveStatus,devices,preferences_key:'account-test',
+    preferences:{mosaic_limit:12,economy_ids:['0']}},null,null,liveResponses());
+  assert.equal(get('mosaic-limit').value,'12');
+  assert.equal(get('cameras').children.length,12);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,12);
+  assert.ok([...timers.values()].some(t=>t.ms===300000));
+  assert.ok([...timers.values()].some(t=>t.ms===1800000));
+  await get('stop-all').handlers.click();
+  assert.equal(timers.size,0);
+});
+
+test("economy choices and mosaic size are saved for the account", async () => {
+  const {get,calls}=await setup(null,liveStatus,null,null,liveResponses());
+  await cardButton(get,0,'Economia de dados').handlers.click();
+  let saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:8});
+  get('mosaic-limit').value='12';
+  await get('mosaic-limit').handlers.change();
+  saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:12});
+});
+
+
+test("person detection is opt-in, saved per camera, and restored", async () => {
+  const {get,calls}=await setup(null,{...liveStatus,preferences_key:'owner',
+    preferences:{economy_ids:[],detection_ids:['b'],mosaic_limit:8}},null,null,liveResponses());
+  await cardButton(get,0,'Detectar pessoas').handlers.click();
+  let saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(saved.at(-1).detection_ids,['b','a']);
+  await cardButton(get,1,'Detectar pessoas').handlers.click();
+  saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(saved.at(-1).detection_ids,['a']);
 });

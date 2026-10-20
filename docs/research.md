@@ -548,3 +548,59 @@ hash já instalado continua compatível. O esquema SQLite conserva a coluna plat
 por compatibilidade com bancos existentes, sem a preencher ou retornar na API.
 A listagem filtra pessoa/abertura antes de paginar e o acesso a imagens bloqueia
 registros antigos de veículos; nenhum histórico é apagado nesta migração.
+
+## Acesso externo, Reports somente de pessoas e preferências 8/12
+
+Removida a gravação de eventos opened, e a listagem filtra exclusivamente person
+antes de paginar, mantendo o histórico antigo oculto. A tabela preferences no
+mesmo banco salva economy_ids e mosaic_limit por dono; API autenticada valida
+câmeras conhecidas e limites 8/12. Preferências são restauradas após login e
+reload sem persistir credenciais do provedor. O limite global de conexões passou
+a 12; o semáforo de duas negociações iniciais continua. Não há validação de 12
+sessões reais do SDK nesta nuvem.
+
+access.py armazena hash scrypt com salt aleatório e controla tokens de entrada
+em memória, com renovação por atividade (12 h) e cinco tentativas/minuto globais.
+Nenhuma senha padrão consta no repositório. O usuário informa a senha no primeiro
+uso no computador onde o túnel será executado. remote_access.py lança cloudflared,
+extrai uma URL estritamente trycloudflare.com, configura origem HTTPS exata e
+fecha os processos ao encerrar. Não encaminha logs brutos do túnel.
+
+O serviço continua exclusivamente em loopback. Modo público exige gate e aceita
+somente o Host configurado com X-Forwarded-Proto=https; o Origin das operações
+POST deve corresponder à origem exata. Cookies públicos de entrada e conta usam
+Secure, HttpOnly e SameSite=Strict. APIs/fotos exigem entrada no sistema, e depois
+mantêm sessão de conta e CSRF. Nenhum vídeo ou foto foi publicado em um túnel real
+nos testes; HTTPS/proxy foram simulados por headers contra servidor local.
+
+## Detecção por câmera, clipes e retenção
+
+preferences inclui detection_ids, padrão vazio. Apenas streams habilitados são
+amostrados. A atualização autenticada da preferência propaga a flag aos streams
+da mesma conta. UI salva/restaura o botão por câmera. Reports tem abas Fotos e
+Vídeos com paginação separada; não grava nem exibe opened.
+
+clips.py reutiliza o último JPEG fresco, não faz heartbeat e não abre SDK extra.
+Um encoder FFmpeg H.264 por câmera gera até 120 s, sem áudio, 2 fps, uma thread,
+largura limitada a 1280. No máximo 12 gravações concorrentes. A existência de
+pessoa não dispara outro clipe enquanto o anterior está ativo. Falha aguarda 60 s
+antes de nova tentativa. Encoders possuem watchdog, fechamento de stdin e
+verificação ffprobe; só arquivos finalizados são disponibilizados. Paradas e
+pausa de economia produzem trecho parcial quando possível. Vídeos temporários
+interrompidos são removidos na recuperação após reinício.
+
+Metadados de vídeos no SQLite e arquivos em reports/videos com nomes aleatórios.
+A API exige gate (quando configurado), conta correspondente e Origin/CSRF para
+listar. GET de MP4 exige conta e dono e suporta Range validado para reprodução.
+Manutenção a cada 60 s e limpeza em operações de armazenamento removem MP4/linhas
+após 5 dias e fotos após 30. Fotos mantêm limite de 1.000 por conta. SQLite reutiliza
+páginas após apagar BLOBs. Gravação requer pelo menos 256 MB livres e encerra quando
+arquivo passa de cerca de 32 MB. Os arquivos são locais e não enviados para IA.
+
+Validação final desta versão: 89 testes Python e 22 de interface, incluindo gate
+HTTPS simulado, limite de tentativas, isolamento de fotos/vídeos, Range de MP4,
+preferências persistentes 8/12 e detecção, câmeras desabilitadas ignoradas, geração
+real H.264 com duração reduzida de teste e finalização parcial em pausa, exclusão
+após 5/30 dias e cancelamento dos timers de economia. Chromium validou gate real
+local com senha de teste, mosaico de 12 sem sobreposição e reprodução H.264 na aba
+Vídeos. Contas/câmeras do teste são simuladas; nenhum túnel público foi iniciado.

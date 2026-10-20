@@ -22,6 +22,7 @@ class FakeStream:
         self.device_id, self.expires, self.callback = device_id, expires, on_close
         self.handle = 'local-handle-'+device_id+'-'+str(len(self.instances))
         self.stopped = threading.Event()
+        self.condition=threading.Condition();self.image=None;self.last_frame=None
         self.worker = types.SimpleNamespace(ident=1)
         self.instances.append(self)
     def start(self): pass
@@ -47,9 +48,9 @@ class StreamApiTests(unittest.TestCase):
         self.cookie,self.csrf,self.state=self.new_session()
         client=DesktopClient(DesktopProfile('a'*32,'b'*64))
         client.account=DesktopAccount('123','private-account-token')
-        client.device_ids={str(i) for i in range(9)}
+        client.device_ids={str(i) for i in range(13)}
         self.state['client']=client
-        self.state['devices']=[{'id':str(i),'name':'Camera '+str(i)} for i in range(9)]
+        self.state['devices']=[{'id':str(i),'name':'Camera '+str(i)} for i in range(13)]
     def new_session(self):
         with urllib.request.urlopen(self.base+'/api/status') as r:
             status=json.load(r);cookie=r.headers['Set-Cookie'].split(';')[0]
@@ -70,15 +71,15 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(self.post('/api/video/start',{'device_id':'foreign'})[0],422)
         self.assertEqual(len(FakeStream.instances),0)
         handles={}
-        for i in range(8):
+        for i in range(12):
             code,data=self.post('/api/video/start',{'device_id':str(i), 'mosaic': i==0})
             self.assertEqual(code,200);handles[str(i)]=data['stream_id']
         self.assertEqual(FakeStream.instances[0].preview_width,640)
         self.assertEqual(FakeStream.instances[1].preview_width,960)
-        self.assertEqual(len(self.server.active_streams),8)
-        self.assertEqual(self.post('/api/video/start',{'device_id':'8'})[0],422)
+        self.assertEqual(len(self.server.active_streams),12)
+        self.assertEqual(self.post('/api/video/start',{'device_id':'12'})[0],422)
         self.assertEqual(self.post('/api/video/start',{'device_id':'0'})[1]['stream_id'],handles['0'])
-        self.assertEqual(len(FakeStream.instances),8)
+        self.assertEqual(len(FakeStream.instances),12)
         self.assertEqual(self.post('/api/video/frame',{'device_id':'0','stream_id':handles['0']})[0],200)
         self.assertEqual(self.post('/api/video/frame',{'device_id':'0','stream_id':'old-handle'})[0],422)
         other_cookie,other_csrf,_=self.new_session()
@@ -89,8 +90,8 @@ class StreamApiTests(unittest.TestCase):
         self.post('/api/video/stop',{'device_id':'0','stream_id':handles['0']})
         self.assertTrue(FakeStream.instances[0].stopped.is_set())
         self.assertFalse(FakeStream.instances[1].stopped.is_set())
-        self.assertEqual(self.post('/api/video/start',{'device_id':'8'})[0],200)
-        self.assertEqual(len(self.server.active_streams),8)
+        self.assertEqual(self.post('/api/video/start',{'device_id':'12'})[0],200)
+        self.assertEqual(len(self.server.active_streams),12)
         self.assertEqual(self.post('/api/logout',{})[0],200)
         self.assertTrue(all(s.stopped.is_set() for s in FakeStream.instances))
         self.assertEqual(len(self.server.active_streams),0)
@@ -100,7 +101,7 @@ class StreamApiTests(unittest.TestCase):
         self.post('/api/video/start', {'device_id':'0'})
         code,data=self.post('/api/reports', {})
         self.assertEqual(code,200)
-        self.assertEqual(data['events'][0]['kind'],'opened')
+        self.assertEqual(data['events'],[])
         owner=__import__('hashlib').sha256(b'123').hexdigest()
         self.server.reports.store.add(owner,'0','Camera','person',b'jpeg',.9)
         event_id=self.post('/api/reports',{})[1]['events'][0]['id']
@@ -113,6 +114,34 @@ class StreamApiTests(unittest.TestCase):
         request=urllib.request.Request(self.base+'/api/reports/image/'+str(event_id),headers={'Cookie':other_cookie})
         with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
         self.assertEqual(error.exception.code,404)
+
+    def test_preferences_validate_known_cameras_and_persist_per_account(self):
+        values={'economy_ids':['0','1'],'detection_ids':['1'],'mosaic_limit':12}
+        self.assertEqual(self.post('/api/preferences',values)[0],200)
+        request=urllib.request.Request(self.base+'/api/status',headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request) as response:self.assertEqual(json.load(response)['preferences'],values)
+        self.assertEqual(self.post('/api/preferences',{'economy_ids':['foreign'],'mosaic_limit':12})[0],422)
+        self.assertEqual(self.post('/api/preferences',{'economy_ids':[],'mosaic_limit':13})[0],422)
+        other_cookie,other_csrf,_=self.new_session()
+        self.assertEqual(self.post('/api/preferences',values,other_cookie,other_csrf)[0],422)
+
+    def test_video_history_access_and_byte_ranges_are_account_scoped(self):
+        owner=__import__('hashlib').sha256(b'123').hexdigest()
+        store=self.server.reports.store
+        filename='a'*32+'.mp4'
+        video_id=store.video_add(owner,'0','Camera',filename)
+        path=store.root/'videos'/filename;path.parent.mkdir(exist_ok=True);path.write_bytes(b'video-bytes')
+        store.video_finish(video_id,'ready',120)
+        code,data=self.post('/api/reports/videos',{})
+        self.assertEqual(code,200);self.assertEqual(data['events'][0]['duration'],120)
+        request=urllib.request.Request(self.base+'/api/reports/video/'+str(video_id),headers={'Cookie':self.cookie,'Range':'bytes=0-4'})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status,206);self.assertEqual(response.read(),b'video')
+            self.assertEqual(response.headers['Content-Range'],'bytes 0-4/11')
+        other_cookie,_,_=self.new_session()
+        request=urllib.request.Request(self.base+'/api/reports/video/'+str(video_id),headers={'Cookie':other_cookie})
+        with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+        self.assertEqual(error.exception.code,403)
 
     def test_active_session_renews_cookie_and_live_lease(self):
         self.post('/api/video/start', {'device_id':'0'})

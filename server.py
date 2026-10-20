@@ -7,6 +7,7 @@ import sqlite3
 import json
 from pathlib import Path
 import secrets
+import re
 import threading
 import time
 
@@ -15,6 +16,7 @@ from desktop import DesktopClient, load_profile, profile_path
 from video import readiness as video_readiness
 from live import LiveStream
 from reports import EventStore, ReportMonitor
+from access import Gate, TTL as ACCESS_TTL, origin as validate_origin
 
 ROOT = Path(__file__).parent
 SESSION_TTL = 20 * 60
@@ -29,16 +31,42 @@ def current_config():
 class Workbench(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address):
+    def __init__(self, address, public_origin=None, access_gate=None):
         if address[0] not in ("127.0.0.1", "localhost"):
             raise ValueError("Use loopback; hospedagem pública exige autenticação e HTTPS adicionais.")
+        self.public_origin = validate_origin(public_origin) if public_origin else None
+        self.access_gate = access_gate
+        if self.public_origin and self.access_gate is None:
+            raise ValueError('Acesso externo exige configurar a senha do sistema.')
         self.sessions = {}
         self.guard = threading.Lock()
-        self.video_guard = threading.BoundedSemaphore(8)
+        self.request_guard = threading.BoundedSemaphore(48)
+        self.video_guard = threading.BoundedSemaphore(12)
         self.active_streams = set()
         self.stream_guard = threading.Lock()
         self.reports = ReportMonitor(self, EventStore())
         super().__init__(address, Handler)
+        self.reports.start()
+
+    def process_request(self, request, client_address):
+        if not self.request_guard.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.request_guard.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_guard.release()
 
     @staticmethod
     def stop_streams(state, device_id=None):
@@ -66,10 +94,14 @@ class Workbench(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(15)
+
     def log_message(self, *_):
         pass  # Don't log submitted data, sessions or provider URLs.
 
-    def send(self, status, data, content_type="application/json; charset=utf-8", cookie=None):
+    def send(self, status, data, content_type="application/json; charset=utf-8", cookie=None, location=None):
         body = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -78,14 +110,104 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        if location:
+            self.send_header("Location", location)
         if cookie:
-            self.send_header("Set-Cookie", cookie)
+            self.send_header("Set-Cookie", cookie + ("; Secure" if self.public_request() else ""))
+        if getattr(self, "access_cookie", None):
+            self.send_header("Set-Cookie", self.access_cookie)
         self.end_headers()
         self.wfile.write(body)
 
+    def send_video(self, path, cookie):
+        try:
+            with path.open('rb') as file:
+                size=path.stat().st_size
+                start,end=0,size-1
+                value=self.headers.get('Range')
+                if value:
+                    match=re.fullmatch(r'bytes=(\d{0,20})-(\d{0,20})',value)
+                    if not match or not any(match.groups()):
+                        return self.send(416, {"message":"Intervalo de vídeo inválido."})
+                    a,b=match.groups()
+                    if a:
+                        start=int(a);end=min(int(b),end) if b else end
+                    else:
+                        start=max(0,size-int(b))
+                    if not 0<=start<=end<size:
+                        return self.send(416, {"message":"Intervalo de vídeo inválido."})
+                self.send_response(206 if value else 200)
+                self.send_header('Content-Type','video/mp4')
+                self.send_header('Content-Length',str(end-start+1))
+                self.send_header('Accept-Ranges','bytes')
+                self.send_header('Cache-Control','no-store')
+                self.send_header('X-Content-Type-Options','nosniff')
+                if value:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+                if cookie:self.send_header('Set-Cookie',cookie+('; Secure' if self.public_request() else ''))
+                if getattr(self,'access_cookie',None):self.send_header('Set-Cookie',self.access_cookie)
+                self.end_headers();file.seek(start)
+                remaining=end-start+1
+                while remaining:
+                    chunk=file.read(min(65536,remaining))
+                    if not chunk:break
+                    self.wfile.write(chunk);remaining-=len(chunk)
+        except FileNotFoundError:
+            return self.send(404,{"message":"Vídeo não encontrado."})
+        except (BrokenPipeError,ConnectionResetError):
+            return
+
+    def public_request(self):
+        return bool(self.server.public_origin and self.headers.get("Host") == self.server.public_origin[8:])
+
     def valid_host(self):
         port = self.server.server_port
-        return self.headers.get("Host") in (f"localhost:{port}", f"127.0.0.1:{port}")
+        local = self.headers.get("Host") in (f"localhost:{port}", f"127.0.0.1:{port}")
+        public = self.public_request() and self.headers.get("X-Forwarded-Proto") == "https"
+        return local or public
+
+    def expected_origin(self):
+        return self.server.public_origin if self.public_request() else "http://" + self.headers.get("Host", "")
+
+    def gate_cookie(self, token):
+        return f"dcs_access={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ACCESS_TTL}" + ("; Secure" if self.public_request() else "")
+
+    def gate_allowed(self):
+        if self.server.access_gate is None:
+            return True
+        if self.path in ("/access", "/access.js", "/style.css", "/icon.svg"):
+            return True
+        cookies = SimpleCookie()
+        try:
+            cookies.load(self.headers.get("Cookie", ""))
+            token = cookies["dcs_access"].value if "dcs_access" in cookies else None
+        except Exception:
+            token = None
+        if self.server.access_gate.valid(token):
+            self.access_cookie = self.gate_cookie(token)
+            return True
+        if self.path.startswith("/api/"):
+            self.send(401, {"message": "Entre com a senha de acesso ao sistema.", "error": "access_required"})
+        else:
+            self.send(303, {}, location="/access")
+        return False
+
+    def access_login(self):
+        if self.server.access_gate is None:
+            return self.send(404, {"message": "Acesso protegido não configurado."})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if self.headers.get("Content-Type") != "application/json" or not 0 < length <= 2048:
+                raise ValueError
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError
+        except (ValueError, UnicodeError):
+            return self.send(400, {"message": "Requisição inválida."})
+        token, code = self.server.access_gate.login(body.get("password"))
+        if not token:
+            return self.send(code, {"message": "Aguarde um minuto antes de tentar novamente." if code == 429 else "Senha de acesso inválida."})
+        self.access_cookie = self.gate_cookie(token)
+        return self.send(200, {"message": "Acesso autorizado."})
 
     def session(self, create=False):
         cookies = SimpleCookie()
@@ -123,7 +245,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.valid_host():
             return self.send(403, {"message": "Host não permitido."})
-        assets = {"/": ("index.html", "text/html; charset=utf-8"),
+        if not self.gate_allowed():
+            return
+        assets = {"/access": ("access.html", "text/html; charset=utf-8"),
+                  "/access.js": ("access.js", "text/javascript; charset=utf-8"),
+                  "/": ("index.html", "text/html; charset=utf-8"),
                   "/reports": ("reports.html", "text/html; charset=utf-8"),
                   "/reports.js": ("reports.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -132,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in assets:
             filename, mime = assets[self.path]
             return self.send(200, (ROOT / "web" / filename).read_bytes(), mime)
-        if self.path.startswith("/api/reports/image/"):
+        if self.path.startswith(("/api/reports/image/", "/api/reports/video/")):
             state, cookie = self.session()
             if state is None:
                 return self.send(403, {"message": "Entre na conta para acessar os registros."})
@@ -141,11 +267,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(403, {"message": "Entre na conta para acessar os registros."})
                 try:
                     event_id = int(self.path.rsplit("/", 1)[1])
-                    image = self.server.reports.store.image(self.report_owner(state), event_id)
+                    if not 0 < event_id <= 9223372036854775807:
+                        raise ValueError
+                    is_video = self.path.startswith("/api/reports/video/")
+                    image = (self.server.reports.store.video if is_video else self.server.reports.store.image)(self.report_owner(state), event_id)
                 except (ValueError, OSError, sqlite3.Error):
                     image = None
             if image is None:
                 return self.send(404, {"message": "Registro não encontrado."})
+            if is_video:
+                return self.send_video(image, cookie)
             return self.send(200, image, "image/jpeg", cookie=cookie)
         if self.path == "/api/health":
             return self.send(200, {"status": "ok", "video_available": False})
@@ -169,12 +300,18 @@ class Handler(BaseHTTPRequestHandler):
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
                                        "devices": state["devices"], "video_available": False,
-                                       "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message}, cookie=cookie)
+                                       "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message,
+                                       "preferences_key": self.report_owner(state) if isinstance(state["client"], DesktopClient) else None,
+                                       "preferences": self.server.reports.store.preferences(self.report_owner(state)) if isinstance(state["client"], DesktopClient) else None}, cookie=cookie)
         return self.send(404, {"message": "Recurso não encontrado."})
 
     def do_POST(self):
-        if not self.valid_host() or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
+        if not self.valid_host() or self.headers.get("Origin") != self.expected_origin():
             return self.send(403, {"message": "Origem não permitida."})
+        if self.path == "/api/access/login":
+            return self.access_login()
+        if not self.gate_allowed():
+            return
         state, _ = self.session()
         if state is None or not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), state["csrf"]):
             return self.send(403, {"message": "Sessão inválida ou expirada. Recarregue a página."})
@@ -203,13 +340,31 @@ class Handler(BaseHTTPRequestHandler):
                         "observations": observations,
                         "message": f"{answered} de {len(observations)} servidores responderam como API. Este teste não faz login nem acessa vídeos.",
                     })
-                if self.path == "/api/reports":
+                if self.path == "/api/preferences":
+                    if not isinstance(state["client"], DesktopClient):
+                        raise IntegrationError("authentication", "Entre na conta para salvar preferências.")
+                    ids=body.get("economy_ids")
+                    detection_ids=body.get("detection_ids", self.server.reports.store.preferences(self.report_owner(state)).get("detection_ids",[]))
+                    limit=body.get("mosaic_limit")
+                    if (not isinstance(ids,list) or len(ids)>100 or any(not isinstance(i,str) or i not in state["client"].device_ids for i in ids)
+                            or not isinstance(detection_ids,list) or len(detection_ids)>100
+                            or any(not isinstance(i,str) or i not in state["client"].device_ids for i in detection_ids)
+                            or type(limit) is not int or limit not in (8,12)):
+                        raise IntegrationError("input", "Preferências de câmera inválidas.")
+                    values={"economy_ids":sorted(set(ids)), "detection_ids":sorted(set(detection_ids)), "mosaic_limit":limit}
+                    self.server.reports.store.preferences(self.report_owner(state),values)
+                    with self.server.stream_guard:
+                        for stream in self.server.active_streams:
+                            if getattr(stream,"report_owner",None)==self.report_owner(state):
+                                stream.report_detect=stream.device_id in values["detection_ids"]
+                    return self.send(200, {"message":"Preferências salvas.","preferences":values})
+                if self.path in ("/api/reports", "/api/reports/videos"):
                     if not isinstance(state["client"], DesktopClient):
                         raise IntegrationError("authentication", "Entre na conta para acessar Reports.")
                     before = body.get("before")
                     if before is not None and (type(before) is not int or before < 1 or before > 9223372036854775807):
                         raise IntegrationError("input", "Página de registros inválida.")
-                    return self.send(200, {"events": self.server.reports.store.list(self.report_owner(state), before),
+                    return self.send(200, {"events": (self.server.reports.store.videos if self.path.endswith("/videos") else self.server.reports.store.list)(self.report_owner(state), before),
                                            "detection_ready": self.server.reports.ready,
                                            "message": self.server.reports.message})
                 if self.path == "/api/logout":
@@ -266,7 +421,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200, {"device_id": device_id, "stream_id": previous.handle, "message": "Esta câmera já está em transmissão."})
                     self.server.stop_streams(state, device_id)
                     if not self.server.video_guard.acquire(blocking=False):
-                        raise IntegrationError("video_busy", "O limite de 8 transmissões simultâneas foi atingido. Pare uma câmera antes de iniciar outra.")
+                        raise IntegrationError("video_busy", "O limite de 12 transmissões simultâneas foi atingido. Pare uma câmera antes de iniciar outra.")
                     stream = None
                     def release_slot():
                         with self.server.stream_guard:
@@ -284,12 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)
                         stream.report_owner = self.report_owner(state)
+                        stream.report_detect = device_id in self.server.reports.store.preferences(stream.report_owner).get("detection_ids",[])
                         stream.report_name = next((item["name"] for item in state["devices"] if item["id"] == device_id), device_id)
                         stream.start()
-                        try:
-                            self.server.reports.store.add(stream.report_owner, device_id, stream.report_name, "opened")
-                        except (OSError, sqlite3.Error):
-                            pass
                         self.server.reports.start()
                     except Exception:
                         state["streams"].pop(device_id, None)
@@ -312,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                             raise IntegrationError("video_waiting", "Aguarde o primeiro quadro da transmissão antes de capturar.")
                         return self.send(200, {"image": data["image"], "message": "Captura obtida da transmissão desta câmera."})
                     if not self.server.video_guard.acquire(blocking=False):
-                        raise IntegrationError("video_busy", "Todas as 8 conexões estão em uso. Pare uma câmera para capturar outra imagem.")
+                        raise IntegrationError("video_busy", "Todas as 12 conexões estão em uso. Pare uma câmera para capturar outra imagem.")
                     try:
                         return self.send(200, client.snapshot(body.get("device_id")))
                     finally:
@@ -334,8 +486,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--public-origin", help="Origem HTTPS exata de um proxy/túnel local")
+    parser.add_argument("--protected", action="store_true", help="Exigir senha de acesso também localmente")
     args = parser.parse_args()
-    server = Workbench(("127.0.0.1", args.port))
+    server = Workbench(("127.0.0.1", args.port), public_origin=args.public_origin,
+                       access_gate=Gate() if args.public_origin or args.protected else None)
     print(f"Bancada local iniciada na porta {server.server_port}. Transmissão experimental disponível após preparação do adaptador.", flush=True)
     try:
         server.serve_forever()

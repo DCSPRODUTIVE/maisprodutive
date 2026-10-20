@@ -4,6 +4,12 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+let mosaicLimit = 8;
+let preferenceKey = null;
+let preferenceSave = Promise.resolve();
+const preferredEconomy = new Set();
+const detectionIds = new Set();
+const detectionPending = new Set();
 const economy = new Map();
 const desired = new Map();
 const qualities = new Map();
@@ -25,6 +31,7 @@ function updateMetrics() {
 function buttons() {
   const auth = !!currentStatus?.authenticated;
   const ready = auth && !!currentStatus?.snapshot_ready;
+  $("mosaic-limit").disabled = busy || bulk;
   $("network").disabled = busy || !csrf;
   $("credentials").disabled = busy || bulk || !currentStatus?.configured;
   $("connect").disabled = busy || bulk || !currentStatus?.configured;
@@ -32,8 +39,9 @@ function buttons() {
   $("logout").disabled = busy || !auth;
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
   $("stop-all").disabled = busy || (!feeds.size && !desired.size && !economy.size && !bulk);
-  for (const { id, capture, watch, stop, quality, saver } of cameraControls) {
+  for (const { id, capture, watch, stop, quality, saver, detector } of cameraControls) {
     quality.disabled = busy || bulk || !ready;
+    detector.disabled = busy || bulk || !ready || detectionPending.has(id);
     saver.disabled = busy || bulk || !ready;
     capture.disabled = busy || bulk || !ready || !!economy.get(id)?.paused || (feeds.has(id) && !feeds.get(id).image);
     watch.disabled = busy || bulk || !ready || feeds.has(id);
@@ -72,14 +80,44 @@ async function economyCycle(id) {
   await startOne(id, true);
   render();
 }
+function savePreferences() {
+  const ids = [...preferredEconomy].filter(id => currentStatus?.devices.some(camera => camera.id === id));
+  const payload = {economy_ids: ids, detection_ids:[...detectionIds].filter(id=>currentStatus?.devices.some(camera=>camera.id===id)), mosaic_limit: mosaicLimit};
+  const owner=currentStatus?.preferences_key;
+  preferenceSave = preferenceSave.then(() => {
+    if(owner!==currentStatus?.preferences_key)throw new Error("A conta mudou. Salve novamente.");
+    return post("/api/preferences", payload);
+  }).catch(error => {
+    $("message").textContent = `Não foi possível salvar as preferências: ${error.message}`;
+  });
+  return preferenceSave;
+}
+async function toggleDetection(id) {
+  if(detectionPending.has(id))return;
+  const wasEnabled=detectionIds.has(id);
+  if(wasEnabled)detectionIds.delete(id);else detectionIds.add(id);
+  detectionPending.add(id);render();
+  const saved=await savePreferences();
+  if(!saved){if(wasEnabled)detectionIds.add(id);else detectionIds.delete(id);}
+  detectionPending.delete(id);render();
+}
+async function watchCamera(id) {
+  if (preferredEconomy.has(id)) {
+    if (!economy.has(id)) economy.set(id, {paused:false});
+    await economyCycle(id);
+  } else await startOne(id);
+}
 async function toggleEconomy(id) {
-  if (economy.has(id)) {
+  if (preferredEconomy.has(id)) {
+    preferredEconomy.delete(id);
     stopEconomy(id);
     await startOne(id);
   } else {
+    preferredEconomy.add(id);
     economy.set(id, { paused: false });
     await economyCycle(id);
   }
+  await savePreferences();
   render();
 }
 function paint(id) {
@@ -106,12 +144,13 @@ function paint(id) {
   view.overlay.textContent = saving?.paused ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
+  $("cameras").className = "camera-grid" + (mosaicLimit === 12 ? " mosaic-12" : "");
   $("cameras").replaceChildren();
   views = new Map();
   cameraControls = [];
   const devices = currentStatus?.devices || [];
   const search = ($("camera-search").value || "").trim().toLocaleLowerCase("pt-BR");
-  const selected = devices.filter((camera) => camera.name.toLocaleLowerCase("pt-BR").includes(search));
+  const selected = devices.slice(0, mosaicLimit).filter((camera) => camera.name.toLocaleLowerCase("pt-BR").includes(search));
   $("empty").hidden = devices.length > 0;
   for (const camera of selected) {
     const card = element("article", "camera-card");
@@ -151,19 +190,23 @@ function render() {
     const capture = element("button", "secondary", "Capturar");
     capture.addEventListener("click", () => action("/api/video/snapshot", { device_id: camera.id }));
     const watch = element("button", "play", "Assistir");
-    watch.addEventListener("click", () => economy.has(camera.id) ? economyCycle(camera.id) : startOne(camera.id));
+    watch.addEventListener("click", () => watchCamera(camera.id));
     const stop = element("button", "quiet stop", "Parar");
     stop.addEventListener("click", () => stopOne(camera.id));
     group.append(watch, stop, capture);
-    const saver = element("button", "data-saver" + (economy.has(camera.id) ? " selected" : ""), "Economia de dados");
-    saver.setAttribute?.("aria-pressed", String(economy.has(camera.id)));
+    const saver = element("button", "data-saver" + (preferredEconomy.has(camera.id) ? " selected" : ""), "Economia de dados");
+    saver.setAttribute?.("aria-pressed", String(preferredEconomy.has(camera.id)));
     saver.title = "5 minutos ao vivo a cada 30 minutos; conexão fechada durante a pausa";
     saver.addEventListener("click", () => toggleEconomy(camera.id));
-    controls.append(group, saver);
+    const detector=element("button","person-detector"+(detectionIds.has(camera.id)?" selected":""),"Detectar pessoas");
+    detector.setAttribute?.("aria-pressed",String(detectionIds.has(camera.id)));
+    detector.title="Salvar fotos e vídeos de até 2 minutos quando detectar pessoas";
+    detector.addEventListener("click",()=>toggleDetection(camera.id));
+    controls.append(group, saver, detector);
     media.append(quality);
     card.append(header, media, caption, controls);
     views.set(camera.id, { card, img, placeholder, badge, caption, overlay });
-    cameraControls.push({ id: camera.id, capture, watch, stop, quality, saver });
+    cameraControls.push({ id: camera.id, capture, watch, stop, quality, saver, detector });
     paint(camera.id);
     $("cameras").append(card);
   }
@@ -172,11 +215,23 @@ function render() {
 }
 async function status() {
   const response = await fetch("/api/status", { cache: "no-store" });
+  if (response.status === 401 && typeof window !== "undefined") window.location.replace("/access");
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Não foi possível consultar o servidor.");
   csrf = data.csrf;
   const wasAuthenticated = currentStatus?.authenticated;
   currentStatus = data;
+  let restored = false;
+  if (!data.authenticated) { preferenceKey=null; preferredEconomy.clear(); detectionIds.clear(); }
+  if (data.authenticated && data.preferences_key && data.preferences_key !== preferenceKey) {
+    preferenceKey=data.preferences_key;
+    preferredEconomy.clear(); detectionIds.clear();
+    for (const id of data.preferences?.detection_ids || []) detectionIds.add(id);
+    for (const id of data.preferences?.economy_ids || []) preferredEconomy.add(id);
+    mosaicLimit=data.preferences?.mosaic_limit === 12 ? 12 : 8;
+    $("mosaic-limit").value=String(mosaicLimit);
+    restored=true;
+  }
   if (!data.authenticated) { cancelAll(); snapshots.clear(); $("account-panel").open = true; }
   if (data.authenticated && !wasAuthenticated) $("account-panel").open = false;
   $("session-label").textContent = data.authenticated ? "Conta conectada" : "Conta desconectada";
@@ -188,15 +243,18 @@ async function status() {
     : data.auth_mode === "windows-experimental" ? "Entre com sua conta Yoosee para acessar as câmeras."
     : data.auth_mode === "account-experimental" ? "Modo antigo experimental. Para testar a API identificada no Windows, importe primeiro o instalador conforme as instruções do projeto."
     : "Pronto para testar a autenticação com a configuração SDK. Compatibilidade ainda não validada." : data.configuration_message;
-  $("snapshot-status").textContent = data.auth_mode === "windows-experimental" ? data.snapshot_ready ? "Até 8 câmeras simultâneas. Selecione Assistir ou abra o mosaico." : data.snapshot_message || "" : "";
+  $("snapshot-status").textContent = data.auth_mode === "windows-experimental" ? data.snapshot_ready ? `Mosaico de até ${mosaicLimit} câmeras. Preferências salvas por conta.` : data.snapshot_message || "" : "";
   if (data.detection_message) $("snapshot-status").textContent += " " + data.detection_message;
+  $("mosaic-label").textContent = `MOSAICO · ATÉ ${mosaicLimit} CÂMERAS`;
   render();
+  if (restored && !busy && data.snapshot_ready) await startAll();
 }
 async function post(path, body, keepalive = false) {
   try {
     const response = await fetch(path, { method: "POST", cache: "no-store", keepalive,
       signal: keepalive ? undefined : AbortSignal.timeout(12000),
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify(body) });
+    if (response.status === 401 && typeof window !== "undefined") window.location.replace("/access");
     const data = await response.json();
     if (!response.ok) { const error = new Error(data.message || "Falha na consulta."); error.status = response.status; error.kind = data.error; throw error; }
     return data;
@@ -282,9 +340,12 @@ async function startAll() {
   setFocus(true);
   buttons();
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
-  for (const camera of (currentStatus?.devices || []).slice(0, 8)) {
+  for (const camera of (currentStatus?.devices || []).slice(0, mosaicLimit)) {
     if (token !== batchToken) break;
-    if (economy.has(camera.id)) continue;
+    if (preferredEconomy.has(camera.id)) {
+      if (!economy.has(camera.id)) { economy.set(camera.id, {paused:false}); await economyCycle(camera.id); }
+      continue;
+    }
     await startOne(camera.id, true);
   }
   if (token === batchToken) { bulk = false; $("message").textContent = "Mosaico iniciado. Cada câmera recebe imagens de forma independente."; buttons(); }
@@ -402,6 +463,17 @@ function setFocus(value) {
 }
 $("focus-mode").addEventListener("click", () => setFocus(!focused));
 $("tv-exit").addEventListener("click", () => setFocus(false));
+$("mosaic-limit").value="8";
+$("mosaic-limit").addEventListener("change", async () => {
+  mosaicLimit=$("mosaic-limit").value === "12" ? 12 : 8;
+  $("mosaic-label").textContent=`MOSAICO · ATÉ ${mosaicLimit} CÂMERAS`;
+  await savePreferences();
+  const active=feeds.size>0 || economy.size>0;
+  const keep=new Set((currentStatus?.devices || []).slice(0,mosaicLimit).map(camera=>camera.id));
+  for(const id of new Set([...feeds.keys(),...economy.keys()])) if(!keep.has(id)) await stopOne(id);
+  render();
+  if(active) await startAll();
+});
 $("camera-search").addEventListener("input", render);
 $("watch-all").addEventListener("click", startAll);
 $("stop-all").addEventListener("click", stopAll);

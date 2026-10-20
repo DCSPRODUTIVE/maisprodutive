@@ -9,6 +9,8 @@ import sqlite3
 import threading
 import time
 
+from clips import RecordingService
+
 ROOT = Path(__file__).parent / '.local' / 'reports'
 MODEL_ROOT = Path(__file__).parent / '.local' / 'detection'
 MODEL_FILES = {
@@ -43,15 +45,17 @@ class EventStore:
         os.chmod(self.root / 'events.sqlite3', 0o600)
         conn.row_factory = sqlite3.Row
         conn.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, kind TEXT NOT NULL, confidence REAL, plate TEXT, boxes TEXT NOT NULL, image BLOB)')
+        conn.execute('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, filename TEXT NOT NULL, status TEXT NOT NULL, duration REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT "")')
         try:
             with conn:
+                self._cleanup(conn)
                 yield conn
         finally:
             conn.close()
 
     def add(self, owner, camera, name, kind, image=None, confidence=None, boxes=()):
-        if kind not in ('person', 'opened'):
-            raise ValueError('Apenas pessoas e aberturas de câmera são registradas.')
+        if kind != 'person':
+            raise ValueError('Apenas pessoas detectadas são registradas.')
         with self.guard, self.connect() as db:
             db.execute('INSERT INTO events(owner,camera,name,created,kind,confidence,plate,boxes,image) VALUES (?,?,?,?,?,?,?,?,?)',
                        (owner, camera, name, time.time(), kind, confidence, None, json.dumps(boxes), image))
@@ -61,7 +65,7 @@ class EventStore:
 
     def list(self, owner, before=None):
         with self.guard, self.connect() as db:
-            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind IN ('person','opened') AND id<? ORDER BY id DESC LIMIT 24",
+            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind='person' AND id<? ORDER BY id DESC LIMIT 24",
                               (owner, before or 9223372036854775807)).fetchall()
             return [dict(row, boxes=json.loads(row['boxes'])) for row in rows]
 
@@ -69,6 +73,62 @@ class EventStore:
         with self.guard, self.connect() as db:
             row = db.execute("SELECT image FROM events WHERE owner=? AND id=? AND kind='person'", (owner, event_id)).fetchone()
             return bytes(row[0]) if row and row[0] is not None else None
+
+    def preferences(self, owner, values=None):
+        with self.guard, self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS preferences(owner TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            if values is not None:
+                db.execute('INSERT OR REPLACE INTO preferences(owner,value) VALUES (?,?)', (owner,json.dumps(values)))
+            row=db.execute('SELECT value FROM preferences WHERE owner=?',(owner,)).fetchone()
+            return json.loads(row[0]) if row else {'economy_ids':[], 'detection_ids':[], 'mosaic_limit':8}
+
+    def _video_path(self, filename):
+        if len(filename)!=36 or not filename.endswith('.mp4') or any(c not in '0123456789abcdef' for c in filename[:32]):
+            raise ValueError('Nome de vídeo inválido.')
+        return self.root/'videos'/filename
+
+    def _cleanup(self, db):
+        now=time.time()
+        db.execute('DELETE FROM events WHERE created<?',(now-30*86400,))
+        expired=db.execute('SELECT filename FROM videos WHERE created<?',(now-5*86400,)).fetchall()
+        for row in expired:
+            self._video_path(row[0]).unlink(missing_ok=True)
+            (self.root/'videos'/(row[0]+'.part.mp4')).unlink(missing_ok=True)
+        db.execute('DELETE FROM videos WHERE created<?',(now-5*86400,))
+
+    def cleanup(self):
+        with self.guard, self.connect():
+            pass
+
+    def video_add(self, owner, camera, name, filename):
+        self._video_path(filename)
+        with self.guard,self.connect() as db:
+            cursor=db.execute('INSERT INTO videos(owner,camera,name,created,filename,status) VALUES (?,?,?,?,?,?)',
+                              (owner,camera,name,time.time(),filename,'recording'))
+            return cursor.lastrowid
+
+    def video_finish(self, record_id, status, duration, reason=''):
+        with self.guard,self.connect() as db:
+            db.execute('UPDATE videos SET status=?,duration=?,reason=? WHERE id=?',(status,duration,reason,record_id))
+
+    def videos(self, owner, before=None):
+        with self.guard,self.connect() as db:
+            rows=db.execute('SELECT id,camera,name,created,status,duration,reason FROM videos WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
+                            (owner,before or 9223372036854775807)).fetchall()
+            return [dict(row) for row in rows]
+
+    def video(self, owner, record_id):
+        with self.guard,self.connect() as db:
+            row=db.execute("SELECT filename FROM videos WHERE owner=? AND id=? AND status IN ('ready','partial')",(owner,record_id)).fetchone()
+            path=self._video_path(row[0]) if row else None
+            return path if path and path.is_file() else None
+
+    def recover_recordings(self):
+        with self.guard,self.connect() as db:
+            rows=db.execute("SELECT filename FROM videos WHERE status='recording'").fetchall()
+            for row in rows:
+                (self.root/'videos'/(row[0]+'.part.mp4')).unlink(missing_ok=True)
+            db.execute("UPDATE videos SET status='failed',reason='interrupted' WHERE status='recording'")
 
 
 class Detector:
@@ -110,23 +170,29 @@ class ReportMonitor:
         self.last={}
         self.saved={}
         self.ready,self.message=readiness()
+        self.recordings=RecordingService(self.store)
 
     def start(self):
         with self.guard:
-            if self.thread is None and self.ready:
+            if self.thread is None:
                 self.thread=threading.Thread(target=self.run,daemon=True)
                 self.thread.start()
 
     def run(self):
         try:
-            detector=Detector()
+            self.store.recover_recordings()
+            detector=Detector() if self.ready else None
+            last_cleanup=0
             while not self.stopped.wait(.2):
+                if time.monotonic()-last_cleanup>=60:
+                    self.store.cleanup();last_cleanup=time.monotonic()
+                if detector is None:continue
                 with self.server.stream_guard:
                     streams=list(self.server.active_streams)
                 for stream in streams:
                     if self.stopped.is_set():break
                     owner=getattr(stream,'report_owner',None)
-                    if not owner or stream.stopped.is_set():continue
+                    if not owner or stream.stopped.is_set() or not getattr(stream,'report_detect',False):continue
                     key=(owner,stream.device_id)
                     now=time.monotonic()
                     if now-self.last.get(key,0)<5:continue
@@ -137,10 +203,13 @@ class ReportMonitor:
                         age=now-stream.last_frame if stream.last_frame is not None else 999
                     if not jpeg or age>3:continue
                     rows,frame=detector.detect(jpeg)
+                    if not getattr(stream,'report_detect',False):continue
                     for kind in ('person',):
                         matches=[row for row in rows if row['kind']==kind]
                         event_key=key+(kind,)
-                        if not matches or now-self.saved.get(event_key,0)<60:continue
+                        if not matches:continue
+                        self.recordings.trigger(stream)
+                        if now-self.saved.get(event_key,0)<60:continue
                         self.store.add(owner,stream.device_id,stream.report_name,kind,jpeg,
                                        max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
                         self.saved[event_key]=now
@@ -154,3 +223,4 @@ class ReportMonitor:
     def close(self):
         self.stopped.set()
         if self.thread:self.thread.join(timeout=7)
+        self.recordings.close()

@@ -7,7 +7,7 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
 
 - **Confirmado pelo usuário no Chromebook:** login, consulta de oito câmeras e
   captura de imagens reais na maioria delas.
-- **Nesta versão:** layout responsivo, mosaico de até oito transmissões
+- **Nesta versão:** layout responsivo, mosaico com seleção de 8 ou 12 transmissões
   independentes, busca por nome, tela cheia, modo foco, captura e parada individual
   ou de todas as câmeras. Transmissão experimental de até cinco imagens/s por
   câmera, sem áudio, com conexão P2P mantida aberta.
@@ -19,11 +19,10 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
 - **Confirmação real:** o usuário mostrou transmissões reais em parte do mosaico.
   A correção dos buffers e os novos modos HD/FHD ainda precisam ser testados nas
   câmeras que falhavam; testes sintéticos não substituem essa confirmação.
-- **Reports:** registro de câmeras abertas e fotos de detecção local de pessoas.
+- **Reports:** fotos de detecção local de pessoas, sem registros de abertura de câmera.
   Requer instalar o modelo e OpenCV conforme abaixo. Alertas externos não estão ativos.
 - **Economia de dados:** por câmera, 5 minutos conectada e 25 pausada, preservando
-  o último quadro. As demais câmeras continuam independentes. Hospedagem pública,
-  áudio, PTZ e gravação contínua não estão implementados.
+  o último quadro. As demais câmeras continuam independentes. Acesso remoto protegido por túnel HTTPS disponível. Áudio, PTZ e gravação contínua não estão implementados.
 
 A interface não contém câmeras ou vídeos simulados. Só apresenta dispositivos da
 conta e imagens recebidas pelo adaptador. Fixtures usadas nos testes não fazem
@@ -107,10 +106,10 @@ confira a importação do perfil e reinicie o processo do servidor.
 
 ## Operação e limites
 
-Há até oito conexões nativas simultâneas no servidor, cada uma com um processo do
+Há até doze conexões nativas simultâneas no servidor, cada uma com um processo do
 SDK Wine e um conversor FFmpeg. No máximo duas câmeras iniciam a conexão ao mesmo
 tempo; as demais aparecem como **Na fila** até que uma abertura termine ou receba
-o primeiro quadro. Depois de conectadas, as oito podem continuar transmitindo.
+o primeiro quadro. Depois de conectadas, as doze podem continuar transmitindo.
 A espera na fila não consome os 45 segundos de tentativa do primeiro quadro.
 Todos os pools de threads do FFmpeg são limitados. A prévia do mosaico tem até
 640 pixels de largura; a abertura individual mantém até 960 pixels em **Equilibrada**.
@@ -120,7 +119,7 @@ Para melhor imagem, selecione **FHD · sem redução** no canto da imagem e use 
 cheia. Se não funcionar naquela câmera, teste **HD**. A troca reinicia somente
 essa câmera. Confira **Imagem: largura × altura** abaixo do vídeo: escolher FHD
 não garante 1920×1080, pois o dispositivo/provedor pode entregar outra resolução.
-O mosaico começa pelas primeiras oito câmeras da conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
+O mosaico começa pelas primeiras 8 ou 12 câmeras, conforme a seleção da conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
 alteração automática de qualidade; a preferência escolhida dura até recarregar a página.
 
 A conexão é reutilizada para os quadros seguintes; não se abre um login a cada
@@ -222,23 +221,48 @@ Abra http://localhost:8096, entre e mantenha as câmeras transmitindo. **Reports
 abre outra aba sem interromper o monitoramento. A instalação baixa uma única vez
 aproximadamente 23 MB do MobileNet-SSD público, em revisão fixa e com SHA-256
 verificado; imagens das câmeras não são enviadas para IA externa. Sem instalação,
-o histórico de aberturas funciona e a página explica que a detecção está inativa.
+a página explica que a detecção está inativa; nenhuma abertura de câmera é registrada.
 O modelo pode gerar falsos positivos/negativos; não determina identidade.
 
-A análise usa o último quadro recente, no máximo a cada 5 segundos por câmera.
+Ative **Detectar pessoas** em cada câmera desejada; o padrão é desativado.
+A escolha é salva por conta, junto com Economia de dados e o mosaico. Somente
+as câmeras habilitadas produzem fotos e vídeos. A análise usa o último quadro recente, no máximo a cada 5 segundos por câmera.
 Uma foto por câmera é registrada no máximo a cada 60 segundos para reduzir
 repetições. Esse intervalo não identifica se uma pessoa é diferente da anterior;
 pessoas que passam rapidamente podem não aparecer entre as amostras. Apenas a
 classe pessoa é utilizada. Não há detecção de veículos, leitura de placas nem
-identificação facial. Registros antigos de veículos ficam ocultos em Reports,
+identificação facial. Registros antigos de veículos e de abertura de câmeras ficam ocultos em Reports,
 sem apagar o banco existente. O modelo instalado anteriormente pode ser reutilizado.
 
 Fotos, horário, câmera, caixas e confiança ficam em `.local/reports/events.sqlite3`,
 com acesso pelo painel autenticado e separação por conta. A senha/token não são
-salvos. Retenção: até 1.000 registros por conta e 30 dias, limpa ao gravar novo
-evento. O arquivo de banco pode ocupar espaço mesmo após expirar registros;
+salvos. Retenção de fotos: até 1.000 registros por conta e 30 dias. Uma rotina
+de manutenção remove os expirados enquanto o servidor está ligado. O arquivo de banco pode ocupar espaço mesmo após expirar registros;
 SQLite reutiliza essas páginas. Faça backup desse diretório se desejar preservar
 os registros. Parar/pausar a câmera também para a produção de novos eventos dela.
+
+Em **Reports**, as abas **Fotos** e **Vídeos** separam os registros. Uma detecção
+inicia um MP4 H.264 de até 120 segundos, sem áudio, a 2 quadros/s, reutilizando os
+JPEGs da conexão existente. Não abre outra conexão P2P. Cada câmera pode ter um
+clipe em andamento; enquanto grava, novas detecções não criam vídeos sobrepostos.
+Depois de concluir, outra detecção pode iniciar outro vídeo. Falhas têm intervalo
+mínimo de 60 segundos antes de nova tentativa de gravação.
+
+Os vídeos ficam em `.local/reports/videos`, com metadados privados no banco.
+São excluídos após 5 dias por manutenção periódica (a cada minuto com servidor
+ligado) e ao acessar o armazenamento. Após desligamento, a limpeza ocorre na
+próxima inicialização. Parar, perder conexão, desativar detecção ou entrar na pausa
+de economia encerra o clipe no trecho disponível, identificado **trecho parcial**.
+O sistema não prolonga a janela 4G para completar dois minutos. Ao reiniciar o
+servidor, gravações interrompidas ficam como falha, sem disponibilizar MP4 incompleto.
+
+Para limitar consumo local, os encoders usam uma thread, largura máxima de 1280
+pixels, e cada arquivo é limitado a aproximadamente 32 MB durante a captura.
+Novas gravações são recusadas com menos de 256 MB livres; o Reports informa a
+falha de espaço. Essa proteção não substitui conferir o armazenamento. Fotos
+apagadas liberam páginas reutilizáveis no SQLite; vídeos expirados são removidos
+do disco. O vídeo gravado é uma amostragem do fluxo recebido, não o stream original
+da câmera.
 
 ## Economia de dados em câmeras 4G
 
@@ -252,8 +276,9 @@ limita o volume exato em MB nem elimina o tráfego de negociação.
 O erro de 15 segundos sem quadros causa reconexão automática dentro da janela
 ativa. Ao chegar a pausa, o painel cancela também as tentativas pendentes. **Parar**
 ou **Parar todas** cancela o agendamento. Desativar Economia volta à transmissão
-contínua. O agendamento dura enquanto a página estiver aberta; recarregar, sair
-ou reiniciar o servidor exige ativá-lo novamente. O computador não pode suspender.
+contínua. O agendamento roda enquanto a página estiver aberta. As câmeras escolhidas para
+economia e o mosaico 8/12 são salvos por conta e restaurados ao entrar novamente.
+O novo acesso começa um novo ciclo. Parar cancela o ciclo atual, mas mantém a preferência. O computador não pode suspender.
 
 ## Chromecast, Fire TV e alertas
 
@@ -272,3 +297,20 @@ Conforme a preferência escolhida, esta versão usa **somente Reports**. E-mail
 poderá ser integrado via SMTP com senha de aplicativo; WhatsApp exige serviço como
 a WhatsApp Business Platform e configuração/autorização na Meta. Nenhuma mensagem
 externa é enviada e nenhuma credencial desses serviços foi solicitada.
+
+## Acesso externo e preferências persistentes
+
+Veja [o guia de acesso externo](docs/remote-access.md) para instalar cloudflared e
+iniciar `python3 remote_access.py --port 8097`. O comando pede a senha do sistema
+na primeira execução e gera a URL HTTPS no próprio Chromebook. Código pronto não
+significa que o túnel já está ativo no computador do usuário: é necessário executar
+o comando lá. A senha é armazenada somente como hash local e não é publicada.
+
+A entrada protege painel, APIs e fotos; origens/Host são validados e cookies
+externos usam Secure/HttpOnly/SameSite=Strict. APIs de câmera mantêm a autenticação
+Yoosee e CSRF. Limite de tentativas protege a senha de entrada. O aplicativo
+continua restrito a loopback; a conexão externa chega pelo túnel HTTPS.
+
+As preferências de Economia de dados e o mosaico 8/12 são salvos no banco local
+por conta e recuperados em outros acessos após login. A opção de 12 amplia a
+capacidade do servidor; uso real simultâneo depende do computador e da conexão.

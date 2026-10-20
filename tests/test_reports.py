@@ -24,13 +24,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(rows[0]['boxes'],[[0,0,.5,.5]])
 
     def test_retention_age_and_account_limit(self):
-        with patch('reports.time.time',return_value=1):self.store.add('mine','id','Old','opened')
-        self.store.add('mine','id','New','opened')
+        with patch('reports.time.time',return_value=1):self.store.add('mine','id','Old','person')
+        self.store.add('mine','id','New','person')
         self.assertEqual(len(self.store.list('mine')),1)
         with self.store.connect() as db:
             db.executemany('INSERT INTO events(owner,camera,name,created,kind,boxes) VALUES (?,?,?,?,?,?)',
-                           [('mine','id','Camera',time.time(),'opened','[]')]*1000)
-        self.store.add('mine','id','New','opened')
+                           [('mine','id','Camera',time.time(),'person','[]')]*1000)
+        self.store.add('mine','id','New','person')
         with self.store.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM events').fetchone()[0],1000)
 
     def test_legacy_vehicles_are_hidden_and_new_vehicle_events_rejected(self):
@@ -44,12 +44,32 @@ class StoreTests(unittest.TestCase):
         self.store.add('mine','id','Camera','person',b'person-photo')
         self.assertEqual(self.store.list('mine')[0]['kind'],'person')
 
+    def test_opened_events_are_hidden_and_preferences_survive_reopening(self):
+        with self.store.connect() as db:
+            db.execute('INSERT INTO events(owner,camera,name,created,kind,boxes) VALUES (?,?,?,?,?,?)',
+                       ('mine','id','Camera',time.time(),'opened','[]'))
+        self.assertEqual(self.store.list('mine'),[])
+        with self.assertRaises(ValueError):self.store.add('mine','id','Camera','opened')
+        values={'economy_ids':['id'], 'mosaic_limit':12}
+        self.store.preferences('mine',values)
+        reopened=EventStore(self.store.root)
+        self.assertEqual(reopened.preferences('mine'),values)
+        self.assertEqual(reopened.preferences('other'),{'economy_ids':[], 'detection_ids':[], 'mosaic_limit':8})
+
+    def test_monitor_does_not_analyze_disabled_camera(self):
+        stream=SimpleNamespace(report_owner='mine',device_id='id',report_detect=False,stopped=threading.Event())
+        server=SimpleNamespace(stream_guard=threading.Lock(),active_streams=[stream])
+        with patch('reports.readiness',return_value=(True,'ready')),patch('reports.Detector') as detector:
+            monitor=ReportMonitor(server,self.store);monitor.start();time.sleep(.3);monitor.close()
+            detector.return_value.detect.assert_not_called()
+        self.assertEqual(self.store.list('mine'),[])
+
     def test_monitor_samples_fresh_frames_without_heartbeat_and_suppresses_duplicates(self):
-        stream=SimpleNamespace(report_owner='mine',report_name='Camera',device_id='id',
+        stream=SimpleNamespace(report_owner='mine',report_name='Camera',device_id='id',report_detect=True,
             condition=threading.Condition(),image=b'jpeg',last_frame=time.monotonic(),stopped=threading.Event())
         server=SimpleNamespace(stream_guard=threading.Lock(),active_streams={})
         server.active_streams=[stream]
-        with patch('reports.readiness',return_value=(True,'ready')),patch('reports.Detector') as detector:
+        with patch('reports.readiness',return_value=(True,'ready')),patch('reports.RecordingService'),patch('reports.Detector') as detector:
             detector.return_value.detect.return_value=([{'kind':'person','confidence':.9,'box':[0,0,1,1]}, {'kind':'vehicle','confidence':.99,'box':[0,0,1,1]}],None)
             monitor=ReportMonitor(server,self.store);monitor.start()
             deadline=time.monotonic()+2

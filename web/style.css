@@ -746,3 +746,18 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
   .focus-mode .camera-card { height:100%; min-height:315px; }
   .focus-mode .camera-media { min-height:120px; flex:1 1 auto; }
 }
+
+.mosaic-choice { color:#9bb5cb; font-size:12px; }
+.mosaic-choice select { background:#15212f;color:#d8eaf9;border:1px solid #30445a;border-radius:7px;padding:9px; }
+
+@media(min-width:1000px) {
+  .focus-mode .camera-grid.mosaic-12 { grid-auto-rows:minmax(290px,calc((100dvh - 155px) / 3)); }
+  .focus-mode .mosaic-12 .camera-card { min-height:290px; }
+  .focus-mode .mosaic-12 .camera-media { min-height:100px; }
+}
+
+.person-detector { font-size:11px; padding:6px 9px; background:#172433; border:1px solid #395269;color:#bdd2e6; }
+.person-detector.selected { color:#082d24; background:#40d9b6; border-color:#40d9b6; }
+.report-tabs { display:flex;gap:10px; margin:20px 0; }
+.report-tabs button.selected { background:#40d9b6;color:#082d24; }
+.report-card video { width:100%; display:block; background:#000; }
