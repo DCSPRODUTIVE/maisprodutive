@@ -108,7 +108,9 @@ Espere **Adaptador de imagem preparado**. Esse comando valida o instalador e
 quatro DLLs por SHA-256, extrai somente essas DLLs e compila o código C deste
 repositório. Não executa o SDK nessa preparação. Os binários ficam em `.local/video`,
 ignorados pelo Git; o perfil de login existente é preservado. Repetir a mesma
-preparação é permitido; uma versão diferente é preservada e exige renomear a pasta.
+preparação é permitido. Para atualizar uma versão anterior íntegra, use
+`python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update`; o adaptador anterior
+é preservado em `.local/video-backup-*`. Arquivos desconhecidos não são movidos.
 
 ```sh
 python3 server.py --port 8085
@@ -124,7 +126,10 @@ Não há nova tentativa automática nem novo envio de login/senha à API.
 A captura registra a sessão no SDK, abre a câmera solicitada e espera no máximo
 25 segundos por um quadro (45 segundos para todo o processo nativo e mais 15 para
 conversão). Falhas de registro, ausência de quadro e formato incompatível são
-diferenciadas. Somente YUV420 planar é suportado nesta primeira versão. O player
+diferenciadas. São aceitos os códigos planares 0 e 1 usados pelo renderizador original.
+Chamadas incompletas no início não encerram o teste: o adaptador espera um
+quadro válido até o limite de tempo. Falhas incluem diagnóstico numérico de
+formato e dimensões, sem dados da conta. O player
 não envia áudio, comandos PTZ ou alterações de configurações.
 
 O processo nativo recebe a sessão pela entrada padrão, sem tokens em argumentos
@@ -145,7 +150,7 @@ node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-São 53 testes Python e 8 testes de interface, com dados sintéticos. O perfil
+São 57 testes Python e 8 testes de interface, com dados sintéticos. O perfil
 padrão fica dentro do checkout; `YOOSEE_DESKTOP_PROFILE` permite indicar outro
 caminho local. Não versione o perfil nem os binários do fabricante.
 

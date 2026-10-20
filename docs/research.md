@@ -319,3 +319,40 @@ de tokens em argumentos/respostas e identificação da imagem como captura pontu
 Falta o teste do usuário no Chromebook com uma câmera real. O primeiro quadro,
 se recebido, permitirá avaliar o próximo passo de transmissão contínua. Áudio,
 PTZ, gravação, detecção de pessoas e alertas não foram implementados.
+
+## Correção após rejeição do primeiro quadro
+
+O usuário executou o adaptador no Chromebook e recebeu o erro antigo de formato.
+Naquela versão, o mesmo código 16 agrupava formato, dimensões, planos ausentes e
+falha de escrita; a mensagem não permite afirmar qual desses casos ocorreu, nem
+que um quadro decodificável tenha sido recebido.
+
+A revisão de `0x1401ae090` no executável original identificou a tabela de dispatch
+em `0x1401ae1b4`: tanto o código 0 quanto 1 seguem o ramo `0x1401ae105`, que
+encaminha três planos, largura e meias larguras ao renderizador. A ponte anterior
+aceitava somente 0. O novo adaptador aceita ambos pelo mesmo caminho de planos,
+conforme o renderer original, sem tentar adivinhar outros formatos.
+
+A rotina H264 `0x1800209a0..0x180020d12` confirma que os planos fornecidos pelo SDK
+são compactados a partir do AVFrame, removendo pitches de origem quando necessário.
+Escreve os tamanhos dos planos em AVData+8/+0x18/+0x28 e dimensões em +0x40/+0x44.
+A ponte agora valida esses tamanhos antes de ler os planos. Dados iniciais
+incompletos são ignorados dentro do mesmo limite de 25 segundos, sem novo login,
+registro ou conexão de câmera. O primeiro erro não encerra mais a captura.
+
+Erros distintos: 17 formato, 18 dimensões, 19 planos ausentes, 20 tamanho de buffer,
+21 transferência. Se nenhum quadro válido chegar após callbacks rejeitados, a
+ponte emite somente `MPVD1 motivo formato largura altura`. O servidor aceita
+apenas esse esquema numérico completo, com motivo igual ao exit code, sem aceitar
+endereços, mensagens do fabricante ou conteúdo de sessão.
+
+`configure_video.py --update` recompila e troca somente uma instalação anterior
+íntegra com o conjunto exato de arquivos conhecidos. Preserva a versão anterior
+em `.local/video-backup-*`; arquivos extras ou hashes inconsistentes bloqueiam a
+troca. Uma falha de compilação deixa a versão anterior intacta.
+
+Validação: 57 testes Python e 8 de interface; compilação C com warnings como erros;
+testes nativos offline no Wine para formato 0, formato 1, callback inicial sem
+init seguido de quadro válido e carregamento do player real. Os testes de quadro
+usam pixels sintéticos, não imagens de câmeras. A correção ainda precisa do teste
+real do usuário; não se afirma que esse resultado já resolve a recepção P2P.

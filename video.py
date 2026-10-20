@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -40,7 +41,7 @@ def readiness():
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         return False, 'Execute configure_video.py com o instalador 1.0.0.8 para preparar o adaptador de imagem.'
-    return True, 'Adaptador preparado. A captura real ainda precisa ser testada nesta câmera.'
+    return True, 'Adaptador preparado. Use Testar imagem em uma câmera para verificar a captura.'
 
 
 def capture(account, device_id):
@@ -76,8 +77,17 @@ def capture(account, device_id):
         reasons = {11: 'Não foi possível carregar a biblioteca local.',
                    14: 'O SDK não aceitou o registro da sessão.',
                    15: 'A conexão P2P não entregou um quadro em 25 segundos.',
-                   16: 'A câmera entregou um formato de imagem ainda não suportado.'}
-        raise IntegrationError('video_native', reasons.get(process.returncode, 'O adaptador nativo não entregou uma imagem válida.') + ' O login HTTP continua separado deste teste.')
+                   16: 'O adaptador anterior rejeitou os dados do quadro.',
+                   17: 'O SDK informou um formato de imagem ainda não suportado.',
+                   18: 'O quadro chegou com dimensões inválidas ou não suportadas.',
+                   19: 'O quadro chegou sem todos os planos de imagem.',
+                   20: 'Os buffers do quadro não têm os tamanhos esperados.',
+                   21: 'Não foi possível transferir o quadro do adaptador.'}
+        diagnostic = re.fullmatch(rb'MPVD1 (17|18|19|20) (-?[0-9]{1,11}) (-?[0-9]{1,11}) (-?[0-9]{1,11})\n', raw)
+        details = ''
+        if diagnostic and int(diagnostic[1]) == process.returncode:
+            details = f' Diagnóstico: formato {int(diagnostic[2])}; dimensões {int(diagnostic[3])}x{int(diagnostic[4])}.'
+        raise IntegrationError('video_native', reasons.get(process.returncode, 'O adaptador nativo não entregou uma imagem válida.') + details + ' O login HTTP continua separado deste teste.')
     try:
         result = subprocess.run([shutil.which('ffmpeg'), '-hide_banner', '-loglevel', 'error',
                                  '-protocol_whitelist', 'pipe', '-f', 'yuv4mpegpipe', '-i', 'pipe:0',

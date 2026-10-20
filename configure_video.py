@@ -10,7 +10,7 @@ from desktop import INSTALLER_SHA256
 from video import DLL_HASHES, NATIVE, ROOT, checksum
 
 
-def prepare(source):
+def prepare(source, update=False):
     source = Path(source).expanduser().resolve()
     if not source.is_file() or source.stat().st_size > 120*1024*1024 or checksum(source) != INSTALLER_SHA256:
         raise ValueError('Use o instalador original 1.0.0.8 analisado, com as três partes completas.')
@@ -18,16 +18,20 @@ def prepare(source):
     compiler = shutil.which('x86_64-w64-mingw32-gcc')
     if not sevenzip or not compiler:
         raise ValueError('Instale primeiro: sudo apt install -y 7zip gcc-mingw-w64-x86-64 wine ffmpeg')
+    previous = False
     if NATIVE.exists():
         try:
             manifest = json.loads((NATIVE / 'manifest.json').read_text())
             expected = DLL_HASHES | {'yoosee_snapshot.exe': manifest['bridge_sha256']}
-            if manifest['source_sha256'] == checksum(ROOT / 'native' / 'yoosee_snapshot.c') and all(checksum(NATIVE / name) == digest for name, digest in expected.items()):
+            intact = not NATIVE.is_symlink() and all(not (NATIVE / name).is_symlink() and checksum(NATIVE / name) == digest for name, digest in expected.items())
+            if intact and manifest['source_sha256'] == checksum(ROOT / 'native' / 'yoosee_snapshot.c'):
                 print('Adaptador de imagem já estava preparado. Reinicie o servidor e use Testar imagem.')
                 return
+            previous = intact and {p.name for p in NATIVE.iterdir()} == set(expected) | {'manifest.json'}
         except (OSError, ValueError, KeyError, TypeError):
             pass
-        raise ValueError('A pasta .local/video já existe com outra versão. Preserve-a ou renomeie-a antes de preparar novamente.')
+        if not (update and previous):
+            raise ValueError('O adaptador existente foi preservado. Para atualizar uma versão íntegra, execute novamente com --update; arquivos desconhecidos exigem revisão manual.')
     NATIVE.parent.mkdir(exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(dir=NATIVE.parent, prefix='video-build-') as tmp:
         tmp = Path(tmp)
@@ -51,9 +55,20 @@ def prepare(source):
         manifest = {'source_sha256': checksum(ROOT / 'native' / 'yoosee_snapshot.c'),
                     'bridge_sha256': checksum(staged / 'yoosee_snapshot.exe')}
         (staged / 'manifest.json').write_text(json.dumps(manifest))
-        if NATIVE.exists():
+        backup = None
+        if previous:
+            backup = Path(tempfile.mkdtemp(dir=NATIVE.parent, prefix='video-backup-'))
+            NATIVE.rename(backup)
+        elif NATIVE.exists():
             raise ValueError('A pasta .local/video foi criada por outro processo. Nenhum arquivo existente foi substituído.')
-        staged.rename(NATIVE)
+        try:
+            staged.rename(NATIVE)
+        except OSError:
+            if backup is not None and not NATIVE.exists():
+                backup.rename(NATIVE)
+            raise
+        if backup is not None:
+            print('Versão anterior preservada em '+str(backup))
     print('Adaptador de imagem preparado. Reinicie o servidor e use Testar imagem em uma câmera.')
     print('O teste executará a biblioteca Windows pelo Wine. Compatibilidade P2P real ainda precisa ser confirmada.')
 
@@ -61,9 +76,10 @@ def prepare(source):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('source', nargs='?', default=str(Path.home() / 'Yoosee-1.0.0.8.exe'))
+    parser.add_argument('--update', action='store_true', help='Atualizar adaptador íntegro, preservando a versão anterior')
     args = parser.parse_args()
     try:
-        prepare(args.source)
+        prepare(args.source, update=args.update)
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(str(exc) if isinstance(exc, ValueError) else 'Não foi possível preparar o adaptador local.')
         return 1

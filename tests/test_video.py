@@ -80,3 +80,87 @@ class VideoTests(unittest.TestCase):
             with patch('video.NATIVE', root), patch('video.shutil.which', return_value='/tool'), patch('video.platform.system', return_value='Linux'), patch('video.platform.machine', return_value='x86_64'):
                 ready, _ = video.readiness()
                 self.assertFalse(ready)
+
+    def test_native_metadata_is_strictly_numeric_and_matches_exit_reason(self):
+        for raw, code, expected in (
+            (b'MPVD1 17 7 1920 1080\n', 17, 'formato 7; dimensões 1920x1080'),
+            (b'MPVD1 18 0 0 1080\n', 18, 'formato 0; dimensões 0x1080'),
+            (b'secret-session MPVD1 17 7 1920 1080\n', 17, None),
+            (b'MPVD1 17 7 1920 1080\n', 20, None),
+            (b'MPVD1 17 99999999999999999 1920 1080\n', 17, None),
+        ):
+            process = MagicMock(pid=987654321, returncode=code)
+            process.communicate.return_value = (raw, None)
+            with self.subTest(raw=raw), patch('video.readiness', return_value=(True,'')), patch('video.shutil.which', return_value='/usr/bin/wine'), patch('video.subprocess.Popen', return_value=process), patch('video.os.killpg'):
+                with self.assertRaises(IntegrationError) as error:
+                    video.capture(DesktopAccount('123','secret-session'),'device')
+                message = str(error.exception)
+                self.assertNotIn('secret-session',message)
+                if expected:
+                    self.assertIn(expected,message)
+                else:
+                    self.assertNotIn('Diagnóstico:',message)
+
+    def test_transfer_failure_is_not_reported_as_unsupported_format(self):
+        process = MagicMock(pid=987654321, returncode=21)
+        process.communicate.return_value = (b'YUV4MPEG2 partial',None)
+        with patch('video.readiness', return_value=(True,'')), patch('video.shutil.which', return_value='/usr/bin/wine'), patch('video.subprocess.Popen', return_value=process), patch('video.os.killpg'):
+            with self.assertRaises(IntegrationError) as error:
+                video.capture(DesktopAccount('123','secret'),'device')
+            self.assertIn('transferir o quadro',str(error.exception))
+            self.assertNotIn('formato',str(error.exception))
+
+
+class VideoUpdateTests(unittest.TestCase):
+    def prepare_fixture(self, directory):
+        import hashlib
+        import configure_video
+        root = Path(directory)
+        native = root/'video'
+        native.mkdir()
+        (root/'native').mkdir()
+        (root/'native'/'yoosee_snapshot.c').write_bytes(b'new-source')
+        source = root/'installer.exe'
+        source.write_bytes(b'synthetic-installer')
+        dll = b'synthetic-dll'
+        (native/'IotVideoSDK.dll').write_bytes(dll)
+        (native/'yoosee_snapshot.exe').write_bytes(b'old-bridge')
+        (native/'manifest.json').write_text(json.dumps({'source_sha256':'old-source', 'bridge_sha256':hashlib.sha256(b'old-bridge').hexdigest()}))
+        def run(args, **kwargs):
+            if args[0]=='/tools/7z':
+                dest=Path(next(s[2:] for s in args if s.startswith('-o')))
+                (dest/'IotVideoSDK.dll').write_bytes(dll)
+            else:
+                Path(args[args.index('-o')+1]).write_bytes(b'new-bridge')
+            return subprocess.CompletedProcess(args,0,b'',b'')
+        patches = [patch('configure_video.ROOT',root),patch('configure_video.NATIVE',native),
+                   patch('configure_video.INSTALLER_SHA256',hashlib.sha256(source.read_bytes()).hexdigest()),
+                   patch('configure_video.DLL_HASHES',{'IotVideoSDK.dll':hashlib.sha256(dll).hexdigest()}),
+                   patch('configure_video.shutil.which',side_effect=lambda name:'/tools/'+name),
+                   patch('configure_video.subprocess.run',side_effect=run)]
+        return configure_video, source, native, patches
+
+    def test_update_preserves_old_adapter_and_is_idempotent(self):
+        from contextlib import ExitStack, redirect_stdout
+        import io
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack, redirect_stdout(io.StringIO()):
+            module, source, native, patches = self.prepare_fixture(directory)
+            for p in patches: stack.enter_context(p)
+            module.prepare(source,update=True)
+            self.assertEqual((native/'yoosee_snapshot.exe').read_bytes(),b'new-bridge')
+            backups=list(Path(directory).glob('video-backup-*'))
+            self.assertEqual(len(backups),1)
+            self.assertEqual((backups[0]/'yoosee_snapshot.exe').read_bytes(),b'old-bridge')
+            module.prepare(source,update=True)
+            self.assertEqual(len(list(Path(directory).glob('video-backup-*'))),1)
+
+    def test_update_refuses_unknown_files_and_preserves_old_adapter(self):
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            module, source, native, patches = self.prepare_fixture(directory)
+            for p in patches: stack.enter_context(p)
+            (native/'keep.txt').write_text('keep this')
+            with self.assertRaises(ValueError):module.prepare(source,update=True)
+            self.assertEqual((native/'keep.txt').read_text(),'keep this')
+            self.assertEqual((native/'yoosee_snapshot.exe').read_bytes(),b'old-bridge')
+            self.assertFalse(list(Path(directory).glob('video-backup-*')))
