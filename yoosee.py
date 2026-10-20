@@ -34,19 +34,15 @@ class IntegrationError(Exception):
 
 @dataclass(frozen=True, repr=False)
 class Config:
-    app_id: str
-    app_token: str
+    app_id: str = ""
+    app_token: str = ""
     package: str = "com.yoosee"
     version: str = "00.00.00.01"
     host: str = HOSTS[0]
 
     @classmethod
     def from_environment(cls):
-        missing = [n for n in ("YOOSEE_APP_ID", "YOOSEE_APP_TOKEN") if not os.getenv(n)]
-        if missing:
-            raise IntegrationError("configuration", "Falta configurar " + ", ".join(missing)
-                                   + ". O SDK exige uma identificação de aplicativo válida.")
-        return cls(os.environ["YOOSEE_APP_ID"], os.environ["YOOSEE_APP_TOKEN"],
+        return cls(os.getenv("YOOSEE_APP_ID", ""), os.getenv("YOOSEE_APP_TOKEN", ""),
                    os.getenv("YOOSEE_PACKAGE", "com.yoosee"),
                    os.getenv("YOOSEE_APP_VERSION", "00.00.00.01"),
                    os.getenv("YOOSEE_API_HOST", HOSTS[0]))
@@ -54,9 +50,13 @@ class Config:
     def __post_init__(self):
         if self.host not in HOSTS:
             raise IntegrationError("configuration", "Servidor fora da lista documentada pelo SDK.")
-        if not self.app_id or not self.app_token:
-            raise IntegrationError("configuration", "Identificação do aplicativo ausente.")
+        if bool(self.app_id) != bool(self.app_token):
+            raise IntegrationError("configuration", "Configuração SDK incompleta: YOOSEE_APP_ID e YOOSEE_APP_TOKEN devem ser configurados juntos, ou ambos removidos para o teste experimental da conta.")
         packed_version(self.version)
+
+    @property
+    def auth_mode(self) -> str:
+        return "sdk" if self.app_id else "account-experimental"
 
 
 def packed_version(version: str) -> str:
@@ -104,7 +104,8 @@ def assert_success(payload: dict):
     # Never assume a response without an explicit success code was accepted.
     if str(code) != "0":
         safe_code = str(code) if re.fullmatch(r"[0-9A-Fa-f]{1,12}", str(code)) else "desconhecido"
-        raise IntegrationError("provider", "Yoosee não aceitou a operação (código " + safe_code + ").")
+        explanation = " O serviço informou parâmetros obrigatórios ausentes; isso não confirma erro na sua senha." if safe_code == "10901020" else ""
+        raise IntegrationError("provider", "Yoosee não aceitou a operação (código " + safe_code + ")." + explanation)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -162,10 +163,14 @@ class YooseeClient:
         self.anonymous_id = secrets.token_hex(16)
 
     def public_params(self) -> dict:
-        return {"AppID": self.config.app_id, "AppToken": self.config.app_token,
-                "Language": "pt-BR", "AppOS": "3", "AppName": self.config.package,
-                "AppVersion": packed_version(self.config.version), "PackageName": self.config.package,
-                "ApiVersion": "1"}
+        params = {"Language": "pt-BR", "AppOS": "3", "AppName": self.config.package,
+                  "AppVersion": packed_version(self.config.version), "PackageName": self.config.package,
+                  "ApiVersion": "1"}
+        if self.config.auth_mode == "sdk":
+            params.update(AppID=self.config.app_id, AppToken=self.config.app_token)
+        # Explicit experiment: omit unknown app credentials entirely. Do not invent,
+        # extract or cycle tokens. The provider may reject this normal login request.
+        return params
 
     def login(self, username: str, password: str):
         self.account = None

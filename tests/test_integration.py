@@ -45,6 +45,35 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("password", repr(client.__dict__))
         self.assertNotIn("101", repr(client.account))
 
+    def test_account_only_login_omits_app_credentials_and_sends_once(self):
+        transport = FakeTransport(accepted())
+        client = YooseeClient(Config(), transport)
+        client.login("name@example.invalid", "password")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertNotIn("AppID", transport.calls[0][2])
+        self.assertNotIn("AppToken", transport.calls[0][2])
+        self.assertEqual(transport.calls[0][2]["User"], "name@example.invalid")
+        self.assertEqual(transport.calls[0][2]["Pwd"], "5F4DCC3B5AA765D61D8327DEB882CF99")
+        self.assertEqual(client.account.user_id, "0123")
+
+    def test_account_only_rejection_does_not_retry_or_create_session(self):
+        transport = FakeTransport({"error_code": "10901020", "error": "raw-provider-private-data"})
+        client = YooseeClient(Config(), transport)
+        with self.assertRaises(IntegrationError) as error:
+            client.login("name@example.invalid", "password")
+        self.assertIsNone(client.account)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertIn("10901020", str(error.exception))
+        self.assertNotIn("raw-provider-private-data", str(error.exception))
+
+    def test_configuration_allows_account_experiment_but_rejects_partial_sdk(self):
+        with patch.dict(os.environ, {"YOOSEE_APP_ID": "", "YOOSEE_APP_TOKEN": ""}):
+            self.assertEqual(Config.from_environment().auth_mode, "account-experimental")
+        for app_id, token in (("only-id", ""), ("", "only-token")):
+            with self.assertRaises(IntegrationError):
+                Config(app_id, token)
+        self.assertEqual(Config("test-id", "test-token").auth_mode, "sdk")
+
     def test_legacy_md5_non_ascii_truncation(self):
         # 'é' is 2 UTF-8 bytes but one Java character; SDK hashes just 0xc3.
         import hashlib
@@ -210,13 +239,42 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(self.request("/api/login", {}, headers | {"Origin": "http://attacker.invalid"})[0], 403)
         self.assertEqual(self.request("/api/login", {}, headers | {"X-CSRF-Token": "bad"})[0], 403)
 
-    def test_missing_sdk_configuration_is_explicit(self):
+    def test_partial_sdk_configuration_is_explicit(self):
         headers = self.session()
-        with patch.dict(os.environ, {"YOOSEE_APP_ID": "", "YOOSEE_APP_TOKEN": ""}):
+        with patch.dict(os.environ, {"YOOSEE_APP_ID": "partial-test-id", "YOOSEE_APP_TOKEN": ""}):
             code, _, raw = self.request("/api/login", {"username": "example", "password": "not-a-real-password"}, headers)
         self.assertEqual(code, 422)
         self.assertIn("YOOSEE_APP_ID", raw.decode())
         self.assertNotIn("not-a-real-password", raw.decode())
+
+    def test_browser_account_only_login_without_environment_keys(self):
+        headers = self.session()
+        transport = FakeTransport(accepted())
+        with patch.dict(os.environ, {"YOOSEE_APP_ID": "", "YOOSEE_APP_TOKEN": ""}), patch(
+                "server.YooseeClient", side_effect=lambda config: YooseeClient(config, transport)):
+            code, _, raw = self.request("/api/login", {"username": "test@example.invalid", "password": "not-real"}, headers)
+            self.assertEqual(code, 200)
+            self.assertNotIn("not-real", raw.decode())
+            status = json.loads(self.request("/api/status", headers={"Cookie": headers["Cookie"]})[2])
+            self.assertTrue(status["authenticated"])
+            self.assertEqual(status["auth_mode"], "account-experimental")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertNotIn("AppID", transport.calls[0][2])
+
+    def test_browser_rejected_account_only_login_keeps_account_disconnected(self):
+        headers = self.session()
+        transport = FakeTransport({"error_code": "10901020", "error": "not-for-the-browser"})
+        with patch.dict(os.environ, {"YOOSEE_APP_ID": "", "YOOSEE_APP_TOKEN": ""}), patch(
+                "server.YooseeClient", side_effect=lambda config: YooseeClient(config, transport)):
+            code, _, raw = self.request("/api/login", {"username": "test@example.invalid", "password": "not-real"}, headers)
+            self.assertEqual(code, 422)
+            self.assertIn("10901020", raw.decode())
+            self.assertNotIn("not-for-the-browser", raw.decode())
+            self.assertNotIn("not-real", raw.decode())
+            status = json.loads(self.request("/api/status", headers={"Cookie": headers["Cookie"]})[2])
+            self.assertFalse(status["authenticated"])
+            self.assertEqual(self.request("/api/devices", {}, headers)[0], 422)
+        self.assertEqual(len(transport.calls), 1)
 
     def test_browser_can_probe_without_sdk_or_account_credentials(self):
         headers = self.session()

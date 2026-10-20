@@ -144,3 +144,23 @@ conectividade implementado, e não foi adicionado como requisito obrigatório.
 a identificação de desenvolvedor, a autenticação de uma conta real e o vídeo.
 O novo botão do painel apenas testa os endpoints públicos sem credenciais; ele
 não transforma esse resultado em sucesso de login ou acesso a câmeras.
+
+## Tentativa explícita apenas com login/senha, solicitada pelo usuário
+
+O modo `account-experimental` foi acrescentado para permitir uma tentativa normal
+de autenticação da conta própria sem identificação de aplicativo. Ele omite
+`AppID`/`AppToken`, mas conserva o endpoint, os campos de conta e o hash do SDK
+histórico. Isso é uma hipótese experimental, não uma compatibilidade inferida do
+APK atual ou confirmação de que esses parâmetros são opcionais para a Yoosee.
+
+Não foram extraídas chaves de aplicativo, criados tokens falsos ou modificados
+controles de acesso do serviço. A solicitação usa a senha fornecida pelo usuário
+localmente e só aceita sucesso explícito acompanhado de sessão no formato esperado.
+Uma rejeição não tenta outro host, senha, hash alternativo ou credencial SDK.
+
+O painel agora habilita os campos quando ambos os parâmetros SDK estão ausentes,
+mostra que o modo é experimental e expõe o código de rejeição sem a resposta bruta.
+Ambos os parâmetros presentes selecionam o modo SDK original; configuração parcial
+é rejeitada antes de usar a rede. São 28 testes Python e 5 testes da interface,
+com respostas sintéticas para a autenticação. Continua pendente um envio real pelo
+usuário no Chromebook e a observação da resposta, sem compartilhar sua senha.

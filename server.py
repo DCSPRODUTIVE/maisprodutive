@@ -88,11 +88,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(503, {"message": "Limite de sessões locais atingido."})
             with state["lock"]:
                 try:
-                    Config.from_environment()
+                    config = Config.from_environment()
+                    auth_mode = config.auth_mode
                     configured, reason = True, ""
                 except IntegrationError as exc:
                     configured, reason = False, str(exc)
+                    auth_mode = "unavailable"
                 return self.send(200, {"csrf": state["csrf"], "configured": configured,
+                                       "auth_mode": auth_mode,
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
                                        "devices": state["devices"], "video_available": False}, cookie=cookie)
@@ -142,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
                     client.login(body.get("username"), body.get("password"))
                     # Separate authentication from device retrieval and video readiness.
                     state["client"] = client
-                    return self.send(200, {"message": "Login aceito. Consulte agora as câmeras da conta."})
+                    return self.send(200, {"message": "Login aceito pelo serviço. Consulte agora as câmeras da conta. O vídeo ainda não está implementado."})
                 if self.path == "/api/devices":
                     state["devices"] = []
                     if state["client"] is None:

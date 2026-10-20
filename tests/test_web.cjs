@@ -13,18 +13,21 @@ class Element {
   addEventListener(name, callback) { this.handlers[name] = callback; }
 }
 
-async function setup(networkResponse) {
+async function setup(networkResponse, statusOverride = {}, loginResponse = null) {
   const elements = new Map();
   const get = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
   const calls = [];
-  const status = { csrf: "test-csrf", configured: false, authenticated: false, devices: [], video_available: false };
+  const status = { csrf: "test-csrf", configured: true, auth_mode: "account-experimental",
+    authenticated: false, devices: [], video_available: false, ...statusOverride };
+  get("login").elements = { username: { value: "" }, password: { value: "" } };
   const fetch = async (url, options) => {
     calls.push({ url, options });
     if (url === "/api/status") return { ok: true, json: async () => status };
     if (url === "/api/connectivity") return networkResponse;
+    if (url === "/api/login" && loginResponse) return loginResponse;
     throw new Error("Unexpected request: " + url);
   };
   const code = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
@@ -33,15 +36,24 @@ async function setup(networkResponse) {
   return { get, calls };
 }
 
-test("missing integration disables credentials but leaves network diagnostic usable", async () => {
+test("account-only experiment enables login with an explicit compatibility notice", async () => {
   const { get } = await setup();
-  assert.equal(get("credentials").disabled, true);
-  assert.equal(get("connect").disabled, true);
+  assert.equal(get("credentials").disabled, false);
+  assert.equal(get("connect").disabled, false);
   assert.equal(get("network").disabled, false);
-  assert.match(get("configuration").textContent, /Login indisponível/);
+  assert.match(get("configuration").textContent, /Teste experimental/);
+  assert.match(get("configuration").textContent, /pode rejeitar/);
 });
 
-test("successful network test sends no credentials and does not enable login", async () => {
+test("invalid SDK configuration disables login and explains the configuration error", async () => {
+  const { get } = await setup(null, { configured: false, configuration_message: "Configuração SDK incompleta" });
+  assert.equal(get("credentials").disabled, true);
+  assert.equal(get("connect").disabled, true);
+  assert.match(get("configuration").textContent, /Configuração SDK incompleta/);
+  assert.equal(get("network").disabled, false);
+});
+
+test("successful network test sends no credentials and does not authenticate", async () => {
   const { get, calls } = await setup({ ok: true, json: async () => ({
     observations: [{ host: "api3.cloud-links.net", protocol_response: true, reachable: true }],
     message: "1 de 1 servidores responderam como API. Este teste não faz login nem acessa vídeos.",
@@ -53,8 +65,25 @@ test("successful network test sends no credentials and does not enable login", a
   assert.equal(calls.some((call) => call.url === "/api/login"), false);
   assert.match(get("network-results").children[0].textContent, /API respondeu/);
   assert.match(get("network-results").children[1].textContent, /não faz login/);
-  assert.equal(get("connect").disabled, true);
+  assert.equal(get("refresh").disabled, true);
   assert.equal(get("network").disabled, false);
+});
+
+test("login submits once, clears password, and displays the provider rejection", async () => {
+  const { get, calls } = await setup(null, {}, { ok: false,
+    json: async () => ({ message: "Yoosee não aceitou a operação (código 10901020)." }) });
+  const form = get("login");
+  form.elements.username.value = "test@example.invalid";
+  form.elements.password.value = "test-password";
+  const attempt = form.handlers.submit({ preventDefault() {}, currentTarget: form });
+  assert.equal(form.elements.password.value, "");
+  await attempt;
+  const submissions = calls.filter((call) => call.url === "/api/login");
+  assert.equal(submissions.length, 1);
+  assert.deepEqual(JSON.parse(submissions[0].options.body), { username: "test@example.invalid", password: "test-password" });
+  assert.match(get("message").textContent, /10901020/);
+  assert.equal(get("refresh").disabled, true);
+  assert.equal(get("connect").disabled, false);
 });
 
 test("failed network test clears stale successes and restores the test button", async () => {

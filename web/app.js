@@ -16,8 +16,11 @@ async function status() {
   csrf = data.csrf;
   currentStatus = data;
   $("configuration").textContent = data.configured
-    ? (data.authenticated ? "Conta autenticada nesta sessão." : "Pronto para testar a autenticação. Compatibilidade ainda não validada.")
-    : "Login indisponível: a integração de desenvolvedor com a Yoosee ainda precisa ser configurada. Você pode usar o teste de comunicação acima sem informar sua senha.";
+    ? (data.authenticated ? "Conta autenticada nesta sessão. O vídeo ainda não está disponível." :
+      (data.auth_mode === "account-experimental"
+        ? "Teste experimental com sua conta: uma solicitação de login, sem credenciais de desenvolvedor. A Yoosee pode rejeitar este método."
+        : "Pronto para testar a autenticação com a configuração SDK. Compatibilidade ainda não validada."))
+    : data.configuration_message;
   $("cameras").replaceChildren();
   $("empty").hidden = data.devices.length > 0;
   for (const camera of data.devices) {
@@ -76,7 +79,7 @@ $("login").addEventListener("submit", (event) => {
   const username = form.elements.username.value;
   const password = form.elements.password.value;
   form.elements.password.value = "";
-  action("/api/login", { username, password });
+  return action("/api/login", { username, password });
 });
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));

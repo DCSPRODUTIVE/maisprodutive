@@ -18,6 +18,26 @@ e posteriormente detectar pessoas e emitir alertas.
 O painel não apresenta vídeos ou câmeras simuladas. Ele só lista câmeras recebidas
 da API e informa que o vídeo permanece indisponível.
 
+## Teste experimental apenas com a conta
+
+Sem `YOOSEE_APP_ID` e `YOOSEE_APP_TOKEN`, o painel permite **Testar login
+experimental**. Digite o login e a senha da sua própria conta no painel local.
+Cada envio faz uma única solicitação ao endpoint HTTPS documentado pelo SDK antigo,
+com o hash de senha no formato desse SDK, omitindo inteiramente AppID/AppToken.
+Não há repetição automática, troca de servidor após rejeição ou uso de tokens
+extraídos de outro aplicativo.
+
+**O suporte do servidor a esse modo ainda não foi confirmado.** Permitir a
+tentativa no painel não significa que a autenticação funcionará. O serviço pode
+exigir os parâmetros de desenvolvedor ou outro protocolo. Se retornar `10901020`,
+isso indica parâmetros obrigatórios ausentes, não uma confirmação de senha errada.
+Não repita tentativas para tentar superar esse erro. Compartilhe apenas o código
+e a mensagem mostrados no painel, nunca a senha, sessões ou respostas brutas.
+
+Nenhuma conta real foi usada para validar o modo experimental. Os testes de login
+usam respostas sintéticas. Mesmo se o serviço aceitar o login e a consulta de
+câmeras, o transporte de vídeo continua não implementado.
+
 ## Executar
 
 Python 3.10 ou posterior, somente biblioteca padrão. Sem dependências para instalar.
@@ -34,7 +54,7 @@ preparado para exposição pública**. Não faça encaminhamento de porta ou exp
 remota antes de acrescentar HTTPS e autenticação de usuários. A interface de
 onboarding não oferece visualização web desse endereço local.
 
-## Configuração do SDK
+## Configuração opcional do SDK
 
 Configure no processo do servidor, usando as configurações seguras do ambiente:
 
@@ -46,13 +66,15 @@ Configure no processo do servidor, usando as configurações seguras do ambiente
 | `YOOSEE_APP_VERSION` | Versão SDK com quatro componentes; padrão `00.00.00.01`, apenas para pesquisa |
 | `YOOSEE_API_HOST` | Um dos quatro hosts documentados no cliente; padrão `api3.cloud-links.net` |
 
-O SDK publicado exige identificação de aplicativo **além do login do usuário**.
+O modo SDK publicado inclui identificação de aplicativo **além do login do usuário**.
 Não há credenciais de aplicativo válidas confirmadas neste projeto. Os valores
 de teste antigos do exemplo não são incluídos nem tratados como válidos.
 O pacote e a versão devem corresponder ao cadastro Gwell; os padrões não
 comprovam compatibilidade com o aplicativo oficial atual.
 
-Depois de configurar esses dados, o painel permite testar o login da conta própria.
+Se configurar ambos os campos, o cliente usa o modo SDK; configurar apenas um é
+erro e não provoca fallback automático para o modo experimental. Sem ambos, o
+painel permite a tentativa experimental descrita acima, sem cadastro SDK.
 A senha não é gravada no repositório, nos logs ou em armazenamento do navegador.
 As sessões ficam na memória por até 20 minutos; sair apaga a sessão local, sem
 invocar o logout remoto do aplicativo oficial. Reiniciar o servidor apaga todas.

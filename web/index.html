@@ -5,7 +5,7 @@
 <header><span class="brand">MAISPRODUTIVE</span><span class="badge">Integração experimental</span></header>
 <h1>Suas câmeras, em um lugar.</h1>
 <p class="intro">Acompanhe os testes da integração com a Yoosee, sem VPN.</p>
-<aside>Você já pode testar a comunicação com os servidores. O acesso à conta ainda depende de uma integração válida da Yoosee. Vídeo e alertas de pessoas estão pendentes.</aside>
+<aside>Você pode testar a comunicação e fazer uma tentativa experimental de login com sua própria conta. A compatibilidade ainda não foi confirmada. Vídeo e alertas de pessoas estão pendentes.</aside>
 <section class="panel"><h2>Testar a comunicação</h2>
 <p>Verifique se este computador consegue alcançar os servidores Yoosee. O teste não precisa da sua senha e pode levar até 35 segundos.</p>
 <button id="network" type="button" disabled>Testar comunicação com a Yoosee</button>
@@ -15,7 +15,7 @@
 <form id="login"><fieldset id="credentials" disabled><label>Login da conta<input name="username" autocomplete="username" required maxlength="320" placeholder="E-mail ou identificador Yoosee"></label>
 <label>Senha<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
 <p class="hint">A senha é enviada ao servidor local para autenticação na Yoosee. Não é salva neste projeto.</p>
-<button id="connect" type="submit" disabled>Testar login</button></fieldset></form>
+<button id="connect" type="submit" disabled>Testar login experimental</button></fieldset></form>
 <div class="actions"><button id="refresh" disabled>Consultar câmeras</button><button id="logout" class="secondary" disabled>Sair</button></div>
 <p id="message" role="status" aria-live="polite"></p></section>
 <section><h2>Câmeras da conta</h2><p id="empty">As câmeras aparecerão após o login e a consulta à Yoosee.</p><div id="cameras"></div></section>
