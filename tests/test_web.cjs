@@ -39,13 +39,17 @@ async function setup(networkResponse, statusOverride = {}, loginResponse = null,
     throw new Error("Unexpected request: " + url);
   };
   const code = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
-  vm.runInNewContext(code, { fetch, AbortSignal, Date: { now: () => clock },
+  vm.runInNewContext(code, { fetch, AbortSignal, Date: class extends Date { static now() { return clock; } },
     setInterval: (fn) => { intervals.push(fn); return intervals.length; },
     setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
     clearTimeout: (id) => timers.delete(id),
     document: { getElementById: get, createElement: (tag) => new Element(tag) } });
   await new Promise(setImmediate);
-  return { get, calls, timers, advance: (ms) => { clock += ms; intervals.forEach((fn) => fn()); }, runTimer: async () => {
+  return { get, calls, timers, runDelay: async (ms) => {
+    const entry=[...timers].find(([,timer])=>timer.ms===ms);
+    assert.ok(entry, `Expected timer ${ms}`);
+    timers.delete(entry[0]); await entry[1].fn();
+  }, advance: (ms) => { clock += ms; intervals.forEach((fn) => fn()); }, runTimer: async () => {
     const next = [...timers].sort((a,b) => a[1].ms-b[1].ms)[0];
     if (next) { timers.delete(next[0]); await next[1].fn(); }
   } };
@@ -70,8 +74,8 @@ test("invalid SDK configuration disables login and explains the configuration er
 
 test("imported Windows profile selects the new login label without claiming authentication", async () => {
   const { get } = await setup(null, { auth_mode: "windows-experimental" });
-  assert.equal(get("connect").textContent, "Testar login Windows");
-  assert.match(get("configuration").textContent, /Perfil Windows preparado/);
+  assert.equal(get("connect").textContent, "Entrar");
+  assert.match(get("configuration").textContent, /conta Yoosee/);
   assert.match(get("configuration").textContent, /Entre com sua conta/);
   assert.equal(get("refresh").disabled, true);
 });
@@ -282,5 +286,40 @@ test("temporary stream failure retries without login and Stop cancels pending re
   await runTimer();
   assert.equal(cardButton(get,0,'Parar').disabled,false);
   await cardButton(get,0,'Parar').handlers.click();
+  assert.equal(timers.size,0);
+});
+
+
+test("data saver closes native stream after five minutes and reopens at thirty preserving last frame", async () => {
+  const {get,calls,runTimer,runDelay,timers} = await setup(null,liveStatus,null,null,liveResponses());
+  await cardButton(get,0,'Economia de dados').handlers.click();
+  await runTimer();
+  assert.equal(get('live-count').textContent,'1');
+  await runDelay(5*60*1000);
+  assert.equal(calls.filter(c=>c.url==='/api/video/stop').length,1);
+  assert.equal(get('live-count').textContent,'0');
+  const image=descendants(get('cameras').children[0]).find(el=>el.tagName==='img');
+  assert.equal(image.hidden,false);
+  assert.ok(descendants(get('cameras').children[0]).some(el=>/ECONOMIA · PAUSADA/.test(el.textContent)));
+  await get('watch-all').handlers.click();
+  assert.equal(calls.filter(c=>c.url==='/api/video/start' && JSON.parse(c.options.body).device_id==='a').length,1);
+  await runDelay(30*60*1000);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start' && JSON.parse(c.options.body).device_id==='a').length,2);
+  await get('stop-all').handlers.click();
+  assert.equal(timers.size,0);
+});
+
+test("15-second native frame failure reconnects but economy pause cancels retries", async () => {
+  const responses=liveResponses();
+  responses['/api/video/frame']={ok:false,status:422,json:async()=>({error:'video_native',message:'A câmera parou de entregar quadros por 15 segundos.'})};
+  const {get,calls,runTimer,runDelay,timers}=await setup(null,liveStatus,null,null,responses);
+  await cardButton(get,0,'Economia de dados').handlers.click();
+  await runTimer();
+  await runDelay(5000);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,2);
+  await runTimer();
+  await runDelay(5*60*1000);
+  assert.ok(![...timers.values()].some(t=>t.ms===5000||t.ms===10000));
+  await get('stop-all').handlers.click();
   assert.equal(timers.size,0);
 });

@@ -2,6 +2,8 @@ import json
 import threading
 import time
 import types
+import tempfile
+from reports import EventStore
 import unittest
 import urllib.error
 import urllib.request
@@ -35,6 +37,9 @@ class FakeStream:
 class StreamApiTests(unittest.TestCase):
     def setUp(self):
         FakeStream.instances=[]
+        self.report_tmp=tempfile.TemporaryDirectory()
+        self.store_patch=patch('server.EventStore', return_value=EventStore(self.report_tmp.name))
+        self.store_patch.start()
         self.patch=patch('server.LiveStream',FakeStream);self.patch.start()
         self.server=Workbench(('127.0.0.1',0))
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
@@ -50,7 +55,7 @@ class StreamApiTests(unittest.TestCase):
             status=json.load(r);cookie=r.headers['Set-Cookie'].split(';')[0]
         return cookie,status['csrf'],self.server.sessions[cookie.split('=',1)[1]]
     def tearDown(self):
-        self.server.shutdown();self.server.server_close();self.thread.join();self.patch.stop()
+        self.server.shutdown();self.server.server_close();self.thread.join();self.patch.stop();self.store_patch.stop();self.report_tmp.cleanup()
     def post(self,path,body,cookie=None,csrf=None):
         headers={'Cookie':cookie or self.cookie,'X-CSRF-Token':csrf or self.csrf,'Origin':self.base,'Content-Type':'application/json'}
         request=urllib.request.Request(self.base+path,data=json.dumps(body).encode(),headers=headers)
@@ -90,6 +95,24 @@ class StreamApiTests(unittest.TestCase):
         self.assertTrue(all(s.stopped.is_set() for s in FakeStream.instances))
         self.assertEqual(len(self.server.active_streams),0)
         self.assertIsNone(self.state['client'])
+
+    def test_report_records_and_images_are_session_scoped(self):
+        self.post('/api/video/start', {'device_id':'0'})
+        code,data=self.post('/api/reports', {})
+        self.assertEqual(code,200)
+        self.assertEqual(data['events'][0]['kind'],'opened')
+        owner=__import__('hashlib').sha256(b'123').hexdigest()
+        self.server.reports.store.add(owner,'0','Camera','person',b'jpeg',.9)
+        event_id=self.post('/api/reports',{})[1]['events'][0]['id']
+        request=urllib.request.Request(self.base+'/api/reports/image/'+str(event_id),headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request) as response:self.assertEqual(response.read(),b'jpeg')
+        other_cookie,other_csrf,other_state=self.new_session()
+        other_state['client']=DesktopClient(DesktopProfile('a'*32,'b'*64))
+        other_state['client'].account=DesktopAccount('456','other-token')
+        self.assertEqual(self.post('/api/reports',{},other_cookie,other_csrf)[1]['events'],[])
+        request=urllib.request.Request(self.base+'/api/reports/image/'+str(event_id),headers={'Cookie':other_cookie})
+        with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+        self.assertEqual(error.exception.code,404)
 
     def test_active_session_renews_cookie_and_live_lease(self):
         self.post('/api/video/start', {'device_id':'0'})

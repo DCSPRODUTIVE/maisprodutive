@@ -505,3 +505,36 @@ página removem a intenção e seus timers. Erros de configuração/entrada e se
 HTTP inválida não repetem o login. O encerramento nativo aos 20 minutos continua
 limitado, seguido de nova conexão; não se promete vídeo sem intervalo nessa troca.
 O acesso do provedor não é renovado automaticamente e pode exigir novo login.
+
+## Reports e economia de dados
+
+Detecção local MobileNet-SSD via OpenCV DNN, uma inferência por amostra recente
+por câmera a cada 5 s, worker único e threads OpenCV limitadas. Fonte pública:
+https://github.com/chuanqi305/MobileNet-SSD, revisão
+bb17b6c3eef36d80be441ae8e5339be66e8e3b7a. SHA-256 deploy.prototxt:
+2d180f723b3109e21f8287f6b3c691390d07b60eed998327cd3259ffa0e50608;
+mobilenet_iter_73000.caffemodel:
+52eed8be80522c152a17fb56740de705b79881bde1a167e0e747310523685fc7.
+Arquivos baixados apenas na configuração; não são versionados. Inferência real
+com foto pública de ônibus do repositório Ultralytics retornou veículo e duas
+pessoas; não equivale a validar precisão nas câmeras do usuário.
+
+Eventos SQLite separados pelo hash do login bem-sucedido; fotos exigem sessão
+Yoosee autenticada correspondente. Registra abertura e, com detector disponível,
+presença de pessoa/veículo, caixas e confiança. Intervalo mínimo de 60 s por classe
+e câmera; não rastreia identidade nem garante registrar cada objeto distinto.
+OCR Tesseract opcional no recorte do veículo sugere padrão brasileiro, não confirma
+placa. Retenção em escrita de 30 dias/1.000 eventos por conta. Nenhuma integração
+externa de notificação foi ativada, por escolha do usuário.
+
+Economia usa timers por câmera: 5 minutos ativos em cada janela de 30. A pausa
+cancela intent/retry, fecha o stream nativo e conserva somente o último JPEG,
+marcado como pausado. O monitor não faz heartbeat, portanto não mantém um stream
+abandonado vivo nem analisa fotos antigas. Parar/logout/pagehide cancelam timers;
+recarga perde as preferências e exige nova ativação. Não há detecção na pausa.
+Testes verificam erro nativo de 15 s com retry e cancelamento desse retry na pausa.
+
+Validação final: 77 testes Python e 19 de interface passaram; Chromium verificou
+login oculto após autenticação, oito cartões sem sobreposição, visão completa,
+Reports com fotos/caixas e largura móvel sem overflow. Casos de teste usam contas
+e imagens públicas/sintéticas, não credenciais ou vídeo privado do usuário.

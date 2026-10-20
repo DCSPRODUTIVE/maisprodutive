@@ -62,7 +62,7 @@ def native_failure(code, raw=b''):
     details = ''
     if diagnostic and int(diagnostic[1]) == code:
         details = f' Diagnóstico: formato {int(diagnostic[2])}; dimensões {int(diagnostic[3])}x{int(diagnostic[4])}.'
-    return IntegrationError('video_native', reasons.get(code, 'O adaptador nativo não entregou uma imagem válida.') + details + ' O login HTTP continua separado deste teste.')
+    return IntegrationError('video_native', reasons.get(code, 'O adaptador nativo não entregou uma imagem válida.') + details)
 
 
 def capture(account, device_id):

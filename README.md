@@ -19,8 +19,12 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
 - **Confirmação real:** o usuário mostrou transmissões reais em parte do mosaico.
   A correção dos buffers e os novos modos HD/FHD ainda precisam ser testados nas
   câmeras que falhavam; testes sintéticos não substituem essa confirmação.
-- **Próxima etapa:** detecção de pessoas e carros, depois alertas. Hospedagem
-  pública, áudio, PTZ e gravação não estão implementados.
+- **Reports:** registro de câmeras abertas e fotos de detecção local de pessoas e
+  veículos. Requer instalar o modelo e OpenCV conforme abaixo. OCR de placa é
+  experimental, com sugestão não conferida. Alertas externos não estão ativos.
+- **Economia de dados:** por câmera, 5 minutos conectada e 25 pausada, preservando
+  o último quadro. As demais câmeras continuam independentes. Hospedagem pública,
+  áudio, PTZ e gravação contínua não estão implementados.
 
 A interface não contém câmeras ou vídeos simulados. Só apresenta dispositivos da
 conta e imagens recebidas pelo adaptador. Fixtures usadas nos testes não fazem
@@ -99,7 +103,7 @@ ou transmissão. Os binários do fabricante não são distribuídos pelo reposit
 
 Faça login pelo formulário local, com o e-mail e a senha da sua conta Yoosee.
 Para telefone, informe apenas os números com DDD, e país separado (**55** para
-Brasil). O botão deve indicar **Testar login Windows**. Se aparecer o modo antigo,
+Brasil). O botão indica **Entrar** e o formulário desaparece após autenticar. Se aparecer o modo antigo,
 confira a importação do perfil e reinicie o processo do servidor.
 
 ## Operação e limites
@@ -198,3 +202,75 @@ manter o monitoramento. Não feche a tampa se isso suspender o computador.
 Esta versão conserva a sessão em memória: reiniciar o servidor/computador ou
 uma invalidação do token pela Yoosee pode exigir novo login. Não há promessa de
 funcionamento ininterrupto nem recuperação de autenticação sem credenciais.
+
+## Reports: instalar detecção e registrar eventos
+
+Depois de atualizar o código, no Terminal Linux do Chromebook:
+
+```sh
+sudo apt install -y python3-opencv python3-numpy tesseract-ocr
+```
+
+```sh
+python3 configure_reports.py
+```
+
+```sh
+python3 server.py --port 8096
+```
+
+Abra http://localhost:8096, entre e mantenha as câmeras transmitindo. **Reports ↗**
+abre outra aba sem interromper o monitoramento. A instalação baixa uma única vez
+aproximadamente 23 MB do MobileNet-SSD público, em revisão fixa e com SHA-256
+verificado; imagens das câmeras não são enviadas para IA externa. Sem instalação,
+o histórico de aberturas funciona e a página explica que a detecção está inativa.
+O modelo pode gerar falsos positivos/negativos; não determina identidade.
+
+A análise usa o último quadro recente, no máximo a cada 5 segundos por câmera.
+Uma foto por câmera e categoria é registrada no máximo a cada 60 segundos para
+reduzir repetições. Esse intervalo não identifica se uma pessoa/carro é diferente
+do anterior; objetos breves podem passar entre amostras. Classes suportadas:
+pessoa, carro, ônibus, moto e trem. O OCR tenta encontrar padrão de placa brasileira
+no recorte do veículo, sem garantia de leitura: **Placa sugerida · NÃO CONFERIDA**.
+Placas pequenas ou desfocadas provavelmente não serão lidas; prefira HD/FHD para
+câmeras destinadas a isso. Não há identificação facial nem cadastro de identidades.
+
+Fotos, horário, câmera, caixas e confiança ficam em `.local/reports/events.sqlite3`,
+com acesso pelo painel autenticado e separação por conta. A senha/token não são
+salvos. Retenção: até 1.000 registros por conta e 30 dias, limpa ao gravar novo
+evento. O arquivo de banco pode ocupar espaço mesmo após expirar registros;
+SQLite reutiliza essas páginas. Faça backup desse diretório se desejar preservar
+os registros. Parar/pausar a câmera também para a produção de novos eventos dela.
+
+## Economia de dados em câmeras 4G
+
+Clique em **Economia de dados** na câmera desejada. O primeiro ciclo começa
+imediatamente: até 5 minutos conectada, seguidos de 25 minutos com conexão fechada,
+repetindo a cada 30 minutos. O quadro fica marcado **ECONOMIA · PAUSADA**, com a
+próxima abertura; ele não conta como ao vivo. Não há captura nem detecção durante
+a pausa. Em rede normal, isso reduz o tempo de vídeo em cerca de 83%, mas não
+limita o volume exato em MB nem elimina o tráfego de negociação.
+
+O erro de 15 segundos sem quadros causa reconexão automática dentro da janela
+ativa. Ao chegar a pausa, o painel cancela também as tentativas pendentes. **Parar**
+ou **Parar todas** cancela o agendamento. Desativar Economia volta à transmissão
+contínua. O agendamento dura enquanto a página estiver aberta; recarregar, sair
+ou reiniciar o servidor exige ativá-lo novamente. O computador não pode suspender.
+
+## Chromecast, Fire TV e alertas
+
+Para Chromecast/Google TV com Google Cast, coloque computador e receptor na mesma
+rede Wi-Fi e use o menu do Chrome **Transmitir** (pode ficar em Salvar e compartilhar)
+para espelhar a aba do painel. O computador continua executando o sistema. O
+endereço localhost pertence ao computador: abri-lo diretamente no receptor não
+acessa o painel. Não é necessário expor portas das câmeras.
+
+Fire TV não oferece Google Cast em todos os modelos. Pode precisar de um aplicativo
+receptor compatível com Cast, como AirScreen, cuja compatibilidade/custos dependem
+do aparelho. Não foi testado em hardware nesta versão. HDMI continua sendo a opção
+mais direta; nenhum botão no painel configura Chromecast/Fire TV automaticamente.
+
+Conforme a preferência escolhida, esta versão usa **somente Reports**. E-mail
+poderá ser integrado via SMTP com senha de aplicativo; WhatsApp exige serviço como
+a WhatsApp Business Platform e configuração/autorização na Meta. Nenhuma mensagem
+externa é enviada e nenhuma credencial desses serviços foi solicitada.

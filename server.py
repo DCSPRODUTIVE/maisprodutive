@@ -2,6 +2,8 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 import argparse
+import hashlib
+import sqlite3
 import json
 from pathlib import Path
 import secrets
@@ -12,6 +14,7 @@ from yoosee import Config, IntegrationError, YooseeClient, probe
 from desktop import DesktopClient, load_profile, profile_path
 from video import readiness as video_readiness
 from live import LiveStream
+from reports import EventStore, ReportMonitor
 
 ROOT = Path(__file__).parent
 SESSION_TTL = 20 * 60
@@ -34,6 +37,7 @@ class Workbench(ThreadingHTTPServer):
         self.video_guard = threading.BoundedSemaphore(8)
         self.active_streams = set()
         self.stream_guard = threading.Lock()
+        self.reports = ReportMonitor(self, EventStore())
         super().__init__(address, Handler)
 
     @staticmethod
@@ -51,6 +55,7 @@ class Workbench(ThreadingHTTPServer):
             stream.stop()
 
     def server_close(self):
+        self.reports.close()
         with self.stream_guard:
             streams = list(self.active_streams)
         for stream in streams:
@@ -111,16 +116,37 @@ class Handler(BaseHTTPRequestHandler):
             self.server.sessions[sid] = state
             return state, f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
 
+    @staticmethod
+    def report_owner(state):
+        return state.get("report_owner") or hashlib.sha256(state["client"].account.access_id.encode()).hexdigest()
+
     def do_GET(self):
         if not self.valid_host():
             return self.send(403, {"message": "Host não permitido."})
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
+                  "/reports": ("reports.html", "text/html; charset=utf-8"),
+                  "/reports.js": ("reports.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/icon.svg": ("icon.svg", "image/svg+xml")}
         if self.path in assets:
             filename, mime = assets[self.path]
             return self.send(200, (ROOT / "web" / filename).read_bytes(), mime)
+        if self.path.startswith("/api/reports/image/"):
+            state, cookie = self.session()
+            if state is None:
+                return self.send(403, {"message": "Entre na conta para acessar os registros."})
+            with state["lock"]:
+                if not isinstance(state["client"], DesktopClient):
+                    return self.send(403, {"message": "Entre na conta para acessar os registros."})
+                try:
+                    event_id = int(self.path.rsplit("/", 1)[1])
+                    image = self.server.reports.store.image(self.report_owner(state), event_id)
+                except (ValueError, OSError, sqlite3.Error):
+                    image = None
+            if image is None:
+                return self.send(404, {"message": "Registro não encontrado."})
+            return self.send(200, image, "image/jpeg", cookie=cookie)
         if self.path == "/api/health":
             return self.send(200, {"status": "ok", "video_available": False})
         if self.path == "/api/status":
@@ -142,7 +168,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "auth_mode": auth_mode,
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
-                                       "devices": state["devices"], "video_available": False}, cookie=cookie)
+                                       "devices": state["devices"], "video_available": False,
+                                       "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message}, cookie=cookie)
         return self.send(404, {"message": "Recurso não encontrado."})
 
     def do_POST(self):
@@ -176,6 +203,15 @@ class Handler(BaseHTTPRequestHandler):
                         "observations": observations,
                         "message": f"{answered} de {len(observations)} servidores responderam como API. Este teste não faz login nem acessa vídeos.",
                     })
+                if self.path == "/api/reports":
+                    if not isinstance(state["client"], DesktopClient):
+                        raise IntegrationError("authentication", "Entre na conta para acessar Reports.")
+                    before = body.get("before")
+                    if before is not None and (type(before) is not int or before < 1 or before > 9223372036854775807):
+                        raise IntegrationError("input", "Página de registros inválida.")
+                    return self.send(200, {"events": self.server.reports.store.list(self.report_owner(state), before),
+                                           "detection_ready": self.server.reports.ready,
+                                           "message": self.server.reports.message})
                 if self.path == "/api/logout":
                     self.server.stop_streams(state)
                     state["client"], state["devices"] = None, []
@@ -196,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                         client.login(body.get("username"), body.get("password"))
                     # Separate authentication from device retrieval and video readiness.
                     state["client"] = client
+                    identity = str(body.get("username", "")).strip().lower()
+                    if "@" not in identity:
+                        identity = str(body.get("country_code", "55")) + ":" + identity
+                    state["report_owner"] = hashlib.sha256(identity.encode()).hexdigest()
                     return self.send(200, {"message": "Login aceito pelo serviço. Consulte as câmeras para capturar uma imagem ou iniciar a transmissão experimental."})
                 if self.path == "/api/video/stop":
                     device_id = body.get("device_id")
@@ -243,7 +283,14 @@ class Handler(BaseHTTPRequestHandler):
                         state["streams"][device_id] = stream
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)
+                        stream.report_owner = self.report_owner(state)
+                        stream.report_name = next((item["name"] for item in state["devices"] if item["id"] == device_id), device_id)
                         stream.start()
+                        try:
+                            self.server.reports.store.add(stream.report_owner, device_id, stream.report_name, "opened")
+                        except (OSError, sqlite3.Error):
+                            pass
+                        self.server.reports.start()
                     except Exception:
                         state["streams"].pop(device_id, None)
                         if stream is not None and stream.worker.ident is not None:

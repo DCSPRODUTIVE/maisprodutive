@@ -4,6 +4,7 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+const economy = new Map();
 const desired = new Map();
 const qualities = new Map();
 const snapshots = new Map();
@@ -30,12 +31,13 @@ function buttons() {
   $("refresh").disabled = busy || bulk || !auth;
   $("logout").disabled = busy || !auth;
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
-  $("stop-all").disabled = busy || (!feeds.size && !desired.size && !bulk);
-  for (const { id, capture, watch, stop, quality } of cameraControls) {
+  $("stop-all").disabled = busy || (!feeds.size && !desired.size && !economy.size && !bulk);
+  for (const { id, capture, watch, stop, quality, saver } of cameraControls) {
     quality.disabled = busy || bulk || !ready;
-    capture.disabled = busy || bulk || !ready || (feeds.has(id) && !feeds.get(id).image);
+    saver.disabled = busy || bulk || !ready;
+    capture.disabled = busy || bulk || !ready || !!economy.get(id)?.paused || (feeds.has(id) && !feeds.get(id).image);
     watch.disabled = busy || bulk || !ready || feeds.has(id);
-    stop.disabled = busy || (!feeds.has(id) && !desired.has(id));
+    stop.disabled = busy || (!feeds.has(id) && !desired.has(id) && !economy.has(id));
   }
   updateMetrics();
 }
@@ -45,10 +47,46 @@ function element(tag, className, text) {
   if (text !== undefined) el.textContent = text;
   return el;
 }
+function stopEconomy(id) {
+  const schedule = economy.get(id);
+  if (schedule) { clearTimeout(schedule.pauseTimer); clearTimeout(schedule.nextTimer); }
+  economy.delete(id);
+}
+async function economyCycle(id) {
+  const schedule = economy.get(id);
+  if (!schedule) return;
+  clearTimeout(schedule.pauseTimer); clearTimeout(schedule.nextTimer);
+  schedule.paused = false;
+  schedule.nextAt = Date.now() + 30 * 60 * 1000;
+  schedule.pauseTimer = setTimeout(async () => {
+    if (economy.get(id) !== schedule) return;
+    const feed = feeds.get(id);
+    if (feed?.image) snapshots.set(id, feed.image);
+    schedule.paused = true;
+    await stopOne(id, true);
+    paint(id); buttons();
+  }, 5 * 60 * 1000);
+  schedule.nextTimer = setTimeout(() => {
+    if (economy.get(id) === schedule) return economyCycle(id);
+  }, 30 * 60 * 1000);
+  await startOne(id, true);
+  render();
+}
+async function toggleEconomy(id) {
+  if (economy.has(id)) {
+    stopEconomy(id);
+    await startOne(id);
+  } else {
+    economy.set(id, { paused: false });
+    await economyCycle(id);
+  }
+  render();
+}
 function paint(id) {
   const view = views.get(id);
   if (!view) return;
   const feed = feeds.get(id);
+  const saving = economy.get(id);
   const snapshot = snapshots.get(id);
   const image = feed ? feed.image : snapshot;
   const fresh = feed && feed.image && frameAge(feed) <= 3;
@@ -61,7 +99,11 @@ function paint(id) {
     if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
   };
   view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
-  view.overlay.textContent = feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
+  if (saving?.paused) {
+    view.badge.textContent = "ECONOMIA · PAUSADA";
+    view.caption.textContent = `Último quadro · câmera desconectada. Próxima abertura: ${new Date(saving.nextAt).toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"})}.`;
+  }
+  view.overlay.textContent = saving?.paused ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
   $("cameras").replaceChildren();
@@ -103,21 +145,25 @@ function render() {
     quality.value = qualities.get(camera.id) || "balanced";
     quality.addEventListener("change", async () => {
       qualities.set(camera.id, quality.value);
-      if (feeds.has(camera.id)) { await stopOne(camera.id); await startOne(camera.id); }
+      if (feeds.has(camera.id)) { await stopOne(camera.id, true); await startOne(camera.id); }
     });
     const group = element("div", "control-group");
     const capture = element("button", "secondary", "Capturar");
     capture.addEventListener("click", () => action("/api/video/snapshot", { device_id: camera.id }));
     const watch = element("button", "play", "Assistir");
-    watch.addEventListener("click", () => startOne(camera.id));
+    watch.addEventListener("click", () => economy.has(camera.id) ? economyCycle(camera.id) : startOne(camera.id));
     const stop = element("button", "quiet stop", "Parar");
     stop.addEventListener("click", () => stopOne(camera.id));
     group.append(watch, stop, capture);
-    controls.append(group);
+    const saver = element("button", "data-saver" + (economy.has(camera.id) ? " selected" : ""), "Economia de dados");
+    saver.setAttribute?.("aria-pressed", String(economy.has(camera.id)));
+    saver.title = "5 minutos ao vivo a cada 30 minutos; conexão fechada durante a pausa";
+    saver.addEventListener("click", () => toggleEconomy(camera.id));
+    controls.append(group, saver);
     media.append(quality);
     card.append(header, media, caption, controls);
     views.set(camera.id, { card, img, placeholder, badge, caption, overlay });
-    cameraControls.push({ id: camera.id, capture, watch, stop, quality });
+    cameraControls.push({ id: camera.id, capture, watch, stop, quality, saver });
     paint(camera.id);
     $("cameras").append(card);
   }
@@ -135,13 +181,15 @@ async function status() {
   if (data.authenticated && !wasAuthenticated) $("account-panel").open = false;
   $("session-label").textContent = data.authenticated ? "Conta conectada" : "Conta desconectada";
   $("session-dot").className = data.authenticated ? "status-dot connected" : "status-dot";
-  $("connect").textContent = data.auth_mode === "windows-experimental" ? "Testar login Windows" : "Testar login experimental";
+  $("connect").textContent = "Entrar";
+  $("login").hidden = !!data.authenticated;
   $("configuration").textContent = data.configured ? data.authenticated
     ? "Conta conectada. Consulte as câmeras e escolha quais deseja acompanhar."
-    : data.auth_mode === "windows-experimental" ? "Perfil Windows preparado. Entre com sua conta para acessar as câmeras."
+    : data.auth_mode === "windows-experimental" ? "Entre com sua conta Yoosee para acessar as câmeras."
     : data.auth_mode === "account-experimental" ? "Modo antigo experimental. Para testar a API identificada no Windows, importe primeiro o instalador conforme as instruções do projeto."
     : "Pronto para testar a autenticação com a configuração SDK. Compatibilidade ainda não validada." : data.configuration_message;
   $("snapshot-status").textContent = data.auth_mode === "windows-experimental" ? data.snapshot_ready ? "Até 8 câmeras simultâneas. Selecione Assistir ou abra o mosaico." : data.snapshot_message || "" : "";
+  if (data.detection_message) $("snapshot-status").textContent += " " + data.detection_message;
   render();
 }
 async function post(path, body, keepalive = false) {
@@ -176,16 +224,18 @@ function reconnect(id, error) {
   const delay = Math.min(60000, 5000 * 2 ** Math.min(intent.attempts++, 4));
   errors.set(id, `${error.message} Nova tentativa em ${delay / 1000}s.`);
   intent.timer = setTimeout(() => {
-    if (desired.get(id) === intent) startOne(id, intent.mosaic, true);
+    if (desired.get(id) === intent) return startOne(id, intent.mosaic, true);
   }, delay);
 }
 function cancelAll() {
+  for (const id of [...economy.keys()]) stopEconomy(id);
   for (const id of [...desired.keys()]) forget(id);
   batchToken++;
   bulk = false;
   for (const id of [...feeds.keys()]) cancelOne(id);
 }
-async function stopOne(id) {
+async function stopOne(id, preserveEconomy = false) {
+  if (!preserveEconomy) stopEconomy(id);
   forget(id);
   const feed = cancelOne(id);
   paint(id); buttons();
@@ -234,6 +284,7 @@ async function startAll() {
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
   for (const camera of (currentStatus?.devices || []).slice(0, 8)) {
     if (token !== batchToken) break;
+    if (economy.has(camera.id)) continue;
     await startOne(camera.id, true);
   }
   if (token === batchToken) { bulk = false; $("message").textContent = "Mosaico iniciado. Cada câmera recebe imagens de forma independente."; buttons(); }
@@ -347,9 +398,10 @@ $("logout").addEventListener("click", () => { $("login").reset(); action("/api/l
 function setFocus(value) {
   focused = value;
   $("dashboard").className = focused ? "focus-mode" : "";
-  $("focus-mode").textContent = focused ? "⛶ Visão completa" : "⛶ Modo foco";
+  $("focus-mode").textContent = focused ? "⛶ Sair da visão completa" : "⛶ Visão completa";
 }
 $("focus-mode").addEventListener("click", () => setFocus(!focused));
+$("tv-exit").addEventListener("click", () => setFocus(false));
 $("camera-search").addEventListener("input", render);
 $("watch-all").addEventListener("click", startAll);
 $("stop-all").addEventListener("click", stopAll);
