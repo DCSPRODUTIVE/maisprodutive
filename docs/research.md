@@ -604,3 +604,25 @@ real H.264 com duração reduzida de teste e finalização parcial em pausa, exc
 após 5/30 dias e cancelamento dos timers de economia. Chromium validou gate real
 local com senha de teste, mosaico de 12 sem sobreposição e reprodução H.264 na aba
 Vídeos. Contas/câmeras do teste são simuladas; nenhum túnel público foi iniciado.
+
+## Serviços de inicialização
+
+configure_startup.py gera dcs-control.service e dcs-tunnel.service como usuário
+não root, com HOME explícito, caminhos/argumentos escapados para systemd,
+Restart=always, RestartSec=5 e KillMode=control-group. Usa o túnel permanente
+existente, não o gerador de URLs temporárias. Antes de instalar, confere gate,
+configuração do túnel/domínio/porta, presença de systemd e conflito com servidor
+manual. Arquivos de serviço não contêm senhas nem tokens; cloudflared lê seu
+arquivo de configuração usual. --install solicita sudo apenas para instalação e
+gestão de serviços; --uninstall remove os dois serviços sem excluir dados locais.
+
+A instalação não foi executada nesta nuvem e não altera o ChromeOS hospedeiro.
+Serviços só iniciam quando o ambiente Linux iniciar; não existe promessa de
+inicialização da VM Linux pelo ChromeOS. Sessão Yoosee e monitoramento continuam
+dependendo de login e de página aberta após reiniciar, conforme arquitetura atual.
+
+Validação: três testes do instalador verificam usuário, reinício automático,
+escaping e leitura do config sem credenciais. systemd-analyze verify aprovou os
+dois arquivos gerados, sem instalação/inicialização de serviços na nuvem. A suíte
+Python completa passou com 92 testes. A configuração real depende do systemd do
+Chromebook e deve ser aplicada executando o instalador naquele computador.

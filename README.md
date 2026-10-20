@@ -314,3 +314,17 @@ continua restrito a loopback; a conexão externa chega pelo túnel HTTPS.
 As preferências de Economia de dados e o mosaico 8/12 são salvos no banco local
 por conta e recuperados em outros acessos após login. A opção de 12 amplia a
 capacidade do servidor; uso real simultâneo depende do computador e da conexão.
+
+## Inicialização automática
+
+Com o túnel permanente já funcionando, pare os processos manuais e execute
+`python3 configure_startup.py --install` como seu usuário habitual. O instalador
+prepara e instala dois serviços systemd, que iniciam com o Linux e reiniciam em
+caso de falha. Pode fechar os terminais após conferir duas linhas active em
+`systemctl is-active dcs-control.service dcs-tunnel.service`.
+
+[Instruções completas e remoção](docs/remote-access.md#iniciar-servidor-e-túnel-automaticamente-no-linux).
+No Chromebook pode ser necessário abrir o Terminal uma vez para iniciar o Linux.
+A senha da Yoosee não é armazenada: o login e a abertura do painel continuam
+necessários após reiniciar o servidor. As preferências das câmeras permanecem
+salvas. Atualizações de código exigem reiniciar os serviços.

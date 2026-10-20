@@ -88,3 +88,73 @@ produzem esses registros. As fotos duram até 30 dias (máximo 1.000 por conta),
 os vídeos de até dois minutos duram até 5 dias. Gravar não abre uma conexão extra
 com a câmera. Pausa de economia, desligamento ou desativação encerra o clipe com o
 trecho disponível; não prolonga o consumo de 4G.
+
+## Iniciar servidor e túnel automaticamente no Linux
+
+Para o túnel permanente `torre-dcs` e o domínio já configurado
+`https://cameras.maisprodutive.com.br`, o instalador cria dois serviços systemd.
+Eles iniciam quando o Linux inicia, usam seu usuário habitual e reiniciam em caso
+de falha. Não usam o túnel temporário e não dependem de terminais abertos.
+
+Primeiro pare os dois processos manuais com Ctrl+C em seus terminais. Execute
+um comando por vez, sem colocar sudo antes de python3:
+
+```sh
+cd ~/maisprodutive
+```
+
+```sh
+git pull origin main
+```
+
+```sh
+python3 configure_startup.py --install
+```
+
+O comando prepara os arquivos em `.local/startup`, verifica senha de entrada e
+configuração do túnel e solicita sudo somente para instalar os serviços do Linux.
+Não pede nem salva senha da Yoosee, token do túnel ou senha do painel. A instalação
+usa a senha de painel em `.local/access.json` e o túnel em
+`~/.cloudflared/config.yml`, que já precisam estar configurados.
+
+Confira o resultado:
+
+```sh
+systemctl is-active dcs-control.service dcs-tunnel.service
+```
+
+Devem aparecer duas linhas `active`. Depois disso pode fechar os terminais e
+abrir o endereço fixo. Não execute também os comandos manuais ou remote_access.py
+na mesma porta. Se aparecer erro, compartilhe apenas a mensagem, sem arquivos de
+credenciais ou tokens.
+
+**No Chromebook:** esses serviços iniciam dentro do ambiente Linux. Eles não
+podem forçar o ChromeOS a iniciar a máquina Linux após ligar o computador. Se o
+Linux não iniciar automaticamente no seu aparelho, abra o aplicativo Terminal
+uma vez; depois os serviços iniciam sem comandos. Não há mudança no endereço fixo.
+A aba do navegador precisa ser aberta para acompanhar as câmeras e executar seus
+ciclos. O login Yoosee continua necessário após reiniciar o servidor: as sessões
+são mantidas em memória e a senha da conta não é armazenada. O instalador não
+promete monitoramento completamente autônomo após ligar o ChromeOS.
+
+Para aplicar uma atualização de código aos serviços, após git pull:
+
+```sh
+sudo systemctl restart dcs-control.service dcs-tunnel.service
+```
+
+Para consultar uma falha do sistema:
+
+```sh
+systemctl status dcs-control.service dcs-tunnel.service --no-pager
+```
+
+Para desfazer a inicialização automática, sem apagar configurações ou Reports:
+
+```sh
+python3 configure_startup.py --uninstall
+```
+
+Se o Linux não estiver executando systemd, o instalador informa isso e não instala
+serviços. Nesse caso, é necessário adaptar a inicialização ao ambiente mostrado
+pelo aparelho; não substitua isso por comandos que executem o sistema como root.
