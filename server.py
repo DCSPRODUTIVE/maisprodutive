@@ -11,6 +11,7 @@ import time
 from yoosee import Config, IntegrationError, YooseeClient, probe
 from desktop import DesktopClient, load_profile, profile_path
 from video import readiness as video_readiness
+from live import LiveStream
 
 ROOT = Path(__file__).parent
 SESSION_TTL = 20 * 60
@@ -28,10 +29,35 @@ class Workbench(ThreadingHTTPServer):
     def __init__(self, address):
         if address[0] not in ("127.0.0.1", "localhost"):
             raise ValueError("Use loopback; hospedagem pública exige autenticação e HTTPS adicionais.")
-        super().__init__(address, Handler)
         self.sessions = {}
         self.guard = threading.Lock()
-        self.video_guard = threading.Lock()
+        self.video_guard = threading.BoundedSemaphore(8)
+        self.active_streams = set()
+        self.stream_guard = threading.Lock()
+        super().__init__(address, Handler)
+
+    @staticmethod
+    def stop_streams(state, device_id=None):
+        streams = state.get("streams", {})
+        if device_id is None:
+            selected = list(streams.values())
+            streams.clear()
+        else:
+            stream = streams.pop(device_id, None)
+            selected = [stream] if stream is not None else []
+        for stream in selected:
+            stream.stop(wait=False)
+        for stream in selected:
+            stream.stop()
+
+    def server_close(self):
+        with self.stream_guard:
+            streams = list(self.active_streams)
+        for stream in streams:
+            stream.stop(wait=False)
+        for stream in streams:
+            stream.stop()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -67,6 +93,7 @@ class Handler(BaseHTTPRequestHandler):
             now = time.monotonic()
             for key, state in list(self.server.sessions.items()):
                 if state["expires"] <= now:
+                    self.server.stop_streams(state)
                     del self.server.sessions[key]
             state = self.server.sessions.get(sid)
             if state:
@@ -76,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = secrets.token_urlsafe(32)
             state = {"csrf": secrets.token_urlsafe(32), "client": None, "devices": [],
                      "expires": now + SESSION_TTL, "last_login": 0,
-                     "last_probe": 0, "lock": threading.Lock()}
+                     "last_probe": 0, "streams": {}, "lock": threading.Lock()}
             self.server.sessions[sid] = state
             return state, f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
 
@@ -85,7 +112,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"message": "Host não permitido."})
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                  "/style.css": ("style.css", "text/css; charset=utf-8")}
+                  "/style.css": ("style.css", "text/css; charset=utf-8"),
+                  "/icon.svg": ("icon.svg", "image/svg+xml")}
         if self.path in assets:
             filename, mime = assets[self.path]
             return self.send(200, (ROOT / "web" / filename).read_bytes(), mime)
@@ -106,6 +134,7 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot_ready, snapshot_message = video_readiness() if auth_mode == "windows-experimental" else (False, "A captura exige o perfil Windows.")
                 return self.send(200, {"csrf": state["csrf"], "configured": configured,
                                        "snapshot_ready": snapshot_ready, "snapshot_message": snapshot_message,
+                                       "stream_device_ids": [key for key, stream in state.get("streams", {}).items() if not stream.stopped.is_set()],
                                        "auth_mode": auth_mode,
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
@@ -144,6 +173,7 @@ class Handler(BaseHTTPRequestHandler):
                         "message": f"{answered} de {len(observations)} servidores responderam como API. Este teste não faz login nem acessa vídeos.",
                     })
                 if self.path == "/api/logout":
+                    self.server.stop_streams(state)
                     state["client"], state["devices"] = None, []
                     state["csrf"] = secrets.token_urlsafe(32)
                     return self.send(200, {"message": "Sessão local apagada."})
@@ -151,6 +181,7 @@ class Handler(BaseHTTPRequestHandler):
                     if time.monotonic() - state["last_login"] < 5:
                         return self.send(429, {"message": "Aguarde alguns segundos antes de tentar novamente."})
                     state["last_login"] = time.monotonic()
+                    self.server.stop_streams(state)
                     state["client"], state["devices"] = None, []
                     config = current_config()
                     if config.auth_mode == "windows-experimental":
@@ -161,18 +192,76 @@ class Handler(BaseHTTPRequestHandler):
                         client.login(body.get("username"), body.get("password"))
                     # Separate authentication from device retrieval and video readiness.
                     state["client"] = client
-                    return self.send(200, {"message": "Login aceito pelo serviço. Consulte agora as câmeras da conta. O vídeo ainda não está implementado."})
+                    return self.send(200, {"message": "Login aceito pelo serviço. Consulte as câmeras para capturar uma imagem ou iniciar a transmissão experimental."})
+                if self.path == "/api/video/stop":
+                    device_id = body.get("device_id")
+                    if device_id is not None and not isinstance(device_id, str):
+                        raise IntegrationError("input", "Câmera inválida.")
+                    target = state["streams"].get(device_id) if device_id is not None else None
+                    if target is None or body.get("stream_id") is None or target.handle == body["stream_id"]:
+                        self.server.stop_streams(state, device_id)
+                    return self.send(200, {"message": "Transmissão encerrada."})
+                if self.path == "/api/video/frame":
+                    device_id = body.get("device_id")
+                    if not isinstance(device_id, str):
+                        raise IntegrationError("input", "Selecione uma câmera da transmissão.")
+                    stream = state["streams"].get(device_id)
+                    if stream is None or state["client"] is None:
+                        raise IntegrationError("authentication", "Inicie a transmissão desta câmera nesta sessão primeiro.")
+                    if body.get("stream_id") != stream.handle:
+                        raise IntegrationError("video_stopped", "Esta transmissão foi substituída. Inicie novamente.")
+                    return self.send(200, stream.frame(body.get("after", 0), wait=False))
+                if self.path == "/api/video/start":
+                    client = state["client"]
+                    if not isinstance(client, DesktopClient):
+                        raise IntegrationError("authentication", "Entre pelo perfil Windows e consulte as câmeras primeiro.")
+                    device_id = body.get("device_id")
+                    client.require_device(device_id)
+                    previous = state["streams"].get(device_id)
+                    if previous is not None and not previous.stopped.is_set():
+                        return self.send(200, {"device_id": device_id, "stream_id": previous.handle, "message": "Esta câmera já está em transmissão."})
+                    self.server.stop_streams(state, device_id)
+                    if not self.server.video_guard.acquire(blocking=False):
+                        raise IntegrationError("video_busy", "O limite de 8 transmissões simultâneas foi atingido. Pare uma câmera antes de iniciar outra.")
+                    stream = None
+                    def release_slot():
+                        with self.server.stream_guard:
+                            self.server.active_streams.discard(stream)
+                        self.server.video_guard.release()
+                    try:
+                        stream = LiveStream(client.account, device_id, state["expires"], release_slot)
+                        state["streams"][device_id] = stream
+                        with self.server.stream_guard:
+                            self.server.active_streams.add(stream)
+                        stream.start()
+                    except Exception:
+                        state["streams"].pop(device_id, None)
+                        if stream is not None and stream.worker.ident is not None:
+                            stream.stop()
+                        else:
+                            release_slot()
+                        raise
+                    return self.send(200, {"device_id": device_id, "stream_id": stream.handle, "message": "Conectando à câmera. Até 5 imagens/s, sem áudio."})
                 if self.path == "/api/video/snapshot":
                     client = state["client"]
                     if not isinstance(client, DesktopClient):
                         raise IntegrationError("authentication", "Entre pelo perfil Windows e consulte as câmeras primeiro.")
+                    device_id = body.get("device_id")
+                    client.require_device(device_id)
+                    stream = state["streams"].get(device_id)
+                    if stream is not None and not stream.stopped.is_set():
+                        data = stream.frame(0, wait=False)
+                        if not data["image"]:
+                            raise IntegrationError("video_waiting", "Aguarde o primeiro quadro da transmissão antes de capturar.")
+                        return self.send(200, {"image": data["image"], "message": "Captura obtida da transmissão desta câmera."})
                     if not self.server.video_guard.acquire(blocking=False):
-                        raise IntegrationError("video_busy", "Já existe uma captura em andamento. Aguarde sua conclusão.")
+                        raise IntegrationError("video_busy", "Todas as 8 conexões estão em uso. Pare uma câmera para capturar outra imagem.")
                     try:
                         return self.send(200, client.snapshot(body.get("device_id")))
                     finally:
                         self.server.video_guard.release()
                 if self.path == "/api/devices":
+                    self.server.stop_streams(state)
                     state["devices"] = []
                     if state["client"] is None:
                         raise IntegrationError("authentication", "Entre na conta primeiro.")
@@ -190,7 +279,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     server = Workbench(("127.0.0.1", args.port))
-    print(f"Bancada local iniciada na porta {server.server_port}. Vídeo P2P ainda indisponível.", flush=True)
+    print(f"Bancada local iniciada na porta {server.server_port}. Transmissão experimental disponível após preparação do adaptador.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

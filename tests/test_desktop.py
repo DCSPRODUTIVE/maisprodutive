@@ -259,14 +259,16 @@ class DesktopBrowserTests(unittest.TestCase):
                         with urllib.request.urlopen(request, timeout=3) as r:
                             raw += r.read()
                         capture.assert_called_once()
-                        server.video_guard.acquire()
+                        for _ in range(8):
+                            server.video_guard.acquire()
                         try:
                             with self.assertRaises(urllib.error.HTTPError) as busy:
                                 urllib.request.urlopen(request, timeout=3)
                             self.assertEqual(busy.exception.code, 422)
                             self.assertEqual(capture.call_count, 1)
                         finally:
-                            server.video_guard.release()
+                            for _ in range(8):
+                                server.video_guard.release()
                     with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as r:
                         raw += r.read()
                     self.assertNotIn(TOKEN.encode(), raw)

@@ -1,24 +1,31 @@
 <!doctype html>
 <html lang="pt-BR">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MaisProdutive · Câmeras</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
-<body><main>
-<header><span class="brand">MAISPRODUTIVE</span><span class="badge">Integração experimental</span></header>
-<h1>Suas câmeras, em um lugar.</h1>
-<p class="intro">Acompanhe os testes da integração com a Yoosee, sem VPN.</p>
-<aside>Você pode testar a comunicação e fazer uma tentativa experimental de login com sua própria conta. A compatibilidade ainda não foi confirmada. Vídeo e alertas de pessoas estão pendentes.</aside>
-<section class="panel"><h2>Testar a comunicação</h2>
-<p>Verifique se este computador consegue alcançar os servidores Yoosee. O teste não precisa da sua senha e pode levar até 35 segundos.</p>
-<button id="network" type="button" disabled>Testar comunicação com a Yoosee</button>
-<div id="network-results" role="status" aria-live="polite"></div></section>
-<section class="panel"><h2>Conectar ao Yoosee</h2>
-<p id="configuration" role="status">Verificando configuração…</p>
-<form id="login"><fieldset id="credentials" disabled><label>Login da conta<input name="username" autocomplete="username" required maxlength="320" placeholder="E-mail ou telefone com DDD"></label>
-<label>Código do país para telefone<input name="country_code" inputmode="numeric" value="55" maxlength="4" pattern="[1-9][0-9]{0,3}" aria-describedby="country-hint"></label>
-<p id="country-hint" class="hint">Brasil: 55. Se usar e-mail, este campo é ignorado.</p>
-<label>Senha<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
-<p class="hint">A senha é enviada ao servidor local para autenticação na Yoosee. Não é salva neste projeto.</p>
-<button id="connect" type="submit" disabled>Testar login experimental</button></fieldset></form>
-<div class="actions"><button id="refresh" disabled>Consultar câmeras</button><button id="logout" class="secondary" disabled>Sair</button></div>
-<p id="message" role="status" aria-live="polite"></p></section>
-<section><h2>Câmeras da conta</h2><p id="snapshot-status" role="status"></p><p id="empty">As câmeras aparecerão após o login e a consulta à Yoosee.</p><div id="cameras"></div></section>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1018"><title>Torre de Controle DCS</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+<a class="brand" href="/" aria-label="Torre de Controle DCS, início"><span class="brand-mark">D<span>C</span>S</span><span class="brand-name">TORRE DE CONTROLE<small>CENTRAL DE MONITORAMENTO</small></span></a>
+<div class="topbar-status"><span class="status-dot" id="session-dot"></span><span id="session-label">Conta desconectada</span><span class="avatar">DCS</span></div>
+</div></header>
+<main id="dashboard">
+<section class="overview"><div><p class="eyebrow">VISIBILIDADE EM TEMPO REAL</p><h1>Todos os seus locais.<br><span>Uma única visão.</span></h1><p class="intro">Acompanhe suas câmeras e mantenha o controle de cada ambiente.</p></div><div class="overview-note"><span class="feature-icon">◉</span><div><strong>Seu centro de operações</strong><p>Imagens contínuas, câmeras organizadas e controle em um só lugar.</p><span class="beta-tag">TRANSMISSÃO EXPERIMENTAL · SEM ÁUDIO</span></div></div></section>
+<section class="metrics" aria-label="Resumo do monitoramento">
+<div class="metric"><span class="metric-icon">▣</span><div><span class="metric-label">Câmeras da conta</span><strong id="camera-count">0</strong></div><span class="metric-note">Todos os locais</span></div>
+<div class="metric"><span class="metric-icon teal">◉</span><div><span class="metric-label">Transmitindo agora</span><strong id="live-count">0</strong></div><span class="metric-note">Quadros recebidos</span></div>
+<div class="metric"><span class="metric-icon violet">▧</span><div><span class="metric-label">Capturas nesta sessão</span><strong id="capture-count">0</strong></div><span class="metric-note">Imagens pontuais</span></div>
+</section>
+<details class="account-panel" id="account-panel" open><summary><span><span class="summary-icon">⌁</span> Conexão com suas câmeras</span><span class="summary-note">Conta Yoosee <span aria-hidden="true">⌄</span></span></summary><div class="account-content">
+<div><h2>Conectar sua conta</h2><p id="configuration" role="status">Verificando configuração…</p><p class="hint">Use sua conta Yoosee. A senha não é salva pelo painel.</p></div>
+<div><form id="login"><fieldset id="credentials" disabled><div class="form-row"><label>Login da conta<input name="username" autocomplete="username" required maxlength="320" placeholder="E-mail ou telefone com DDD"></label><label class="country-field">País<input name="country_code" inputmode="numeric" value="55" maxlength="4" pattern="[1-9][0-9]{0,3}" aria-describedby="country-hint"></label></div><div class="form-row"><label>Senha<input name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="Senha da sua conta"></label><button id="connect" type="submit" disabled>Testar login Windows</button></div><p id="country-hint" class="hint">Brasil: 55. Para e-mail, o código do país é ignorado.</p></fieldset></form><div class="account-actions"><button id="refresh" class="secondary" disabled>Consultar câmeras</button><button id="logout" class="quiet" disabled>Sair da conta</button></div></div>
+</div></details>
+<section class="monitor-section" aria-labelledby="monitor-title"><div class="section-heading"><div><p class="eyebrow">CENTRAL DE CÂMERAS</p><h2 id="monitor-title">Visão geral</h2></div><div class="grid-actions"><label class="search-box"><span aria-hidden="true">⌕</span><input id="camera-search" type="search" placeholder="Buscar câmera…" aria-label="Buscar câmera pelo nome"></label><button id="focus-mode" class="secondary">⛶ Modo foco</button><button id="watch-all" class="play" disabled>Assistir todas</button><button id="stop-all" class="secondary stop" disabled>Parar todas</button></div></div>
+<div class="monitor-info"><p id="snapshot-status" role="status"></p><span class="grid-label">MOSAICO · ATÉ 8 CÂMERAS</span></div>
+<p id="message" class="feedback" role="status" aria-live="polite"></p>
+<div id="empty" class="empty-state"><span class="empty-icon">▣</span><h3>Seu monitoramento começa aqui</h3><p>Conecte sua conta e consulte as câmeras para preencher esta visão.</p></div><div id="cameras" class="camera-grid"></div>
+</section>
+<details class="diagnostics"><summary>Diagnóstico de comunicação <span>⌄</span></summary><p>Verifique o acesso aos servidores Yoosee. O teste não precisa da sua senha e pode levar até 35 segundos.</p><button id="network" type="button" class="secondary" disabled>Testar comunicação com a Yoosee</button><div id="network-results" role="status" aria-live="polite"></div></details>
+<footer><span>TORRE DE CONTROLE <strong>DCS</strong></span><span>Detecção de pessoas e veículos: próxima etapa.</span></footer>
 </main></body></html>

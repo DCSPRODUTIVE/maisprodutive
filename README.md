@@ -1,90 +1,32 @@
-# MaisProdutive — integração experimental Yoosee
+# Torre de Controle DCS
 
-Objetivo: acessar câmeras próprias de locais distintos pelo navegador, sem VPN,
-e posteriormente detectar pessoas e emitir alertas.
+Central de monitoramento no navegador para câmeras próprias Yoosee de diferentes
+locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
 
 ## Estado real
 
-O login e a consulta de **oito câmeras reais foram confirmados pelo usuário no
-Chromebook**, usando o protocolo identificado no instalador Windows **1.0.0.8**. O instalador foi analisado estaticamente.
+- **Confirmado pelo usuário no Chromebook:** login, consulta de oito câmeras e
+  captura de imagens reais na maioria delas.
+- **Nesta versão:** layout responsivo, mosaico de até oito transmissões
+  independentes, busca por nome, tela cheia, modo foco, captura e parada individual
+  ou de todas as câmeras. Transmissão experimental de até cinco imagens/s por
+  câmera, sem áudio, com conexão P2P mantida aberta.
+- **Formato 5:** acrescentada conversão do caminho NV12 de dois planos para YUV420
+  planar. A câmera do usuário informou formato 5 em 640×360; a conversão foi
+  validada com pixels sintéticos, mas ainda precisa ser confirmada nessa câmera.
+- **Ainda não validado com câmeras reais:** transmissão contínua e mosaico
+  simultâneo. Não confundir testes locais/sintéticos com essa confirmação.
+- **Próxima etapa:** detecção de pessoas e carros, depois alertas. Hospedagem
+  pública, áudio, PTZ e gravação não estão implementados.
 
-A próxima etapa é um adaptador experimental de captura pontual pelo SDK nativo:
-carrega `IotVideoSDK.dll` pelo Wine, registra a sessão e tenta receber um quadro
-YUV, convertido em JPEG pelo FFmpeg e apresentado no painel. O adaptador já
-passou por testes locais de carregamento/ABI e conversão com quadro sintético,
-sem rede. **Nenhuma imagem de câmera real foi recebida nesta validação.**
+A interface não contém câmeras ou vídeos simulados. Só apresenta dispositivos da
+conta e imagens recebidas pelo adaptador. Fixtures usadas nos testes não fazem
+parte do painel publicado.
 
-Transmissão contínua, áudio, detecção de pessoas, notificações e hospedagem pública
-continuam pendentes. A captura usa os mesmos dados de sessão, sem VPN, e só permite
-câmeras retornadas pela consulta da conta. Não muda configurações da câmera.
+## Atualizar uma instalação já preparada
 
-## Preparar no Chromebook
-
-Use o Terminal Linux. Se houver um servidor rodando, pressione **Ctrl+C** primeiro.
-Execute os comandos abaixo, um por vez:
-
-```sh
-cd ~/maisprodutive
-```
-
-```sh
-git pull origin main
-```
-
-```sh
-sudo apt install -y 7zip
-```
-
-Mova o arquivo original **Yoosee-1.0.0.8.exe** para **Arquivos Linux**, se ainda não
-estiver lá. Ele precisa ser o mesmo arquivo dividido e enviado para análise.
-Não use o instalador 1.0.0.14 ou somente uma das partes.
-
-```sh
-python3 configure_desktop.py ~/Yoosee-1.0.0.8.exe
-```
-
-Espere a mensagem **Perfil Windows preparado**. A ferramenta verifica o SHA-256
-do instalador e do executável interno, usa 7zip apenas para extração e grava os
-parâmetros em `.local/yoosee-desktop.json`, ignorado pelo Git e com permissão 0600.
-Não executa código Windows e não solicita senha da conta. Os hashes reconhecem o
-arquivo analisado; não certificam a identidade do fabricante.
-
-Se o original foi apagado e restaram as três partes, coloque-as em **Arquivos
-Linux** e reconstrua primeiro, nesta ordem:
-
-```sh
-cat ~/Yoosee-parte-aa ~/Yoosee-parte-ab ~/Yoosee-parte-ac > ~/Yoosee-1.0.0.8.exe
-```
-
-Inicie o servidor:
-
-```sh
-python3 server.py --port 8081
-```
-
-Abra `http://localhost:8081` no Chrome do próprio Chromebook e recarregue a página.
-O botão deve dizer **Testar login Windows**. Se mostrar o modo antigo, confira a
-mensagem da importação e reinicie o processo do servidor.
-
-Digite o e-mail e a senha usados na sua conta Yoosee. Para conta de telefone,
-use somente números com DDD no login e o código do país separado (**55** para
-Brasil). Faça uma tentativa e observe a resposta. Se o login for aceito, clique
-em **Consultar câmeras**. Compartilhe somente a mensagem/código exibido, nunca
-senha, perfil local, tokens ou resposta bruta.
-
-Cada envio faz uma única tentativa, sem repetir automaticamente nem mudar para
-outro protocolo após rejeição. O modo Windows tem prioridade quando o perfil
-existe; um perfil inválido produz erro, sem fallback. Não é necessário obter
-credenciais de desenvolvedor para testar este perfil importado.
-
-## Testar a primeira imagem no Chromebook
-
-Esta etapa exige Linux **x86_64** (o Chromebook usado até aqui é amd64).
-O login e a consulta atuais continuam sendo HTTP Python; a captura executa a
-biblioteca Windows importada do instalador por meio do Wine, em processo separado.
-O adaptador é experimental e ainda não foi validado com vídeo real.
-
-Pare o servidor com Ctrl+C e execute um comando por vez:
+No Terminal Linux do Chromebook, pare o servidor com **Ctrl+C**. Execute um
+comando por vez:
 
 ```sh
 cd ~/maisprodutive
@@ -93,56 +35,110 @@ cd ~/maisprodutive
 ```sh
 git pull origin main
 ```
+
+```sh
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
+```
+
+A atualização recompila o adaptador nativo. O perfil de login é preservado e a
+versão anterior íntegra fica em `.local/video-backup-*`. Arquivos desconhecidos
+ou alterações inesperadas bloqueiam a troca, sem apagar a instalação existente.
+
+```sh
+python3 server.py --port 8089
+```
+
+Abra `http://localhost:8089` no Chrome do próprio Chromebook. Conecte sua conta,
+consulte as câmeras e use **Assistir** para testar uma câmera ou **Assistir todas**
+para abrir o mosaico. Esse último ativa o **Modo foco**, que prioriza os vídeos;
+**Visão completa** devolve o cabeçalho e a área da conta. Use **Parar**, **Parar
+todas**, **Capturar**, busca pelo nome e o botão de tela cheia em cada imagem.
+
+Os estados **Conectando**, **Ao vivo**, **Aguardando** e **Atenção** são calculados
+pelos dados recebidos. Uma imagem antiga deixa de contar como ao vivo após três
+segundos sem atualização. Falha em uma câmera não encerra as outras. Não há
+reconexão automática nem repetição do login. Compartilhe somente a mensagem de
+erro exibida, nunca senha, perfil, tokens ou saídas brutas do SDK.
+
+## Primeira preparação no Chromebook
+
+Requer Linux x86_64/amd64 e Python 3.10+. As ferramentas nativas podem levar alguns
+minutos para instalar:
 
 ```sh
 sudo apt install -y --no-install-recommends 7zip wine gcc-mingw-w64-x86-64 ffmpeg
 ```
 
-A instalação dessas ferramentas pode levar alguns minutos. Depois:
+Coloque o instalador original **Yoosee-1.0.0.8.exe** em **Arquivos Linux**.
+Somente o arquivo exato enviado para análise é aceito; renomear outra versão não
+funciona. Se só restaram as partes, reconstrua primeiro:
+
+```sh
+cat ~/Yoosee-parte-aa ~/Yoosee-parte-ab ~/Yoosee-parte-ac > ~/Yoosee-1.0.0.8.exe
+```
+
+Prepare o perfil e o adaptador a partir do diretório do projeto:
+
+```sh
+python3 configure_desktop.py ~/Yoosee-1.0.0.8.exe
+```
 
 ```sh
 python3 configure_video.py ~/Yoosee-1.0.0.8.exe
 ```
 
-Espere **Adaptador de imagem preparado**. Esse comando valida o instalador e
-quatro DLLs por SHA-256, extrai somente essas DLLs e compila o código C deste
-repositório. Não executa o SDK nessa preparação. Os binários ficam em `.local/video`,
-ignorados pelo Git; o perfil de login existente é preservado. Repetir a mesma
-preparação é permitido. Para atualizar uma versão anterior íntegra, use
-`python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update`; o adaptador anterior
-é preservado em `.local/video-backup-*`. Arquivos desconhecidos não são movidos.
+O primeiro comando importa parâmetros estáticos do cliente para
+`.local/yoosee-desktop.json` (permissão 0600). O segundo extrai quatro DLLs com
+hashes conhecidos e compila o código C deste projeto para `.local/video`.
+Esses dois comandos não executam o SDK e não pedem a senha da conta. Os hashes
+reconhecem o arquivo inspecionado; não certificam a identidade do fabricante.
+O adaptador executa a biblioteca Windows pelo Wine quando você solicita imagem
+ou transmissão. Os binários do fabricante não são distribuídos pelo repositório.
 
-```sh
-python3 server.py --port 8085
-```
+Faça login pelo formulário local, com o e-mail e a senha da sua conta Yoosee.
+Para telefone, informe apenas os números com DDD, e país separado (**55** para
+Brasil). O botão deve indicar **Testar login Windows**. Se aparecer o modo antigo,
+confira a importação do perfil e reinicie o processo do servidor.
 
-Abra `http://localhost:8085`, faça login, consulte as câmeras e clique em
-**Testar imagem** em somente uma delas. O teste pode levar até um minuto, incluindo
-a primeira inicialização do Wine. Se houver imagem, aparecerá identificada como
-**captura pontual**, sem indicação de transmissão ao vivo. Se falhar, compartilhe
-somente a mensagem exibida; nunca envie tokens, perfil local ou saída bruta do SDK.
-Não há nova tentativa automática nem novo envio de login/senha à API.
+## Operação e limites
 
-A captura registra a sessão no SDK, abre a câmera solicitada e espera no máximo
-25 segundos por um quadro (45 segundos para todo o processo nativo e mais 15 para
-conversão). Falhas de registro, ausência de quadro e formato incompatível são
-diferenciadas. São aceitos os códigos planares 0 e 1 usados pelo renderizador original.
-Chamadas incompletas no início não encerram o teste: o adaptador espera um
-quadro válido até o limite de tempo. Falhas incluem diagnóstico numérico de
-formato e dimensões, sem dados da conta. O player
-não envia áudio, comandos PTZ ou alterações de configurações.
+Há até oito conexões nativas simultâneas no servidor, cada uma com um processo do
+SDK Wine e um conversor FFmpeg. O mosaico começa pelas primeiras oito câmeras da
+conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
+alteração automática de qualidade ou configuração das câmeras.
 
-O processo nativo recebe a sessão pela entrada padrão, sem tokens em argumentos
-de shell. Saídas do fabricante são suprimidas; somente o quadro é aceito. Arquivos
-que o SDK crie no diretório temporário de trabalho são removidos ao final. A sessão
-é reaproveitada em memória; o painel só recebe JPEG e mensagens fixas. Há uma
-captura por vez no servidor. Sair ou entrar novamente apaga as imagens do painel.
+A conexão é reutilizada para os quadros seguintes; não se abre um login a cada
+imagem. O painel recebe somente o JPEG mais recente de cada câmera, sem acumular
+um histórico. **Capturar** reaproveita um quadro da transmissão quando ela já está
+aberta. Uma captura sem transmissão abre um processo pontual.
 
-## Desenvolvimento e validação
+A transmissão para quando você clica em Parar, sai da conta, entra novamente,
+refaz a consulta de câmeras, encerra o servidor ou deixa de consultar quadros por
+20 segundos. Fechar a página também tenta encerrar todas; a expiração por
+inatividade cobre a ausência dessa solicitação. A sessão dura no máximo 20 minutos,
+sem renovação automática. Sem primeiro quadro em 45 segundos ou sem novos quadros
+por 15 segundos, a transmissão termina e informa erro. Mudanças de resolução
+encerram o fluxo para reinício explícito. A captura pontual tem seu próprio limite
+de 45 segundos mais conversão.
 
-Python 3.10+ e biblioteca padrão, sem dependências Python. 7zip é necessário
-somente para extrair o instalador; um `Yoosee.exe` interno com hash reconhecido
-pode ser importado diretamente. Node.js serve apenas para testar a interface.
+Tokens passam pela entrada padrão do adaptador, sem argumentos de shell, logs
+ou respostas ao navegador. Senhas da conta não são gravadas. Sessões e imagens
+ficam em memória. O SDK trabalha em diretório temporário privado, removido após o
+processo; o prefixo Wine local persiste em `.local/wine-video`. O perfil de login,
+os binários e os backups locais são ignorados pelo Git.
+
+Cada operação de vídeo exige cookie de sessão, Origin correspondente e CSRF.
+Somente IDs da última consulta bem-sucedida da conta são aceitos. Identificadores
+locais de transmissão evitam que respostas atrasadas parem uma nova conexão.
+
+O servidor escuta apenas em loopback. Hospedagem pública depende de HTTPS e
+controle de acesso adicionais. GitHub armazena o código; GitHub Pages não executa
+o servidor Python e o SDK necessários à integração.
+
+## Desenvolvimento e verificação
+
+Python usa somente a biblioteca padrão. Node.js é necessário apenas para testes
+da interface. Parte dos testes de pipeline usa FFmpeg local e quadros sintéticos.
 
 ```sh
 python -m unittest discover -s tests -v
@@ -150,50 +146,26 @@ node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-São 57 testes Python e 8 testes de interface, com dados sintéticos. O perfil
-padrão fica dentro do checkout; `YOOSEE_DESKTOP_PROFILE` permite indicar outro
-caminho local. Não versione o perfil nem os binários do fabricante.
+64 testes Python e 13 de interface passaram. Também foram exercitados o binário
+nativo no Wine sem rede, o pipeline com quadros contínuos sintéticos e a interface
+no Chromium em desktop/Chromebook e celular. Esses resultados não validam oito
+conexões reais simultâneas. `YOOSEE_DESKTOP_PROFILE` permite indicar outro caminho
+local para o perfil. Nunca versione seus valores nem os binários do fabricante.
 
-O servidor escuta apenas em loopback. O painel é uma bancada local; hospedagem
-pública depende de HTTPS e autenticação adicionais. O GitHub armazena o código;
-GitHub Pages não executa o servidor Python necessário à integração.
+## Protocolos e histórico
 
-A senha é recebida pelo servidor local, transformada conforme o protocolo Windows
-e enviada à API por HTTPS com verificação TLS. Não é gravada no projeto ou no
-armazenamento do navegador. Sessões e tokens ficam em memória por até 20 minutos;
-sair ou reiniciar o servidor apaga a sessão local, sem encerrar o aplicativo oficial.
+O perfil Windows usa `openapi-iot.cloudlinks.cn`: POST JSON para
+`/openapi/app/user/login/account` e GET assinado para
+`/openapi/app/user/device/listDevice`, sempre com verificação TLS. A transmissão
+usa a biblioteca `IotVideoSDK.dll` do instalador analisado, em processo separado.
+Uma resposta no teste de comunicação comprova apenas acesso ao endpoint.
 
-## Rede e protocolos
+Sem perfil, permanece o SDK histórico: ambos `YOOSEE_APP_ID`/`YOOSEE_APP_TOKEN`
+selecionam o cliente antigo; configuração parcial é erro; ausência de ambos
+seleciona `account-experimental`. Esse último retornou `10901020` no teste anterior,
+por parâmetros obrigatórios ausentes. O perfil Windows resolveu a autenticação.
+A CLI `python yoosee.py probe`/`devices` continua usando somente o protocolo antigo.
+Use o painel para Windows e vídeo. O proxy desta nuvem bloqueia o novo host HTTP;
+o teste real bem-sucedido ocorreu na conexão do Chromebook.
 
-Com perfil Windows, o painel usa `openapi-iot.cloudlinks.cn`. O teste de comunicação
-consulta esse destino sem credenciais. Uma resposta HTTP ou um código de API
-não autentica a conta. Sem perfil, o diagnóstico continua consultando os quatro
-servidores históricos.
-
-A API Windows usa POST JSON para `/openapi/app/user/login/account` e consulta
-assinada GET para `/openapi/app/user/device/listDevice`. Parâmetros de aplicativo
-são importados localmente do arquivo analisado. Certificados HTTPS continuam
-verificados, mesmo que o executável original desative essa verificação.
-
-Nesta máquina, o proxy ainda bloqueia o novo host com HTTP 403. Isso impede um
-teste externo daqui, mas não determina o acesso à internet no Chromebook.
-Salvar domínios no rascunho da configuração não aplica mudanças à máquina atual.
-
-## Histórico do modo antigo
-
-Sem perfil Windows, `YOOSEE_APP_ID` e `YOOSEE_APP_TOKEN` selecionam o cliente do SDK
-histórico, quando ambos estão presentes. Sem ambos, permanece o modo antigo
-`account-experimental`. Configuração parcial é erro. A tentativa real anterior
-retornou `10901020` (parâmetros obrigatórios ausentes); isso não confirma senha
-incorreta. O próximo teste deve usar o perfil Windows acima.
-
-As opções históricas são `YOOSEE_PACKAGE` (padrão `com.yoosee`),
-`YOOSEE_APP_VERSION` (padrão exploratório `00.00.00.01`) e `YOOSEE_API_HOST`
-(padrão `api3.cloud-links.net`; também admite `api4.cloud-links.net`,
-`api1.cloudlinks.cn` e `api2.cloudlinks.cn`). A CLI `python yoosee.py probe`
-continua diagnosticando esses quatro hosts; `python yoosee.py devices` usa
-somente o cliente antigo com `YOOSEE_USERNAME`/`YOOSEE_PASSWORD` no ambiente.
-Use o painel para o novo protocolo Windows.
-
-As evidências do SDK histórico, APK Android e análise Windows, com limites de
-validação, estão em [docs/research.md](docs/research.md).
+Evidências, hashes e investigação em [docs/research.md](docs/research.md).

@@ -215,9 +215,12 @@ class DesktopClient:
         raise IntegrationError("protocol", "Consulta excedeu o limite de páginas.")
 
     def snapshot(self, device_id):
+        self.require_device(device_id)
+        from video import capture
+        return capture(self.account, device_id)
+
+    def require_device(self, device_id):
         if self.account is None:
             raise IntegrationError("authentication", "Entre na conta primeiro.")
         if not isinstance(device_id, str) or device_id not in self.device_ids:
             raise IntegrationError("input", "Consulte as câmeras da sua conta e selecione uma delas.")
-        from video import capture
-        return capture(self.account, device_id)

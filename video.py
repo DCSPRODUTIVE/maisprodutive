@@ -44,6 +44,27 @@ def readiness():
     return True, 'Adaptador preparado. Use Testar imagem em uma câmera para verificar a captura.'
 
 
+def native_failure(code, raw=b''):
+    reasons = {11: 'Não foi possível carregar a biblioteca local.',
+               14: 'O SDK não aceitou o registro da sessão.',
+               15: 'A conexão P2P não entregou um quadro em 25 segundos.',
+               16: 'O adaptador anterior rejeitou os dados do quadro.',
+               17: 'O SDK informou um formato de imagem ainda não suportado.',
+               18: 'O quadro chegou com dimensões inválidas ou não suportadas.',
+               19: 'O quadro chegou sem todos os planos de imagem.',
+               20: 'Os buffers do quadro não têm os tamanhos esperados.',
+               21: 'Não foi possível transferir o quadro do adaptador.',
+               23: 'A resolução da câmera mudou durante a transmissão. Inicie novamente.',
+               24: 'A câmera parou de entregar quadros por 15 segundos.',
+               25: 'O limite de tempo da transmissão foi atingido. Inicie novamente.',
+               26: 'Não foi possível reservar memória para converter a imagem.'}
+    diagnostic = re.fullmatch(rb'MPVD1 (17|18|19|20) (-?[0-9]{1,11}) (-?[0-9]{1,11}) (-?[0-9]{1,11})\n', raw)
+    details = ''
+    if diagnostic and int(diagnostic[1]) == code:
+        details = f' Diagnóstico: formato {int(diagnostic[2])}; dimensões {int(diagnostic[3])}x{int(diagnostic[4])}.'
+    return IntegrationError('video_native', reasons.get(code, 'O adaptador nativo não entregou uma imagem válida.') + details + ' O login HTTP continua separado deste teste.')
+
+
 def capture(account, device_id):
     ready, reason = readiness()
     if not ready:
@@ -74,20 +95,7 @@ def capture(account, device_id):
             except ProcessLookupError:
                 pass
     if process.returncode or not raw.startswith(b'YUV4MPEG2 ') or len(raw) > 26 * 1024 * 1024:
-        reasons = {11: 'Não foi possível carregar a biblioteca local.',
-                   14: 'O SDK não aceitou o registro da sessão.',
-                   15: 'A conexão P2P não entregou um quadro em 25 segundos.',
-                   16: 'O adaptador anterior rejeitou os dados do quadro.',
-                   17: 'O SDK informou um formato de imagem ainda não suportado.',
-                   18: 'O quadro chegou com dimensões inválidas ou não suportadas.',
-                   19: 'O quadro chegou sem todos os planos de imagem.',
-                   20: 'Os buffers do quadro não têm os tamanhos esperados.',
-                   21: 'Não foi possível transferir o quadro do adaptador.'}
-        diagnostic = re.fullmatch(rb'MPVD1 (17|18|19|20) (-?[0-9]{1,11}) (-?[0-9]{1,11}) (-?[0-9]{1,11})\n', raw)
-        details = ''
-        if diagnostic and int(diagnostic[1]) == process.returncode:
-            details = f' Diagnóstico: formato {int(diagnostic[2])}; dimensões {int(diagnostic[3])}x{int(diagnostic[4])}.'
-        raise IntegrationError('video_native', reasons.get(process.returncode, 'O adaptador nativo não entregou uma imagem válida.') + details + ' O login HTTP continua separado deste teste.')
+        raise native_failure(process.returncode, raw)
     try:
         result = subprocess.run([shutil.which('ffmpeg'), '-hide_banner', '-loglevel', 'error',
                                  '-protocol_whitelist', 'pipe', '-f', 'yuv4mpegpipe', '-i', 'pipe:0',

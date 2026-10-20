@@ -356,3 +356,67 @@ testes nativos offline no Wine para formato 0, formato 1, callback inicial sem
 init seguido de quadro válido e carregamento do player real. Os testes de quadro
 usam pixels sintéticos, não imagens de câmeras. A correção ainda precisa do teste
 real do usuário; não se afirma que esse resultado já resolve a recepção P2P.
+
+## Torre de Controle DCS: transmissão e mosaico
+
+O usuário confirmou por captura de tela a recepção de imagem real e, em seguida,
+informou que a maioria das câmeras captura normalmente. Algumas informaram
+**formato 5, 640×360**. Não se reproduzem aqui IDs, e-mail ou imagens do usuário.
+O produto passou a se chamar **Torre de Controle DCS**, com mosaico responsivo,
+busca, tela cheia, resumo da sessão e modo foco. Pessoas e carros foram adiados
+explicitamente pelo usuário.
+
+O formato 5 segue o ramo de dois planos em `0x1401ae137` do renderer original,
+diferente dos códigos planares 0/1. A ponte inclui o caminho Windows NV12 (Y + UV
+intercalado), com validação dos tamanhos de Y e UV, separando U/V antes da saída
+YUV420. Um fixture colorido U=90/V=180 verificou os bytes de saída e a ordem da
+conversão, sem um terceiro plano de entrada. A aceitação nas câmeras reais que
+reportaram formato 5 continua pendente; não se tentam outros formatos por adivinhação.
+
+O modo `--stream` mantém um registro/player nativo por câmera e escreve um único
+cabeçalho Y4M F5:1, seguido de quadros. O callback limita a saída a cinco quadros/s
+sem reinicializar o player. Encerra em mudança de dimensões, falta de quadros por
+15 segundos ou limite absoluto de 20 minutos. Não muda parâmetros da câmera.
+
+`live.py` mantém um pipeline Wine → Y4M → FFmpeg → JPEG por câmera. O parser trata
+markers fragmentados e vários JPEGs por leitura, limitando cada quadro a 8 MiB.
+Só o JPEG mais recente e sua sequência ficam retidos. Tokens vão por stdin,
+sem arquivo de sessão, argumentos ou saída do fornecedor. Stop mata os grupos
+de processos pertencentes ao pipeline, aguarda término, fecha pipes e apaga o
+diretório temporário. Não executa login HTTP novamente.
+
+O servidor mantém até oito conexões nativas no total, com autorização pela lista
+da conta e por sessão, sem compartilhar frames entre usuários. Todos os endpoints
+são POST com Origin/CSRF e cookie. Cada câmera tem um identificador local de fluxo;
+frame/stop com um identificador substituído não acessa nem interrompe o fluxo novo.
+Start duplicado devolve o fluxo existente. Uma falha não para as outras câmeras.
+O próprio SDK é carregado uma vez por processo/câmera nesta implementação; o
+consumo e o comportamento de múltiplos registros reais ainda precisam do teste
+no Chromebook, não são inferidos dos fixtures.
+
+Frames são consultados pelo navegador a cada 200 ms, sem bloqueio no endpoint e
+sem segredos na URL. Sem consultas por 20 segundos, o watchdog encerra o pipeline.
+Logout, novo login, nova consulta de dispositivos, expiração da sessão e shutdown
+fecham os fluxos. A página tenta stop em pagehide; inatividade é a salvaguarda se
+esse envio não ocorrer. Mais de três segundos sem atualização retiram o selo de
+ao vivo, inclusive quando a resposta seguinte fica atrasada.
+
+### Validação desta versão
+
+- 64 testes Python e 13 testes de interface. Pipeline real local com produtor
+  sintético e FFmpeg verificou vários JPEGs diferentes pela mesma conexão, limpeza
+  de processos, inatividade e expiração. API com fornecedor sintético verificou
+  oito slots, autorização de câmera, isolamento entre sessões e parada individual.
+- Wine offline (`--network none`): construtor/player real e fixtures de formatos
+  0, 1, 5, callback incompleto seguido de válido e seis quadros contínuos distintos.
+  Compilação MinGW com warnings tratados como erros. Conversão NV12 conferida
+  byte a byte; seis JPEGs distintos gerados pelo FFmpeg.
+- Chromium real com API/imagens sintéticas: oito cartões em foco, sem overflow
+  horizontal e com o último cartão abaixo de y=746 em viewport 1366×768. Também
+  verificado em 1440×1000 e 390×844, sem erros JavaScript. Os padrões de teste
+  existem apenas fora do checkout e não são câmeras de demonstração no produto.
+
+Login, listagem e captura real são confirmados pelo usuário. A transmissão
+contínua, a estabilidade do mosaico com oito câmeras e o caminho de formato 5
+nas câmeras que falharam aguardam o próximo teste dele. Detecção, alertas, áudio,
+PTZ, gravação e hospedagem pública continuam fora desta entrega.
