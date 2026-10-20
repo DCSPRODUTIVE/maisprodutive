@@ -218,6 +218,25 @@ class BrowserTests(unittest.TestCase):
         self.assertIn("YOOSEE_APP_ID", raw.decode())
         self.assertNotIn("not-a-real-password", raw.decode())
 
+    def test_browser_can_probe_without_sdk_or_account_credentials(self):
+        headers = self.session()
+        observations = [{"host": "api3.cloud-links.net", "reachable": True,
+                         "protocol_response": True, "authentication_tested": False}]
+        with patch("server.probe", return_value=observations) as mock_probe, patch(
+                "server.Config.from_environment", side_effect=AssertionError("Probe must not require credentials")):
+            code, _, raw = self.request("/api/connectivity", {}, headers)
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(raw)["observations"], observations)
+            self.assertEqual(self.request("/api/connectivity", {}, headers)[0], 429)
+            mock_probe.assert_called_once_with()
+
+    def test_browser_probe_rejects_submitted_credentials_and_missing_csrf(self):
+        headers = self.session()
+        with patch("server.probe") as mock_probe:
+            self.assertEqual(self.request("/api/connectivity", {"password": "secret"}, headers)[0], 400)
+            self.assertEqual(self.request("/api/connectivity", {}, headers | {"X-CSRF-Token": "bad"})[0], 403)
+            mock_probe.assert_not_called()
+
     def test_browser_login_list_logout_with_synthetic_provider(self):
         headers = self.session()
         with patch("server.Config.from_environment", return_value=Config("a", "b")), patch("server.YooseeClient") as factory:

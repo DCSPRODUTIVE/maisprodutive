@@ -6,7 +6,8 @@ e posteriormente detectar pessoas e emitir alertas.
 ## Estado real
 
 - Implementado: cliente HTTP de login e consulta paginada das câmeras, baseado no
-  SDK Gwell publicado; painel local; diagnóstico de conectividade.
+  SDK Gwell publicado; painel local; diagnóstico de conectividade pela CLI e pelo
+  botão **Testar comunicação com a Yoosee**, sem senha ou credenciais SDK.
 - Verificado: testes automatizados com respostas sintéticas e requisições HTTP
   reais ao painel local. Esses testes não comprovam compatibilidade com a nuvem.
 - **Não verificado:** autenticação de uma conta real, listagem real de câmeras ou
@@ -24,6 +25,7 @@ Python 3.10 ou posterior, somente biblioteca padrão. Sem dependências para ins
 ```sh
 cd /workspace/maisprodutive
 python -m unittest discover -s tests -v
+node --test tests/test_web.cjs  # opcional: testes da interface, requer Node.js
 python server.py --port 8080
 ```
 
@@ -88,16 +90,23 @@ resposta JSON da API de uma página HTML. `authentication_tested` permanece fals
 Salvar uma lista de domínios no rascunho não aplica a alteração à máquina e não
 comprova que a nuvem aceita o protocolo legado.
 
-O site oficial `download.yoosee.com` agora está acessível. Seu código público
-consulta `https://upg.cloudlinks.cn/latestVersions?clientIp=0.0.0.0` e constrói
-links de APK em `https://upg-cdn.yoosee.co/yoosee-{version}-release.apk`.
-O proxy ainda bloqueia esses dois destinos. Não foi obtida a versão desse
-catálogo nem baixado um APK oficial. A assinatura do app atual não foi verificada.
-Não foi instalado nem executado um APK.
+Após a publicação da configuração, o catálogo e o CDN oficial ficaram acessíveis.
+Foi baixado `yoosee-00.46.06.46-release.apk` (310.347.986 bytes), cujo manifesto
+identifica `com.yoosee` versão **6.46.2**, código **6462**. A ferramenta
+`apksigtool 0.1.0` confirmou as assinaturas internas v2 e v3. Isso verifica a
+integridade assinada; a identidade do signatário não foi comparada com uma
+instalação independente da Play Store. A origem foi o link derivado do site oficial.
+
+O APK contém um carregador protegido; as classes normais de autenticação não
+estão disponíveis na leitura DEX direta. As bibliotecas nativas continuam sendo
+Android ARM/ARM64. O portal antigo `sdk.yoosee.co` retorna HTTP 503. Não há
+identificação válida de aplicativo confirmada, e nenhum login real foi testado.
+Não foi instalado nem executado o APK. Hashes e evidências em `docs/research.md`.
 
 ## Próximo marco de validação
 
-1. Obter o aplicativo atual por fonte verificável e confirmar sua assinatura.
+1. Aplicativo oficial obtido e assinaturas internas verificadas; ainda falta
+   comparação independente do certificado e um runtime compatível para executá-lo.
 2. Verificar se a autenticação e os dados de aplicativo atuais são compatíveis
    com o SDK publicado; atualizar o cliente somente com evidência do protocolo.
 3. Com rede liberada e credenciais inseridas de forma segura, testar uma única

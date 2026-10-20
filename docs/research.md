@@ -102,3 +102,45 @@ permitir continuar a obtenção oficial. Não houve download ou verificação de
 APK novo. Credenciais de usuário e credenciais válidas de aplicativo continuam
 ausentes. Nenhuma senha foi adivinhada e nenhum mecanismo de autenticação foi
 contornado.
+
+## Após a publicação da configuração pelo usuário
+
+O catálogo e o CDN ficaram acessíveis. A resposta oficial de `latestVersions`
+anuncia Android `00.46.06.46`. O arquivo correspondente foi baixado por HTTPS:
+
+`https://upg-cdn.yoosee.co/yoosee-00.46.06.46-release.apk`
+
+- Tamanho: **310.347.986 bytes**, correspondente ao Content-Length.
+- SHA-256 do arquivo: `43027781f767e9a359e2b3399f49f236d2eb535da7c912b4f9a9cc718b994e27`.
+- Manifesto: pacote `com.yoosee`, versão **6.46.2**, código **6462**.
+- CRC do contêiner ZIP: sem erro na verificação de todas as entradas.
+- `apksigtool 0.1.0`: **v2 verified**, **v3 verified**, saída 0.
+- SHA-256 do certificado v2: `7373ba00391ff5ed19212c777c9b36d52ce1ce407c056a302e5c106e6466f50f`.
+
+`apksigtool` se apresenta como ferramenta protótipo; seu resultado verifica a
+assinatura interna, sem comparação independente do certificado com a Play Store.
+O arquivo veio do CDN indicado pelo código da página oficial, não de um espelho.
+Ele permanece fora do checkout, sem instalação ou execução.
+
+A análise com `androguard 4.1.4` identificou dez DEX. Nove contêm apenas classes
+dummy `com.example.helloworld`; o principal contém `com.wrapper.proxyapplication`
+e `com.yoosee.MyWrapperProxyApplication`. Existem bibliotecas `libshella` e
+`libshell-super.com.yoosee.so`. O código normal de login não fica disponível em
+uma leitura direta dessas classes. Isso impede comparar o fluxo atual usando
+apenas o procedimento de análise estática empregado até aqui.
+
+O APK inclui `libp2pav.so`, `libiotvideomulti.so`, `libgwmediaplayer.so`, somente
+em `armeabi`/`arm64-v8a`. A inspeção ELF confirmou dependências Android/Bionic,
+como `libandroid.so`, `liblog.so`, `libEGL.so` e `libGLESv2.so`. Os headers em
+assets são de multimídia e não constituem documentação de login da conta.
+
+O portal `https://sdk.yoosee.co` continua retornando HTTP 503. O catálogo de PC
+retorna um instalador Windows oficial `CMSSetup_1.0.0.54.exe` no host
+`cms-1251981983.cos.ap-beijing.myqcloud.com`, mas o proxy bloqueia esse host.
+O instalador Windows não foi baixado ou executado. Isso não bloqueia o teste de
+conectividade implementado, e não foi adicionado como requisito obrigatório.
+
+**Resultado:** a rede para catálogo/APK foi resolvida. Permanecem sem validação
+a identificação de desenvolvedor, a autenticação de uma conta real e o vídeo.
+O novo botão do painel apenas testa os endpoints públicos sem credenciais; ele
+não transforma esse resultado em sucesso de login ou acesso a câmeras.

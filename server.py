@@ -8,7 +8,7 @@ import secrets
 import threading
 import time
 
-from yoosee import Config, IntegrationError, YooseeClient
+from yoosee import Config, IntegrationError, YooseeClient, probe
 
 ROOT = Path(__file__).parent
 SESSION_TTL = 20 * 60
@@ -66,7 +66,8 @@ class Handler(BaseHTTPRequestHandler):
                 return None, None
             sid = secrets.token_urlsafe(32)
             state = {"csrf": secrets.token_urlsafe(32), "client": None, "devices": [],
-                     "expires": now + SESSION_TTL, "last_login": 0, "lock": threading.Lock()}
+                     "expires": now + SESSION_TTL, "last_login": 0,
+                     "last_probe": 0, "lock": threading.Lock()}
             self.server.sessions[sid] = state
             return state, f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
 
@@ -116,6 +117,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"message": "Requisição inválida."})
         with state["lock"]:
             try:
+                if self.path == "/api/connectivity":
+                    if body:
+                        return self.send(400, {"message": "O teste de rede não recebe login ou senha."})
+                    if state["last_probe"] and time.monotonic() - state["last_probe"] < 30:
+                        return self.send(429, {"message": "Aguarde 30 segundos entre testes de rede."})
+                    state["last_probe"] = time.monotonic()
+                    observations = probe()
+                    answered = sum(bool(row.get("protocol_response")) for row in observations)
+                    return self.send(200, {
+                        "observations": observations,
+                        "message": f"{answered} de {len(observations)} servidores responderam como API. Este teste não faz login nem acessa vídeos.",
+                    })
                 if self.path == "/api/logout":
                     state["client"], state["devices"] = None, []
                     state["csrf"] = secrets.token_urlsafe(32)
