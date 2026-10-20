@@ -456,3 +456,36 @@ limitadas. Também foram verificados liberação da vaga no primeiro quadro, can
 na fila sem liberar vaga alheia e preservação do timeout durante espera. Esses
 testes não reproduzem as câmeras, a conexão 4G ou o SDK real sob oito registros;
 a resolução do problema no Chromebook ainda depende do teste do usuário.
+
+## Formato 5, seleção de qualidade e abertura após login
+
+A investigação posterior corrigiu a hipótese de formato 5 exclusivamente NV12.
+No SDK inspecionado, o decodificador H.265 em `0x180021370` escreve também três
+ponteiros/planos e seus tamanhos em AVData, compactando Y=largura×altura e U/V=¼.
+O código agora prefere os três planos quando válidos; caso contrário, aceita NV12
+com UV intercalado e tamanho suficiente. As verificações de dimensões e limites
+permanecem. Isso explica um caminho concreto para o erro 20 observado, sem provar
+que todos os timeouts de rede tenham a mesma causa.
+
+No cliente, `SendUserDataController::execute` em `0x14014c440` traduz
+ctrl_video_FHD/HD/SD para 3/2/1. `PlayerModel::changeDefinition` em `0x140168690`
+subtrai um antes de chamar o SDK: FHD=2, HD=1, SD=0. O adaptador usa esses valores
+em setDataResource, por opções fixas --stream-fhd/--stream-hd/--stream; nenhum
+argumento de conta vai para a linha de comando. Os perfis HD/FHD removem o filtro
+local de redução e usam JPEG q=2; Equilibrada preserva os limites 640/960 e q=5.
+A resolução física entregue por cada câmera ainda exige confirmação real.
+
+Após um login bem-sucedido, a interface consulta os dispositivos e inicia as
+primeiras oito câmeras. Falhas de login/listagem não iniciam vídeo nem repetem o
+login. A seleção de qualidade reinicia apenas a câmera escolhida. O navegador
+informa naturalWidth/naturalHeight do JPEG decodificado, sem prometer resolução
+superior à efetivamente recebida.
+
+Validação desta alteração: 71 testes Python e 16 de interface, incluindo login
+com abertura automática, seleção isolada de qualidade e liberação de capacidade
+após parâmetro inválido. FFmpeg real preservou 1280×720 no modo original e reduziu
+a mesma fonte sintética para 640×360 no mosaico. O adaptador recompilado passou
+seis fixtures no Wine com rede desabilitada, incluindo formato 5 de três planos,
+NV12 com U/V distintos e seis quadros contínuos. Chromium validou oito cartões,
+resolução exibida e ausência de overflow horizontal/erros JavaScript em desktop,
+Chromebook e celular, com conta e imagens sintéticas apenas no teste.

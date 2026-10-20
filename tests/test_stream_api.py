@@ -14,7 +14,8 @@ from yoosee import IntegrationError
 
 class FakeStream:
     instances = []
-    def __init__(self, account, device_id, expires, on_close, preview_width=960):
+    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0):
+        self.definition = definition
         self.preview_width = preview_width
         self.device_id, self.expires, self.callback = device_id, expires, on_close
         self.handle = 'local-handle-'+device_id+'-'+str(len(self.instances))
@@ -89,6 +90,18 @@ class StreamApiTests(unittest.TestCase):
         self.assertTrue(all(s.stopped.is_set() for s in FakeStream.instances))
         self.assertEqual(len(self.server.active_streams),0)
         self.assertIsNone(self.state['client'])
+
+    def test_quality_requests_preserve_original_size_and_validate_values(self):
+        for quality, definition in (("hd", 1), ("fhd", 2), ("original", 0)):
+            with self.subTest(quality=quality):
+                code, data = self.post('/api/video/start', {'device_id':'0', 'quality':quality})
+                self.assertEqual(code, 200)
+                self.assertEqual(FakeStream.instances[-1].preview_width, 0)
+                self.assertEqual(FakeStream.instances[-1].definition, definition)
+                self.post('/api/video/stop', {'device_id':'0', 'stream_id':data['stream_id']})
+        self.assertEqual(self.post('/api/video/start', {'device_id':'0', 'quality':'unknown'})[0], 422)
+        self.assertEqual(len(self.server.active_streams), 0)
+        self.assertEqual(self.post('/api/video/start', {'device_id':'0'})[0], 200)
 
     def test_expiry_and_server_close_release_active_streams(self):
         self.post('/api/video/start',{'device_id':'0'})

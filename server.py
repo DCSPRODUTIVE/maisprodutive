@@ -232,7 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                         mosaic = body.get("mosaic", False)
                         if not isinstance(mosaic, bool):
                             raise IntegrationError("input", "Modo de mosaico inválido.")
-                        stream = LiveStream(client.account, device_id, state["expires"], release_slot, preview_width=640 if mosaic else 960)
+                        quality = body.get("quality", "balanced")
+                        if quality not in ("balanced", "original", "hd", "fhd"):
+                            raise IntegrationError("input", "Qualidade de imagem inválida.")
+                        stream = LiveStream(client.account, device_id, state["expires"], release_slot, preview_width=(640 if mosaic else 960) if quality == "balanced" else 0, definition={"hd": 1, "fhd": 2}.get(quality, 0))
                         state["streams"][device_id] = stream
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)

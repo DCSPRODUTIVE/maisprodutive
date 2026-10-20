@@ -715,3 +715,6 @@
                                                                                                                                                                                                                                                                                                                                                         .focus-mode .camera-controls{
                                                                                                                                                                                                                                                                                                                                                           flex-shrink:0}
                                                                                                                                                                                                                                                                                                                                                         }
+
+.camera-controls { flex-wrap: wrap; gap: .5rem; }
+.camera-quality { position: absolute; top: 8px; right: 8px; z-index: 2; max-width: 100%; background: #15212f; color: #c4d8eb; border: 1px solid #30445a; border-radius: 7px; padding: .4rem; font: inherit; font-size: .75rem; }

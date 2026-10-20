@@ -11,11 +11,14 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
   independentes, busca por nome, tela cheia, modo foco, captura e parada individual
   ou de todas as câmeras. Transmissão experimental de até cinco imagens/s por
   câmera, sem áudio, com conexão P2P mantida aberta.
-- **Formato 5:** acrescentada conversão do caminho NV12 de dois planos para YUV420
-  planar. A câmera do usuário informou formato 5 em 640×360; a conversão foi
-  validada com pixels sintéticos, mas ainda precisa ser confirmada nessa câmera.
-- **Ainda não validado com câmeras reais:** transmissão contínua e mosaico
-  simultâneo. Não confundir testes locais/sintéticos com essa confirmação.
+- **Formato 5:** o adaptador aceita tanto três planos YUV420 entregues pelo
+  decodificador H.265 quanto NV12 de dois planos, com validação dos buffers.
+- **Conexão e qualidade:** login consulta as câmeras e abre o mosaico; cada câmera
+  oferece Equilibrada, SD original, HD e FHD. A interface mostra as dimensões
+  recebidas no JPEG. HD/FHD dependem do suporte e da resposta de cada câmera.
+- **Confirmação real:** o usuário mostrou transmissões reais em parte do mosaico.
+  A correção dos buffers e os novos modos HD/FHD ainda precisam ser testados nas
+  câmeras que falhavam; testes sintéticos não substituem essa confirmação.
 - **Próxima etapa:** detecção de pessoas e carros, depois alertas. Hospedagem
   pública, áudio, PTZ e gravação não estão implementados.
 
@@ -45,12 +48,11 @@ versão anterior íntegra fica em `.local/video-backup-*`. Arquivos desconhecido
 ou alterações inesperadas bloqueiam a troca, sem apagar a instalação existente.
 
 ```sh
-python3 server.py --port 8089
+python3 server.py --port 8094
 ```
 
-Abra `http://localhost:8089` no Chrome do próprio Chromebook. Conecte sua conta,
-consulte as câmeras e use **Assistir** para testar uma câmera ou **Assistir todas**
-para abrir o mosaico. Esse último ativa o **Modo foco**, que prioriza os vídeos;
+Abra `http://localhost:8094` no Chrome do próprio Chromebook. Conecte sua conta: as câmeras são consultadas e o mosaico abre automaticamente.
+Use **Assistir** para reabrir uma câmera ou **Assistir todas** para abrir o mosaico. Esse último ativa o **Modo foco**, que prioriza os vídeos;
 **Visão completa** devolve o cabeçalho e a área da conta. Use **Parar**, **Parar
 todas**, **Capturar**, busca pelo nome e o botão de tela cheia em cada imagem.
 
@@ -108,10 +110,15 @@ tempo; as demais aparecem como **Na fila** até que uma abertura termine ou rece
 o primeiro quadro. Depois de conectadas, as oito podem continuar transmitindo.
 A espera na fila não consome os 45 segundos de tentativa do primeiro quadro.
 Todos os pools de threads do FFmpeg são limitados. A prévia do mosaico tem até
-640 pixels de largura; a abertura individual mantém até 960 pixels. Isso altera
-somente a conversão local, sem modificar a qualidade enviada pela câmera. O mosaico começa pelas primeiras oito câmeras da
-conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
-alteração automática de qualidade ou configuração das câmeras.
+640 pixels de largura; a abertura individual mantém até 960 pixels em **Equilibrada**.
+**SD original** mantém o fluxo SD sem redução local. **HD** e **FHD** solicitam esses
+perfis ao SDK e preservam a resolução entregue, com JPEG de maior qualidade.
+Para melhor imagem, selecione **FHD · sem redução** no canto da imagem e use tela
+cheia. Se não funcionar naquela câmera, teste **HD**. A troca reinicia somente
+essa câmera. Confira **Imagem: largura × altura** abaixo do vídeo: escolher FHD
+não garante 1920×1080, pois o dispositivo/provedor pode entregar outra resolução.
+O mosaico começa pelas primeiras oito câmeras da conta. Consumo de CPU, memória e internet cresce com as câmeras abertas. Não há
+alteração automática de qualidade; a preferência escolhida dura até recarregar a página.
 
 A conexão é reutilizada para os quadros seguintes; não se abre um login a cada
 imagem. O painel recebe somente o JPEG mais recente de cada câmera, sem acumular
@@ -152,7 +159,7 @@ node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-69 testes Python e 14 de interface passaram. Também foram exercitados o binário
+71 testes Python e 16 de interface passaram. Também foram exercitados o binário
 nativo no Wine sem rede, o pipeline com quadros contínuos sintéticos e a interface
 no Chromium em desktop/Chromebook e celular. Esses resultados não validam oito
 conexões reais simultâneas. `YOOSEE_DESKTOP_PROFILE` permite indicar outro caminho

@@ -4,6 +4,7 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+const qualities = new Map();
 const snapshots = new Map();
 const feeds = new Map();
 const errors = new Map();
@@ -29,7 +30,8 @@ function buttons() {
   $("logout").disabled = busy || !auth;
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
   $("stop-all").disabled = busy || (!feeds.size && !bulk);
-  for (const { id, capture, watch, stop } of cameraControls) {
+  for (const { id, capture, watch, stop, quality } of cameraControls) {
+    quality.disabled = busy || bulk || !ready;
     capture.disabled = busy || bulk || !ready || (feeds.has(id) && !feeds.get(id).image);
     watch.disabled = busy || bulk || !ready || feeds.has(id);
     stop.disabled = busy || !feeds.has(id);
@@ -53,8 +55,11 @@ function paint(id) {
   view.badge.textContent = feed ? fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image;
   view.placeholder.hidden = !!image;
-  if (image) view.img.src = image;
-  view.caption.textContent = feed ? feed.caption : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
+  if (image && view.img.src !== image) view.img.src = image;
+  view.img.onload = () => {
+    if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
+  };
+  view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
   view.overlay.textContent = feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
@@ -89,6 +94,16 @@ function render() {
     media.append(placeholder, img, overlay, expand);
     const caption = element("p", "camera-caption");
     const controls = element("div", "camera-controls");
+    const quality = element("select", "camera-quality");
+    quality.setAttribute?.("aria-label", `Qualidade de ${camera.name}`);
+    for (const [value, label] of [["balanced", "Equilibrada"], ["original", "SD original"], ["hd", "HD · sem redução"], ["fhd", "FHD · sem redução"]]) {
+      const option = element("option", "", label); option.value = value; quality.append(option);
+    }
+    quality.value = qualities.get(camera.id) || "balanced";
+    quality.addEventListener("change", async () => {
+      qualities.set(camera.id, quality.value);
+      if (feeds.has(camera.id)) { await stopOne(camera.id); await startOne(camera.id); }
+    });
     const group = element("div", "control-group");
     const capture = element("button", "secondary", "Capturar");
     capture.addEventListener("click", () => action("/api/video/snapshot", { device_id: camera.id }));
@@ -98,9 +113,10 @@ function render() {
     stop.addEventListener("click", () => stopOne(camera.id));
     group.append(watch, stop, capture);
     controls.append(group);
+    media.append(quality);
     card.append(header, media, caption, controls);
     views.set(camera.id, { card, img, placeholder, badge, caption, overlay });
-    cameraControls.push({ id: camera.id, capture, watch, stop });
+    cameraControls.push({ id: camera.id, capture, watch, stop, quality });
     paint(camera.id);
     $("cameras").append(card);
   }
@@ -171,7 +187,7 @@ async function startOne(id, mosaic = false) {
   const feed = { id, handle: null, sequence: 0, image: null, age: null, updatedAt: null, timer: null, caption: "Conectando. Aguardando o primeiro quadro…" };
   feeds.set(id, feed); errors.delete(id); render();
   try {
-    const data = await post("/api/video/start", { device_id: id, mosaic });
+    const data = await post("/api/video/start", { device_id: id, mosaic, quality: qualities.get(id) || "balanced" });
     feed.handle = data.stream_id;
     if (feeds.get(id) !== feed) {
       await post("/api/video/stop", { device_id: id, stream_id: feed.handle });
@@ -230,6 +246,7 @@ async function pollFeed(feed) {
   }
 }
 async function action(path, body) {
+  let openCameras = false;
   if (busy) return;
   busy = true; buttons();
   $("message").textContent = path === "/api/video/snapshot" ? "Capturando imagem…" : "Consultando…";
@@ -256,6 +273,11 @@ async function action(path, body) {
       $("network-results").append(element("p", "", data.message));
     }
     $("message").textContent = data.message || "Consulta concluída.";
+    if (path === "/api/login") {
+      $("message").textContent = "Conta conectada. Buscando suas câmeras…";
+      await post("/api/devices", {});
+      openCameras = true;
+    }
   } catch (error) {
     $("message").textContent = error.message;
     if (path === "/api/video/snapshot") errors.set(body.device_id, error.message);
@@ -263,6 +285,7 @@ async function action(path, body) {
   } finally {
     try { await status(); } catch (error) { $("message").textContent = error.message; }
     busy = false; buttons();
+    if (openCameras && currentStatus?.authenticated && currentStatus?.snapshot_ready) await startAll();
   }
 }
 if (typeof setInterval !== "undefined") setInterval(() => {

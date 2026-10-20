@@ -234,3 +234,36 @@ test('queued camera is shown as waiting for its startup slot without a failure b
   assert.equal(get('live-count').textContent,'0');
   assert.equal(cardButton(get,0,'Parar').disabled,false);
 });
+
+test("successful login lists cameras and opens mosaic without a second click", async () => {
+  let authenticated = false, listed = false;
+  const response = (data) => ({ ok: true, json: async () => data });
+  const { get, calls } = await setup(null, {}, null, null, {
+    "/api/status": () => response({ csrf: "test-csrf", configured: true, authenticated,
+      snapshot_ready: true, devices: listed ? [{id: "a", name: "Camera A"}] : [] }),
+    "/api/login": () => { authenticated = true; return response({message: "Conectado"}); },
+    "/api/devices": () => { listed = true; return response({devices: [{id: "a", name: "Camera A"}]}); },
+    "/api/video/start": response({stream_id: "auto-handle"})
+  });
+  await get("login").handlers.submit({preventDefault() {}, currentTarget: get("login")});
+  assert.equal(calls.filter(c => c.url === "/api/login").length, 1);
+  assert.equal(calls.filter(c => c.url === "/api/devices").length, 1);
+  assert.equal(calls.filter(c => c.url === "/api/video/start").length, 1);
+});
+
+test("quality selection restarts only that camera with requested definition", async () => {
+  const response = data => ({ok:true,json:async()=>data});
+  const {get,calls} = await setup(null, {authenticated:true,snapshot_ready:true,
+    devices:[{id:"a",name:"Camera A"},{id:"b",name:"Camera B"}]}, null, null, {
+    "/api/video/start": response({stream_id:"handle"}), "/api/video/stop": response({})
+  });
+  await get("watch-all").handlers.click();
+  const select = descendants(get("cameras")).find(e => e.tagName === "select");
+  select.value = "fhd";
+  await select.handlers.change();
+  const starts = calls.filter(c=>c.url==="/api/video/start").map(c=>JSON.parse(c.options.body));
+  assert.equal(starts.length,3);
+  assert.equal(starts[2].device_id,"a");
+  assert.equal(starts[2].quality,"fhd");
+  assert.equal(calls.filter(c=>c.url==="/api/video/stop").length,1);
+});

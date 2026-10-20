@@ -43,7 +43,7 @@ for i in range(150):
  time.sleep(.05)
 '''
 
-    def create_stream(self, expires=None, preview_width=960):
+    def create_stream(self, expires=None, preview_width=960, source=None):
         closed = []
         with patch('live.video.readiness', return_value=(True, '')):
             stream = LiveStream(DesktopAccount('123', 'live-token-test'), 'owned',
@@ -54,7 +54,7 @@ for i in range(150):
             self.assertNotIn('live-token-test', repr(args))
             self.assertNotIn('live-token-test', repr(kwargs))
             if args[-1] == '--stream':
-                args = [sys.executable, '-u', '-c', self.source]
+                args = [sys.executable, '-u', '-c', source or self.source]
             process = original(args, **kwargs)
             launched.append((process, kwargs.get('cwd')))
             return process
@@ -86,6 +86,33 @@ for i in range(150):
             self.assertIsNotNone(p.poll())
             if cwd: self.assertFalse(Path(cwd).exists())
         with self.assertRaises(IntegrationError): stream.frame(sequence)
+
+    def test_original_preserves_source_resolution_while_mosaic_reduces_it(self):
+        import base64
+        source = """import sys,time
+for i in range(3): sys.stdin.buffer.readline()
+sys.stdout.buffer.write(b'YUV4MPEG2 W1280 H720 F5:1 Ip A1:1 C420jpeg\\n')
+for i in range(40):
+ sys.stdout.buffer.write(b'FRAME\\n'+bytes([90])*921600+b'\\x80'*460800)
+ sys.stdout.buffer.flush()
+ time.sleep(.1)
+"""
+        for width, expected in ((640, '640,360'), (0, '1280,720')):
+            stream, _, _ = self.create_stream(preview_width=width, source=source)
+            try:
+                stream.start()
+                limit = time.monotonic()+5
+                image = None
+                while not image and time.monotonic()<limit:
+                    image = stream.frame(0)['image']
+                self.assertIsNotNone(image)
+                raw = base64.b64decode(image.split(',',1)[1])
+                result = subprocess.run(['ffprobe','-v','error','-select_streams','v:0',
+                    '-show_entries','stream=width,height','-of','csv=p=0','pipe:0'],
+                    input=raw, capture_output=True, timeout=5, check=True)
+                self.assertEqual(result.stdout.decode().strip(), expected)
+            finally:
+                stream.stop()
 
     def test_idle_and_expired_sessions_stop_without_browser_requests(self):
         for kind in ('video_idle', 'authentication'):

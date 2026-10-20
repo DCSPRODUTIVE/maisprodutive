@@ -46,15 +46,18 @@ def jpeg_frames(pipe):
 
 
 class LiveStream:
-    def __init__(self, account, device_id, expires, on_close, preview_width=960):
+    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0):
         ready, reason = video.readiness()
         if not ready:
             raise IntegrationError('video_configuration', reason)
         values = (account.access_id, account.access_token, device_id)
         if any(not isinstance(v, str) or not v or len(v) > 8190 or any(c in v for c in '\n\r\0') for v in values):
             raise IntegrationError('protocol', 'Dados de sessão incompatíveis com a transmissão.')
-        if preview_width not in (640, 960):
+        if preview_width not in (0, 640, 960):
             raise IntegrationError('input', 'Resolução de prévia inválida.')
+        if type(definition) is not int or definition not in (0, 1, 2):
+            raise IntegrationError('input', 'Definição de vídeo inválida.')
+        self.definition = definition
         self.preview_width = preview_width
         self.startup_gate = STARTUP_GATE
         self.startup_guard = threading.Lock()
@@ -168,13 +171,14 @@ class LiveStream:
                     env = dict(os.environ, WINEDEBUG='-all', WINEDLLOVERRIDES='mscoree,mshtml=',
                                WINEPREFIX=str(video.ROOT / '.local' / 'wine-video'))
                     wine = shutil.which('wine') or shutil.which('wine64')
-                    native = self._launch([wine, str(video.NATIVE / 'yoosee_snapshot.exe'), '--stream'],
+                    native = self._launch([wine, str(video.NATIVE / 'yoosee_snapshot.exe'), ('--stream', '--stream-hd', '--stream-fhd')[self.definition]],
                                           cwd=directory, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
                     encoder = self._launch([shutil.which('ffmpeg'), '-hide_banner', '-loglevel', 'error',
                                             '-filter_threads', '1', '-filter_complex_threads', '1',
                                             '-threads', '1', '-probesize', '32', '-analyzeduration', '0',
                                             '-protocol_whitelist', 'pipe', '-f', 'yuv4mpegpipe', '-i', 'pipe:0',
-                                            '-vf', f"scale='min({self.preview_width},iw)':-2", '-threads', '1', '-q:v', '5',
+                                            *(['-vf', f"scale='min({self.preview_width},iw)':-2"] if self.preview_width else []),
+                                            '-threads', '1', '-q:v', '5' if self.preview_width else '2',
                                             '-f', 'image2pipe', '-vcodec', 'mjpeg', '-flush_packets', '1', 'pipe:1'],
                                            stdin=native.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     self.error_reader = threading.Thread(target=self._read_encoder_errors, args=(encoder.stderr,), daemon=True)

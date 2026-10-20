@@ -37,14 +37,19 @@ static void release(void *self) { (void)self; format = -1; }
 static void frame(void *self, const unsigned char *av) {
     (void)self;
     if (InterlockedCompareExchange(&writing, 1, 0)) return;
-    int w, h, sy, su, sv, reason = 0; const void *y, *u, *v;
+    int w, h, sy, su, sv, reason = 0, planar = 0; const void *y, *u, *v;
     memcpy(&w, av + 0x40, 4); memcpy(&h, av + 0x44, 4);
     memcpy(&y, av, 8); memcpy(&u, av + 0x10, 8); memcpy(&v, av + 0x20, 8);
     memcpy(&sy, av + 8, 4); memcpy(&su, av + 0x18, 4); memcpy(&sv, av + 0x28, 4);
     if (format != 0 && format != 1 && format != 5) reason = 17;
     else if (w < 16 || h < 16 || w > 4096 || h > 4096 || (w & 1) || (h & 1)) reason = 18;
     else if (!y || !u || (format != 5 && !v)) reason = 19;
-    else if (sy < w*h || (format == 5 ? su < w*h/2 : (su < w*h/4 || sv < w*h/4))) reason = 20;
+    else {
+        /* The H.265 decoder can return three planes despite header format 5.
+         * Inspect validated buffers before selecting the semiplanar fallback. */
+        planar = v && su >= w*h/4 && sv >= w*h/4;
+        if (sy < w*h || (!planar && (format != 5 || su < w*h/2))) reason = 20;
+    }
     if (reason) {
         last_format = format; last_width = w; last_height = h;
         last_reason = reason; rejected++;
@@ -59,7 +64,7 @@ static void frame(void *self, const unsigned char *av) {
     if (streaming && frame_count && now - last_sent < 200) {
         InterlockedExchange(&writing, 0); return;
     }
-    if (format == 5) {
+    if (format == 5 && !planar) {
         /* Native Windows semiplanar NV12: Y followed by interleaved UV. */
         size_t plane = (size_t)w*h/4;
         if (chroma_capacity < plane*2) {
@@ -107,7 +112,7 @@ int main(int argc, char **argv) {
     freopen("NUL","w",stdout); freopen("NUL","w",stderr);
     SetStdHandle(STD_OUTPUT_HANDLE,GetStdHandle(STD_ERROR_HANDLE));
     callbacks[0]=(void *)destroy; callbacks[1]=(void *)init; callbacks[2]=(void *)frame; callbacks[3]=(void *)release;
-    if (argc==2 && (strcmp(argv[1],"--frame-selftest")==0 || strcmp(argv[1],"--frame-planar1-selftest")==0 || strcmp(argv[1],"--frame-incomplete-selftest")==0 || strcmp(argv[1],"--stream-selftest")==0 || strcmp(argv[1],"--frame-nv12-selftest")==0)) {
+    if (argc==2 && (strcmp(argv[1],"--frame-selftest")==0 || strcmp(argv[1],"--frame-planar1-selftest")==0 || strcmp(argv[1],"--frame-incomplete-selftest")==0 || strcmp(argv[1],"--stream-selftest")==0 || strcmp(argv[1],"--frame-nv12-selftest")==0 || strcmp(argv[1],"--frame-h265-planar-selftest")==0)) {
         unsigned char header[40]={0}, av[80]={0}, y[256], uv[64], nv12[128];
         const void *yp=y,*up=uv,*vp=uv; int w=16,h=16, sy=256, sc=64, pixel = strcmp(argv[1],"--frame-planar1-selftest")==0 ? 1 : 0;
         memset(y,100,sizeof(y)); memset(uv,128,sizeof(uv));
@@ -117,6 +122,7 @@ int main(int argc, char **argv) {
             for (int i=0;i<64;i++) { nv12[i*2]=90;nv12[i*2+1]=180; }
             up=nv12;memcpy(av+16,&up,8);memcpy(av+32,&vp,8);
         }
+        if (strcmp(argv[1],"--frame-h265-planar-selftest")==0) pixel=5;
         memcpy(header+24,&pixel,4);memcpy(av+8,&sy,4);memcpy(av+24,&sc,4);memcpy(av+40,&sc,4);
         if (strcmp(argv[1],"--frame-incomplete-selftest")==0) {
             frame(&renderer,av); /* No init yet: must skip without emitting. */
@@ -140,7 +146,10 @@ int main(int argc, char **argv) {
     if (argc==2 && strcmp(argv[1],"--sdk-selftest")==0) {
         void *player=calloc(1,16);construct(player);set_render(player,&renderer);ExitProcess(0);
     }
-    streaming = argc==2 && strcmp(argv[1],"--stream")==0;
+    int definition = 0;
+    streaming = argc==2 && (strcmp(argv[1],"--stream")==0 || strcmp(argv[1],"--stream-hd")==0 || strcmp(argv[1],"--stream-fhd")==0);
+    if (streaming && strcmp(argv[1],"--stream-hd")==0) definition=1;
+    if (streaming && strcmp(argv[1],"--stream-fhd")==0) definition=2;
     char id[128],token[8192],device[128];
     if (!line(id,sizeof(id)) || !line(token,sizeof(token)) || !line(device,sizeof(device))) return 12;
     HMODULE crt=LoadLibraryA("ucrtbase.dll"); if (!crt) return 11;
@@ -154,7 +163,7 @@ int main(int argc, char **argv) {
     if(result!=0)ExitProcess(14);
     Sleep(2000);
     void *player=calloc(1,16);construct(player);set_render(player,&renderer);
-    set_source(player,device,1,0,0);play(player);
+    set_source(player,device,1,definition,0);play(player);
     ULONGLONG started = GetTickCount64();
     for (;;) {
         LONG state = InterlockedCompareExchange(&finished,0,0);
