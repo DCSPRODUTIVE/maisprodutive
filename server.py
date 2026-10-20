@@ -1,4 +1,4 @@
-"""Local browser workbench. Remote hosting and P2P video are not implemented."""
+"""Local browser workbench with an experimental native one-frame adapter."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 import argparse
@@ -10,6 +10,7 @@ import time
 
 from yoosee import Config, IntegrationError, YooseeClient, probe
 from desktop import DesktopClient, load_profile, profile_path
+from video import readiness as video_readiness
 
 ROOT = Path(__file__).parent
 SESSION_TTL = 20 * 60
@@ -30,6 +31,7 @@ class Workbench(ThreadingHTTPServer):
         super().__init__(address, Handler)
         self.sessions = {}
         self.guard = threading.Lock()
+        self.video_guard = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,7 +46,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -101,7 +103,9 @@ class Handler(BaseHTTPRequestHandler):
                 except IntegrationError as exc:
                     configured, reason = False, str(exc)
                     auth_mode = "unavailable"
+                snapshot_ready, snapshot_message = video_readiness() if auth_mode == "windows-experimental" else (False, "A captura exige o perfil Windows.")
                 return self.send(200, {"csrf": state["csrf"], "configured": configured,
+                                       "snapshot_ready": snapshot_ready, "snapshot_message": snapshot_message,
                                        "auth_mode": auth_mode,
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
@@ -158,6 +162,16 @@ class Handler(BaseHTTPRequestHandler):
                     # Separate authentication from device retrieval and video readiness.
                     state["client"] = client
                     return self.send(200, {"message": "Login aceito pelo serviço. Consulte agora as câmeras da conta. O vídeo ainda não está implementado."})
+                if self.path == "/api/video/snapshot":
+                    client = state["client"]
+                    if not isinstance(client, DesktopClient):
+                        raise IntegrationError("authentication", "Entre pelo perfil Windows e consulte as câmeras primeiro.")
+                    if not self.server.video_guard.acquire(blocking=False):
+                        raise IntegrationError("video_busy", "Já existe uma captura em andamento. Aguarde sua conclusão.")
+                    try:
+                        return self.send(200, client.snapshot(body.get("device_id")))
+                    finally:
+                        self.server.video_guard.release()
                 if self.path == "/api/devices":
                     state["devices"] = []
                     if state["client"] is None:

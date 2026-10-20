@@ -248,3 +248,74 @@ Há também `IotVideoSDK.dll`, x64, com exports de registro e player, mas nenhum
 biblioteca foi executada ou integrada. Transporte P2P, decodificação e entrega de
 vídeo ao navegador continuam pendentes. O acesso remoto do aplicativo original
 não implica que uma simples listagem HTTP forneça os quadros de vídeo.
+
+## Confirmação real e adaptador experimental de imagem
+
+Em 20/10/2026, o usuário confirmou no Chromebook o login Windows e a consulta de
+oito câmeras da sua própria conta, com captura de tela do painel. Isso valida
+esse fluxo de autenticação/listagem no ambiente dele. Os identificadores e o
+login não são reproduzidos neste documento. Não há ainda confirmação de quadros.
+
+### Caminho nativo identificado
+
+No `Yoosee.exe` analisado:
+
+- `0x140160620`: `IoTVideoSdkModel::UserRegister`; chamada de `getInstance()` e
+  registro com `accessId` e `accessToken` da sessão (`Register` em `0x14016097c`).
+- `0x140168ef0`: criação do player de 16 bytes, instalação do VideoRender,
+  `setDataResource` em `0x14016981f` com ID, tipo de conexão 1, definição e canal;
+  `play` em `0x140169870`.
+- VideoRenderCase: construtor `0x1401a34b0`, vtable `0x1405c1110`. Entradas:
+  destrutor `0x1401a3530`, init `0x1401a3650`, frameUpdate `0x1401a3590`,
+  release `0x1401a36a0`. Init lê formato em AVHeader+0x18. O frameUpdate lê
+  largura/altura em AVData+0x40/+0x44 e três ponteiros de planos em +0/+0x10/+0x20.
+  O renderer original também passa somente esses ponteiros, dimensões e formato
+  ao renderizador, sem pitches adicionais.
+
+No `IotVideoSDK.dll`, x64, exports relevantes:
+
+- construtor IoTVideoPlayer `0x18002db70` (objeto externo de 16 bytes);
+- Register `0x180030950`: ID decimal em std::string por valor e token por referência;
+  a string por valor é destruída pela função. A ponte usa layout MSVC x64 e
+  alocação da UCRT para compatibilidade do buffer destruído;
+- setDataResource `0x18002e510`, play `0x18002e140`, setVideoRender exportado.
+
+`native/yoosee_snapshot.c` implementa uma ponte C própria, sem código do fabricante.
+Reconstrói a interface virtual de renderização e espera um quadro YUV420 planar.
+Só emite o quadro por um handle privado; stdout/stderr do SDK são suprimidos.
+Tokens entram por stdin, nunca argumentos ou arquivos de configuração.
+`video.py` limita o processo a 45 segundos, valida o formato e tamanho e converte
+um quadro em JPEG com FFmpeg. Não há login automático adicional nem fallback.
+`DesktopClient.snapshot` só aceita IDs da última consulta bem-sucedida da conta;
+consulta falha ou novo login apagam essa autorização. O endpoint mantém as mesmas
+verificações de sessão, Origin e CSRF e limita o servidor a uma captura por vez.
+
+`configure_video.py` valida o instalador já conhecido, extrai quatro DLLs e
+compila a ponte com MinGW. Dados e binários ficam ignorados em `.local/video`.
+A preparação não executa o SDK. Hashes das DLLs reconhecidas:
+
+| Arquivo | SHA-256 |
+| --- | --- |
+| IotVideoSDK.dll | e1a93b18fbac566f5350a5e9b6156839acca48fa0088689993301dec77be6053 |
+| msvcp140.dll | 10ddff48d704c6007e4c2d53fb4856b5e5e79479503366236246a323aaa76e9d |
+| vcruntime140.dll | 8ee6b49830436ff3bec9ba89213395427b5535813930489f118721fd3d2d942c |
+| vcruntime140_1.dll | f8bc270449ca6bb6345e88be3632d465c0a7595197c7954357dc5066ed50ae44 |
+
+### O que foi executado e o que permanece pendente
+
+Diferentemente da análise inicial, nesta etapa a DLL foi **carregada e executada**
+pelo adaptador em Wine 10, dentro de contêiner Debian trixie com `--network none`.
+Não houve credenciais, câmera ou registro externo. O teste `--sdk-selftest`
+construiu o player e instalou o renderer, retornando 0. O teste
+`--frame-selftest` forneceu um quadro YUV sintético de 16x16 à mesma função de
+renderização; o resultado foi convertido em JPEG real pelo FFmpeg. Esses testes
+não exercitam registro da sessão, NAT traversal, recepção ou decodificação de
+vídeo de uma câmera real e não demonstram compatibilidade completa da ABI.
+
+A preparação real a partir do instalador, a compilação com warnings como erros e
+a reexecução idempotente passaram. São 53 testes Python e 8 testes da interface,
+incluindo autorização por câmera, exclusão mútua, expiração do processo, ausência
+de tokens em argumentos/respostas e identificação da imagem como captura pontual.
+Falta o teste do usuário no Chromebook com uma câmera real. O primeiro quadro,
+se recebido, permitirá avaliar o próximo passo de transmissão contínua. Áudio,
+PTZ, gravação, detecção de pessoas e alertas não foram implementados.

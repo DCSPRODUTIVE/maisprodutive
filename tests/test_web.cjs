@@ -13,7 +13,7 @@ class Element {
   addEventListener(name, callback) { this.handlers[name] = callback; }
 }
 
-async function setup(networkResponse, statusOverride = {}, loginResponse = null) {
+async function setup(networkResponse, statusOverride = {}, loginResponse = null, snapshotResponse = null) {
   const elements = new Map();
   const get = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -28,6 +28,7 @@ async function setup(networkResponse, statusOverride = {}, loginResponse = null)
     if (url === "/api/status") return { ok: true, json: async () => status };
     if (url === "/api/connectivity") return networkResponse;
     if (url === "/api/login" && loginResponse) return loginResponse;
+    if (url === "/api/video/snapshot" && snapshotResponse) return snapshotResponse;
     throw new Error("Unexpected request: " + url);
   };
   const code = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
@@ -101,4 +102,29 @@ test("failed network test clears stale successes and restores the test button", 
   assert.equal(get("network-results").children.length, 0);
   assert.match(get("network-results").textContent, /Aguarde 30 segundos/);
   assert.equal(get("network").disabled, false);
+});
+
+test("capture renders a received image as a still and sends only the selected device", async () => {
+  const image = "data:image/jpeg;base64,/9j/test/9k=";
+  const { get, calls } = await setup(null, { auth_mode: "windows-experimental", authenticated: true,
+    snapshot_ready: true, devices: [{ id: "owned", name: "Minha câmera" }] }, null,
+    { ok: true, json: async () => ({ image, message: "Imagem recebida. Captura pontual." }) });
+  const card = get("cameras").children[0];
+  const button = card.children[3];
+  assert.equal(button.textContent, "Testar imagem");
+  assert.equal(button.disabled, false);
+  await button.handlers.click();
+  const submitted = calls.filter((call) => call.url === "/api/video/snapshot");
+  assert.equal(submitted.length, 1);
+  assert.deepEqual(JSON.parse(submitted[0].options.body), { device_id: "owned" });
+  const updated = get("cameras").children[0];
+  assert.equal(updated.children[4].src, image);
+  assert.match(updated.children[5].textContent, /Não é transmissão ao vivo/);
+});
+
+test("unprepared capture stays disabled and explains the local requirement", async () => {
+  const { get } = await setup(null, { auth_mode: "windows-experimental", authenticated: true,
+    snapshot_ready: false, snapshot_message: "Prepare o adaptador local.", devices: [{ id: "owned", name: "Minha câmera" }] });
+  assert.equal(get("cameras").children[0].children[3].disabled, true);
+  assert.match(get("snapshot-status").textContent, /Prepare o adaptador/);
 });

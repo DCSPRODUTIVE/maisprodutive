@@ -5,19 +5,18 @@ e posteriormente detectar pessoas e emitir alertas.
 
 ## Estado real
 
-O painel implementa login e consulta de câmeras usando o protocolo identificado
-por análise estática do instalador Windows **1.0.0.8 enviado pelo usuário**.
-O executável não foi instalado ou executado. A implementação continua experimental:
-nenhuma conta real foi autenticada nesta validação.
+O login e a consulta de **oito câmeras reais foram confirmados pelo usuário no
+Chromebook**, usando o protocolo identificado no instalador Windows **1.0.0.8**. O instalador foi analisado estaticamente.
 
-- Verificado: importação dos parâmetros do arquivo enviado, inicialização local,
-  testes com respostas sintéticas e assinatura das consultas.
-- Pendente: aceitação do login pelo serviço e listagem real das câmeras.
-- Não implementado: transporte P2P de vídeo, reprodução no navegador, detecção de
-  pessoas, notificações e hospedagem pública com autenticação.
+A próxima etapa é um adaptador experimental de captura pontual pelo SDK nativo:
+carrega `IotVideoSDK.dll` pelo Wine, registra a sessão e tenta receber um quadro
+YUV, convertido em JPEG pelo FFmpeg e apresentado no painel. O adaptador já
+passou por testes locais de carregamento/ABI e conversão com quadro sintético,
+sem rede. **Nenhuma imagem de câmera real foi recebida nesta validação.**
 
-O painel só lista câmeras recebidas da API. Uma lista de câmeras, por si só,
-não confirma acesso ao vídeo.
+Transmissão contínua, áudio, detecção de pessoas, notificações e hospedagem pública
+continuam pendentes. A captura usa os mesmos dados de sessão, sem VPN, e só permite
+câmeras retornadas pela consulta da conta. Não muda configurações da câmera.
 
 ## Preparar no Chromebook
 
@@ -78,6 +77,62 @@ outro protocolo após rejeição. O modo Windows tem prioridade quando o perfil
 existe; um perfil inválido produz erro, sem fallback. Não é necessário obter
 credenciais de desenvolvedor para testar este perfil importado.
 
+## Testar a primeira imagem no Chromebook
+
+Esta etapa exige Linux **x86_64** (o Chromebook usado até aqui é amd64).
+O login e a consulta atuais continuam sendo HTTP Python; a captura executa a
+biblioteca Windows importada do instalador por meio do Wine, em processo separado.
+O adaptador é experimental e ainda não foi validado com vídeo real.
+
+Pare o servidor com Ctrl+C e execute um comando por vez:
+
+```sh
+cd ~/maisprodutive
+```
+
+```sh
+git pull origin main
+```
+
+```sh
+sudo apt install -y --no-install-recommends 7zip wine gcc-mingw-w64-x86-64 ffmpeg
+```
+
+A instalação dessas ferramentas pode levar alguns minutos. Depois:
+
+```sh
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe
+```
+
+Espere **Adaptador de imagem preparado**. Esse comando valida o instalador e
+quatro DLLs por SHA-256, extrai somente essas DLLs e compila o código C deste
+repositório. Não executa o SDK nessa preparação. Os binários ficam em `.local/video`,
+ignorados pelo Git; o perfil de login existente é preservado. Repetir a mesma
+preparação é permitido; uma versão diferente é preservada e exige renomear a pasta.
+
+```sh
+python3 server.py --port 8085
+```
+
+Abra `http://localhost:8085`, faça login, consulte as câmeras e clique em
+**Testar imagem** em somente uma delas. O teste pode levar até um minuto, incluindo
+a primeira inicialização do Wine. Se houver imagem, aparecerá identificada como
+**captura pontual**, sem indicação de transmissão ao vivo. Se falhar, compartilhe
+somente a mensagem exibida; nunca envie tokens, perfil local ou saída bruta do SDK.
+Não há nova tentativa automática nem novo envio de login/senha à API.
+
+A captura registra a sessão no SDK, abre a câmera solicitada e espera no máximo
+25 segundos por um quadro (45 segundos para todo o processo nativo e mais 15 para
+conversão). Falhas de registro, ausência de quadro e formato incompatível são
+diferenciadas. Somente YUV420 planar é suportado nesta primeira versão. O player
+não envia áudio, comandos PTZ ou alterações de configurações.
+
+O processo nativo recebe a sessão pela entrada padrão, sem tokens em argumentos
+de shell. Saídas do fabricante são suprimidas; somente o quadro é aceito. Arquivos
+que o SDK crie no diretório temporário de trabalho são removidos ao final. A sessão
+é reaproveitada em memória; o painel só recebe JPEG e mensagens fixas. Há uma
+captura por vez no servidor. Sair ou entrar novamente apaga as imagens do painel.
+
 ## Desenvolvimento e validação
 
 Python 3.10+ e biblioteca padrão, sem dependências Python. 7zip é necessário
@@ -90,7 +145,7 @@ node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-São 46 testes Python e 6 testes de interface, com dados sintéticos. O perfil
+São 53 testes Python e 8 testes de interface, com dados sintéticos. O perfil
 padrão fica dentro do checkout; `YOOSEE_DESKTOP_PROFILE` permite indicar outro
 caminho local. Não versione o perfil nem os binários do fabricante.
 

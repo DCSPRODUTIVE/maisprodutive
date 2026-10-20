@@ -221,7 +221,8 @@ class DesktopBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "profile.json"
             save_profile(PROFILE, target)
-            transport = FakeDesktopTransport({"code": 0, "data": {"accessId": "123", "accessToken": TOKEN}})
+            transport = FakeDesktopTransport({"code": 0, "data": {"accessId": "123", "accessToken": TOKEN}},
+                                             {"code": 0, "data": {"deviceList": [{"devId": "owned", "remarkName": "Camera"}], "leftNum": 0}})
             with patch.dict(os.environ, {"YOOSEE_DESKTOP_PROFILE": str(target)}):
                 server = Workbench(("127.0.0.1", 0))
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -247,6 +248,25 @@ class DesktopBrowserTests(unittest.TestCase):
                         legacy.assert_not_called()
                     self.assertEqual(len(transport.calls), 1)
                     self.assertEqual(transport.calls[0][1]["body"]["mobileArea"], "55")
+                    with patch("video.capture", return_value={"image": "data:image/jpeg;base64,test", "message": "Captura pontual"}) as capture:
+                        request = urllib.request.Request(base + "/api/video/snapshot", data=b'{"device_id":"owned"}', headers=headers)
+                        with self.assertRaises(urllib.error.HTTPError) as rejected:
+                            urllib.request.urlopen(request, timeout=3)
+                        self.assertEqual(rejected.exception.code, 422)
+                        capture.assert_not_called()
+                        with urllib.request.urlopen(urllib.request.Request(base + "/api/devices", data=b'{}', headers=headers), timeout=3) as r:
+                            self.assertEqual(r.status, 200)
+                        with urllib.request.urlopen(request, timeout=3) as r:
+                            raw += r.read()
+                        capture.assert_called_once()
+                        server.video_guard.acquire()
+                        try:
+                            with self.assertRaises(urllib.error.HTTPError) as busy:
+                                urllib.request.urlopen(request, timeout=3)
+                            self.assertEqual(busy.exception.code, 422)
+                            self.assertEqual(capture.call_count, 1)
+                        finally:
+                            server.video_guard.release()
                     with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as r:
                         raw += r.read()
                     self.assertNotIn(TOKEN.encode(), raw)

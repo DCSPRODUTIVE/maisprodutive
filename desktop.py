@@ -1,6 +1,6 @@
 """Experimental HTTP protocol recovered from the user-provided Windows client.
 
-No Windows code is executed. Client parameters are imported locally; account
+The HTTP module does not execute Windows code. Client parameters are imported locally; account
 credentials and access tokens never go into the profile or browser responses.
 """
 from dataclasses import dataclass
@@ -168,9 +168,11 @@ class DesktopClient:
         self.config = config
         self.transport = transport or DesktopTransport()
         self.account = None
+        self.device_ids = set()
 
     def login(self, username, password, country_code="55"):
         self.account = None
+        self.device_ids.clear()
         response = self.transport.request(DESKTOP_LOGIN, body=build_login(self.config, username, password, country_code))
         assert_success(response)
         data = response.get("data")
@@ -179,6 +181,7 @@ class DesktopClient:
         self.account = DesktopAccount(str(data["accessId"]), data["accessToken"])
 
     def devices(self):
+        self.device_ids.clear()
         if self.account is None:
             raise IntegrationError("authentication", "Entre na conta antes de consultar as câmeras.")
         devices, seen, cursor = [], set(), "0"
@@ -204,8 +207,17 @@ class DesktopClient:
             if not isinstance(remaining, int) or isinstance(remaining, bool) or remaining < 0:
                 raise IntegrationError("protocol", "Paginação da API Windows incompatível.")
             if remaining == 0:
+                self.device_ids = seen
                 return devices
             if not rows:
                 raise IntegrationError("protocol", "Paginação de câmeras sem progresso.")
             cursor = str(rows[-1]["devId"])
         raise IntegrationError("protocol", "Consulta excedeu o limite de páginas.")
+
+    def snapshot(self, device_id):
+        if self.account is None:
+            raise IntegrationError("authentication", "Entre na conta primeiro.")
+        if not isinstance(device_id, str) or device_id not in self.device_ids:
+            raise IntegrationError("input", "Consulte as câmeras da sua conta e selecione uma delas.")
+        from video import capture
+        return capture(self.account, device_id)

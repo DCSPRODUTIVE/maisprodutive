@@ -1,6 +1,7 @@
 let csrf = "";
 let busy = false;
 let currentStatus = null;
+const snapshots = new Map();
 const $ = (id) => document.getElementById(id);
 function buttons() {
   $("network").disabled = busy || !csrf;
@@ -8,7 +9,9 @@ function buttons() {
   $("connect").disabled = busy || !currentStatus?.configured;
   $("refresh").disabled = busy || !currentStatus?.authenticated;
   $("logout").disabled = busy || !currentStatus?.authenticated;
+  for (const button of snapshotButtons) button.disabled = busy || !currentStatus?.authenticated || !currentStatus?.snapshot_ready;
 }
+let snapshotButtons = [];
 async function status() {
   const response = await fetch("/api/status", { cache: "no-store" });
   const data = await response.json();
@@ -25,6 +28,8 @@ async function status() {
         : "Pronto para testar a autenticação com a configuração SDK. Compatibilidade ainda não validada."))
     : data.configuration_message;
   $("cameras").replaceChildren();
+  snapshotButtons = [];
+  $("snapshot-status").textContent = data.auth_mode === "windows-experimental" ? data.snapshot_message || "" : "";
   $("empty").hidden = data.devices.length > 0;
   for (const camera of data.devices) {
     const card = document.createElement("article");
@@ -35,6 +40,21 @@ async function status() {
     const note = document.createElement("p");
     note.textContent = "Vídeo ainda indisponível nesta integração.";
     card.append(title, id, note);
+    if (data.auth_mode === "windows-experimental") {
+      const capture = document.createElement("button");
+      capture.textContent = "Testar imagem";
+      capture.addEventListener("click", () => action("/api/video/snapshot", { device_id: camera.id }));
+      snapshotButtons.push(capture);
+      card.append(capture);
+      if (snapshots.has(camera.id)) {
+        const img = document.createElement("img");
+        img.src = snapshots.get(camera.id);
+        img.alt = `Captura pontual de ${camera.name}`;
+        const caption = document.createElement("p");
+        caption.textContent = "Imagem capturada neste teste. Não é transmissão ao vivo.";
+        card.append(img, caption);
+      }
+    }
     $("cameras").append(card);
   }
   buttons();
@@ -42,6 +62,7 @@ async function status() {
 async function action(path, body) {
   if (busy) return;
   busy = true;
+  if (["/api/login", "/api/logout", "/api/devices"].includes(path)) snapshots.clear();
   buttons();
   $("message").textContent = "Consultando…";
   if (path === "/api/connectivity") $("network-results").textContent = "Testando a comunicação com os servidores…";
@@ -53,6 +74,7 @@ async function action(path, body) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || "Falha na consulta.");
+    if (path === "/api/video/snapshot" && typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) snapshots.set(body.device_id, data.image);
     if (path === "/api/connectivity") {
       $("network-results").replaceChildren();
       for (const observation of data.observations) {
