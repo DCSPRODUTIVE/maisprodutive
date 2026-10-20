@@ -12,7 +12,9 @@
 <div id="network-results" role="status" aria-live="polite"></div></section>
 <section class="panel"><h2>Conectar ao Yoosee</h2>
 <p id="configuration" role="status">Verificando configuração…</p>
-<form id="login"><fieldset id="credentials" disabled><label>Login da conta<input name="username" autocomplete="username" required maxlength="320" placeholder="E-mail ou identificador Yoosee"></label>
+<form id="login"><fieldset id="credentials" disabled><label>Login da conta<input name="username" autocomplete="username" required maxlength="320" placeholder="E-mail ou telefone com DDD"></label>
+<label>Código do país para telefone<input name="country_code" inputmode="numeric" value="55" maxlength="4" pattern="[1-9][0-9]{0,3}" aria-describedby="country-hint"></label>
+<p id="country-hint" class="hint">Brasil: 55. Se usar e-mail, este campo é ignorado.</p>
 <label>Senha<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
 <p class="hint">A senha é enviada ao servidor local para autenticação na Yoosee. Não é salva neste projeto.</p>
 <button id="connect" type="submit" disabled>Testar login experimental</button></fieldset></form>

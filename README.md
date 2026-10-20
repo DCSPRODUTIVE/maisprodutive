@@ -5,139 +5,135 @@ e posteriormente detectar pessoas e emitir alertas.
 
 ## Estado real
 
-- Implementado: cliente HTTP de login e consulta paginada das câmeras, baseado no
-  SDK Gwell publicado; painel local; diagnóstico de conectividade pela CLI e pelo
-  botão **Testar comunicação com a Yoosee**, sem senha ou credenciais SDK.
-- Verificado: testes automatizados com respostas sintéticas e requisições HTTP
-  reais ao painel local. Esses testes não comprovam compatibilidade com a nuvem.
-- **Não verificado:** autenticação de uma conta real, listagem real de câmeras ou
-  compatibilidade com o firmware 37.0.14 mostrado pelo usuário.
-- **Não implementado:** transporte P2P de vídeo, reprodução no navegador,
-  detecção de pessoas, notificações e hospedagem pública com autenticação.
+O painel implementa login e consulta de câmeras usando o protocolo identificado
+por análise estática do instalador Windows **1.0.0.8 enviado pelo usuário**.
+O executável não foi instalado ou executado. A implementação continua experimental:
+nenhuma conta real foi autenticada nesta validação.
 
-O painel não apresenta vídeos ou câmeras simuladas. Ele só lista câmeras recebidas
-da API e informa que o vídeo permanece indisponível.
+- Verificado: importação dos parâmetros do arquivo enviado, inicialização local,
+  testes com respostas sintéticas e assinatura das consultas.
+- Pendente: aceitação do login pelo serviço e listagem real das câmeras.
+- Não implementado: transporte P2P de vídeo, reprodução no navegador, detecção de
+  pessoas, notificações e hospedagem pública com autenticação.
 
-## Teste experimental apenas com a conta
+O painel só lista câmeras recebidas da API. Uma lista de câmeras, por si só,
+não confirma acesso ao vídeo.
 
-Sem `YOOSEE_APP_ID` e `YOOSEE_APP_TOKEN`, o painel permite **Testar login
-experimental**. Digite o login e a senha da sua própria conta no painel local.
-Cada envio faz uma única solicitação ao endpoint HTTPS documentado pelo SDK antigo,
-com o hash de senha no formato desse SDK, omitindo inteiramente AppID/AppToken.
-Não há repetição automática, troca de servidor após rejeição ou uso de tokens
-extraídos de outro aplicativo.
+## Preparar no Chromebook
 
-**O suporte do servidor a esse modo ainda não foi confirmado.** Permitir a
-tentativa no painel não significa que a autenticação funcionará. O serviço pode
-exigir os parâmetros de desenvolvedor ou outro protocolo. Se retornar `10901020`,
-isso indica parâmetros obrigatórios ausentes, não uma confirmação de senha errada.
-Não repita tentativas para tentar superar esse erro. Compartilhe apenas o código
-e a mensagem mostrados no painel, nunca a senha, sessões ou respostas brutas.
-
-Nenhuma conta real foi usada para validar o modo experimental. Os testes de login
-usam respostas sintéticas. Mesmo se o serviço aceitar o login e a consulta de
-câmeras, o transporte de vídeo continua não implementado.
-
-## Executar
-
-Python 3.10 ou posterior, somente biblioteca padrão. Sem dependências para instalar.
+Use o Terminal Linux. Se houver um servidor rodando, pressione **Ctrl+C** primeiro.
+Execute os comandos abaixo, um por vez:
 
 ```sh
-cd /workspace/maisprodutive
+cd ~/maisprodutive
+```
+
+```sh
+git pull origin main
+```
+
+```sh
+sudo apt install -y 7zip
+```
+
+Mova o arquivo original **Yoosee-1.0.0.8.exe** para **Arquivos Linux**, se ainda não
+estiver lá. Ele precisa ser o mesmo arquivo dividido e enviado para análise.
+Não use o instalador 1.0.0.14 ou somente uma das partes.
+
+```sh
+python3 configure_desktop.py ~/Yoosee-1.0.0.8.exe
+```
+
+Espere a mensagem **Perfil Windows preparado**. A ferramenta verifica o SHA-256
+do instalador e do executável interno, usa 7zip apenas para extração e grava os
+parâmetros em `.local/yoosee-desktop.json`, ignorado pelo Git e com permissão 0600.
+Não executa código Windows e não solicita senha da conta. Os hashes reconhecem o
+arquivo analisado; não certificam a identidade do fabricante.
+
+Se o original foi apagado e restaram as três partes, coloque-as em **Arquivos
+Linux** e reconstrua primeiro, nesta ordem:
+
+```sh
+cat ~/Yoosee-parte-aa ~/Yoosee-parte-ab ~/Yoosee-parte-ac > ~/Yoosee-1.0.0.8.exe
+```
+
+Inicie o servidor:
+
+```sh
+python3 server.py --port 8081
+```
+
+Abra `http://localhost:8081` no Chrome do próprio Chromebook e recarregue a página.
+O botão deve dizer **Testar login Windows**. Se mostrar o modo antigo, confira a
+mensagem da importação e reinicie o processo do servidor.
+
+Digite o e-mail e a senha usados na sua conta Yoosee. Para conta de telefone,
+use somente números com DDD no login e o código do país separado (**55** para
+Brasil). Faça uma tentativa e observe a resposta. Se o login for aceito, clique
+em **Consultar câmeras**. Compartilhe somente a mensagem/código exibido, nunca
+senha, perfil local, tokens ou resposta bruta.
+
+Cada envio faz uma única tentativa, sem repetir automaticamente nem mudar para
+outro protocolo após rejeição. O modo Windows tem prioridade quando o perfil
+existe; um perfil inválido produz erro, sem fallback. Não é necessário obter
+credenciais de desenvolvedor para testar este perfil importado.
+
+## Desenvolvimento e validação
+
+Python 3.10+ e biblioteca padrão, sem dependências Python. 7zip é necessário
+somente para extrair o instalador; um `Yoosee.exe` interno com hash reconhecido
+pode ser importado diretamente. Node.js serve apenas para testar a interface.
+
+```sh
 python -m unittest discover -s tests -v
-node --test tests/test_web.cjs  # opcional: testes da interface, requer Node.js
+node --test tests/test_web.cjs
 python server.py --port 8080
 ```
 
-O servidor escuta apenas em loopback. O painel é uma bancada local e **não está
-preparado para exposição pública**. Não faça encaminhamento de porta ou exposição
-remota antes de acrescentar HTTPS e autenticação de usuários. A interface de
-onboarding não oferece visualização web desse endereço local.
+São 46 testes Python e 6 testes de interface, com dados sintéticos. O perfil
+padrão fica dentro do checkout; `YOOSEE_DESKTOP_PROFILE` permite indicar outro
+caminho local. Não versione o perfil nem os binários do fabricante.
 
-## Configuração opcional do SDK
+O servidor escuta apenas em loopback. O painel é uma bancada local; hospedagem
+pública depende de HTTPS e autenticação adicionais. O GitHub armazena o código;
+GitHub Pages não executa o servidor Python necessário à integração.
 
-Configure no processo do servidor, usando as configurações seguras do ambiente:
+A senha é recebida pelo servidor local, transformada conforme o protocolo Windows
+e enviada à API por HTTPS com verificação TLS. Não é gravada no projeto ou no
+armazenamento do navegador. Sessões e tokens ficam em memória por até 20 minutos;
+sair ou reiniciar o servidor apaga a sessão local, sem encerrar o aplicativo oficial.
 
-| Variável | Finalidade |
-| --- | --- |
-| `YOOSEE_APP_ID` | Identificação válida do aplicativo, fornecida pelo serviço Gwell |
-| `YOOSEE_APP_TOKEN` | Token correspondente à identificação do aplicativo |
-| `YOOSEE_PACKAGE` | Nome de pacote registrado para esse aplicativo; padrão `com.yoosee` |
-| `YOOSEE_APP_VERSION` | Versão SDK com quatro componentes; padrão `00.00.00.01`, apenas para pesquisa |
-| `YOOSEE_API_HOST` | Um dos quatro hosts documentados no cliente; padrão `api3.cloud-links.net` |
+## Rede e protocolos
 
-O modo SDK publicado inclui identificação de aplicativo **além do login do usuário**.
-Não há credenciais de aplicativo válidas confirmadas neste projeto. Os valores
-de teste antigos do exemplo não são incluídos nem tratados como válidos.
-O pacote e a versão devem corresponder ao cadastro Gwell; os padrões não
-comprovam compatibilidade com o aplicativo oficial atual.
+Com perfil Windows, o painel usa `openapi-iot.cloudlinks.cn`. O teste de comunicação
+consulta esse destino sem credenciais. Uma resposta HTTP ou um código de API
+não autentica a conta. Sem perfil, o diagnóstico continua consultando os quatro
+servidores históricos.
 
-Se configurar ambos os campos, o cliente usa o modo SDK; configurar apenas um é
-erro e não provoca fallback automático para o modo experimental. Sem ambos, o
-painel permite a tentativa experimental descrita acima, sem cadastro SDK.
-A senha não é gravada no repositório, nos logs ou em armazenamento do navegador.
-As sessões ficam na memória por até 20 minutos; sair apaga a sessão local, sem
-invocar o logout remoto do aplicativo oficial. Reiniciar o servidor apaga todas.
+A API Windows usa POST JSON para `/openapi/app/user/login/account` e consulta
+assinada GET para `/openapi/app/user/device/listDevice`. Parâmetros de aplicativo
+são importados localmente do arquivo analisado. Certificados HTTPS continuam
+verificados, mesmo que o executável original desative essa verificação.
 
-Para usar a CLI, configure também `YOOSEE_USERNAME` e `YOOSEE_PASSWORD` no ambiente:
+Nesta máquina, o proxy ainda bloqueia o novo host com HTTP 403. Isso impede um
+teste externo daqui, mas não determina o acesso à internet no Chromebook.
+Salvar domínios no rascunho da configuração não aplica mudanças à máquina atual.
 
-```sh
-python yoosee.py probe
-python yoosee.py devices
-```
+## Histórico do modo antigo
 
-Não passe senhas em argumentos de shell, arquivos versionados ou mensagens do chat.
-O cliente precisa da senha real em memória para calcular o hash exigido pelo SDK;
-um placeholder de segredo substituído apenas por proxy HTTPS não funciona para
-esse cálculo local. Nunca copie valores de segredos para este README.
+Sem perfil Windows, `YOOSEE_APP_ID` e `YOOSEE_APP_TOKEN` selecionam o cliente do SDK
+histórico, quando ambos estão presentes. Sem ambos, permanece o modo antigo
+`account-experimental`. Configuração parcial é erro. A tentativa real anterior
+retornou `10901020` (parâmetros obrigatórios ausentes); isso não confirma senha
+incorreta. O próximo teste deve usar o perfil Windows acima.
 
-## Rede e bloqueios
+As opções históricas são `YOOSEE_PACKAGE` (padrão `com.yoosee`),
+`YOOSEE_APP_VERSION` (padrão exploratório `00.00.00.01`) e `YOOSEE_API_HOST`
+(padrão `api3.cloud-links.net`; também admite `api4.cloud-links.net`,
+`api1.cloudlinks.cn` e `api2.cloudlinks.cn`). A CLI `python yoosee.py probe`
+continua diagnosticando esses quatro hosts; `python yoosee.py devices` usa
+somente o cliente antigo com `YOOSEE_USERNAME`/`YOOSEE_PASSWORD` no ambiente.
+Use o painel para o novo protocolo Windows.
 
-O cliente usa somente HTTPS com verificação de certificado e de hostname. Não
-segue redirecionamentos, pois o protocolo legado usa parâmetros de URL para
-autenticação. As exceções expostas não contêm URLs, sessões ou hashes de senha.
-
-Destinos HTTP identificados no SDK:
-
-- `api1.cloudlinks.cn`
-- `api2.cloudlinks.cn`
-- `api3.cloud-links.net`
-- `api4.cloud-links.net`
-
-Na investigação mais recente, `api3.cloud-links.net/Users/LoginCheck.ashx`
-respondeu HTTP 200 e `error_code=10901020` a um GET sem parâmetros. A mensagem
-indica parâmetros ausentes: comprova acesso ao endpoint, sem validar autenticação.
-`python yoosee.py probe` consulta esse caminho sem credenciais e distingue uma
-resposta JSON da API de uma página HTML. `authentication_tested` permanece falso.
-Salvar uma lista de domínios no rascunho não aplica a alteração à máquina e não
-comprova que a nuvem aceita o protocolo legado.
-
-Após a publicação da configuração, o catálogo e o CDN oficial ficaram acessíveis.
-Foi baixado `yoosee-00.46.06.46-release.apk` (310.347.986 bytes), cujo manifesto
-identifica `com.yoosee` versão **6.46.2**, código **6462**. A ferramenta
-`apksigtool 0.1.0` confirmou as assinaturas internas v2 e v3. Isso verifica a
-integridade assinada; a identidade do signatário não foi comparada com uma
-instalação independente da Play Store. A origem foi o link derivado do site oficial.
-
-O APK contém um carregador protegido; as classes normais de autenticação não
-estão disponíveis na leitura DEX direta. As bibliotecas nativas continuam sendo
-Android ARM/ARM64. O portal antigo `sdk.yoosee.co` retorna HTTP 503. Não há
-identificação válida de aplicativo confirmada, e nenhum login real foi testado.
-Não foi instalado nem executado o APK. Hashes e evidências em `docs/research.md`.
-
-## Próximo marco de validação
-
-1. Aplicativo oficial obtido e assinaturas internas verificadas; ainda falta
-   comparação independente do certificado e um runtime compatível para executá-lo.
-2. Verificar se a autenticação e os dados de aplicativo atuais são compatíveis
-   com o SDK publicado; atualizar o cliente somente com evidência do protocolo.
-3. Com rede liberada e credenciais inseridas de forma segura, testar uma única
-   autenticação e uma consulta de câmeras, sem repetição automática de logins.
-4. Implementar e testar o transporte P2P: o SDK disponível inclui somente
-   bibliotecas Android ARM/ARM64, incompatíveis diretamente com o host Linux x86_64.
-   Seria necessário um runtime Android compatível ou uma implementação própria
-   do protocolo. O ambiente atual não expõe `/dev/kvm` ou dispositivos binder.
-5. Só depois de receber quadros reais: converter vídeo para o navegador, implantar
-   autenticação/HTTPS para acesso online e integrar detecção e alertas.
-
-Detalhes e fontes em [docs/research.md](docs/research.md).
+As evidências do SDK histórico, APK Android e análise Windows, com limites de
+validação, estão em [docs/research.md](docs/research.md).

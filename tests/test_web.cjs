@@ -22,7 +22,7 @@ async function setup(networkResponse, statusOverride = {}, loginResponse = null)
   const calls = [];
   const status = { csrf: "test-csrf", configured: true, auth_mode: "account-experimental",
     authenticated: false, devices: [], video_available: false, ...statusOverride };
-  get("login").elements = { username: { value: "" }, password: { value: "" } };
+  get("login").elements = { username: { value: "" }, password: { value: "" }, country_code: { value: "55" } };
   const fetch = async (url, options) => {
     calls.push({ url, options });
     if (url === "/api/status") return { ok: true, json: async () => status };
@@ -41,8 +41,8 @@ test("account-only experiment enables login with an explicit compatibility notic
   assert.equal(get("credentials").disabled, false);
   assert.equal(get("connect").disabled, false);
   assert.equal(get("network").disabled, false);
-  assert.match(get("configuration").textContent, /Teste experimental/);
-  assert.match(get("configuration").textContent, /pode rejeitar/);
+  assert.match(get("configuration").textContent, /Modo antigo experimental/);
+  assert.match(get("configuration").textContent, /importe primeiro/);
 });
 
 test("invalid SDK configuration disables login and explains the configuration error", async () => {
@@ -51,6 +51,14 @@ test("invalid SDK configuration disables login and explains the configuration er
   assert.equal(get("connect").disabled, true);
   assert.match(get("configuration").textContent, /Configuração SDK incompleta/);
   assert.equal(get("network").disabled, false);
+});
+
+test("imported Windows profile selects the new login label without claiming authentication", async () => {
+  const { get } = await setup(null, { auth_mode: "windows-experimental" });
+  assert.equal(get("connect").textContent, "Testar login Windows");
+  assert.match(get("configuration").textContent, /Perfil Windows preparado/);
+  assert.match(get("configuration").textContent, /ainda precisam ser confirmados/);
+  assert.equal(get("refresh").disabled, true);
 });
 
 test("successful network test sends no credentials and does not authenticate", async () => {
@@ -80,7 +88,7 @@ test("login submits once, clears password, and displays the provider rejection",
   await attempt;
   const submissions = calls.filter((call) => call.url === "/api/login");
   assert.equal(submissions.length, 1);
-  assert.deepEqual(JSON.parse(submissions[0].options.body), { username: "test@example.invalid", password: "test-password" });
+  assert.deepEqual(JSON.parse(submissions[0].options.body), { username: "test@example.invalid", password: "test-password", country_code: "55" });
   assert.match(get("message").textContent, /10901020/);
   assert.equal(get("refresh").disabled, true);
   assert.equal(get("connect").disabled, false);

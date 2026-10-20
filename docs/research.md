@@ -164,3 +164,87 @@ Ambos os parâmetros presentes selecionam o modo SDK original; configuração pa
 é rejeitada antes de usar a rede. São 28 testes Python e 5 testes da interface,
 com respostas sintéticas para a autenticação. Continua pendente um envio real pelo
 usuário no Chromebook e a observação da resposta, sem compartilhar sua senha.
+
+## Cliente Windows 1.0.0.8 enviado em três partes
+
+O usuário enviou `Yoosee-parte-aa`, `-ab` e `-ac`, concatenados nessa ordem.
+O instalador reconstruído tem 79.184.684 bytes e SHA-256
+`0f0a6901fe4aefdc1d77dc0d3e1182df61711165f677811f394f280ee42e6d21`.
+É um instalador NSIS 3 Unicode/LZMA. Foi extraído, sem executar código Windows,
+com 7zip Debian 25.01+dfsg-1~deb13u2. O pacote de extração foi validado pela
+cadeia InRelease assinada → checksum Packages.xz → checksum do .deb.
+
+O `Yoosee.exe` interno tem 8.977.920 bytes, é PE x64/Qt5 e tem SHA-256
+`8720a7c99022cf51fb53b80e91ae151e4e45c8992cbe83b839c57a782c0b323a`.
+Os dois arquivos não têm entrada de assinatura Authenticode. A origem informada
+foi `https://yooseeapp.org/yoosee-for-pc/`; a identidade do fabricante não foi
+estabelecida. O hash fixa o arquivo inspecionado, sem autenticar essa origem.
+O download oferecido depois para 1.0.0.14 permaneceu bloqueado pelo proxy e
+não foi tratado como equivalente à versão analisada.
+
+### Evidências do protocolo
+
+Análise com pefile e Capstone, seguindo referências RIP a strings e chamadas
+Qt. Endereços virtuais correspondem à imagem original, base `0x140000000`:
+
+- `UserMobileLogin`: `0x14017f610..0x14018102a`.
+- Construtor WebApiModel: `0x140179310`, chamado em `0x140152710` antes do login.
+- Helper HTTP JSON: `0x1401841a0`.
+- Composição da mensagem para assinatura: `0x140183090`.
+- `giote_user_signature`: `0x140183a40`.
+
+O destino é `https://openapi-iot.cloudlinks.cn`, diferente dos endpoints históricos.
+O login é POST JSON em `/openapi/app/user/login/account`, Content-Type
+`application/json; charset=utf-8`, sem a assinatura usada posteriormente na lista.
+Campos comuns identificados: `language="ZH"`, `pkgName="Yoosee.PC"`,
+`appName="Yoosee.PC"`, `terminalOS=1`, `appVersion="10"`, `apiVersion="10"`,
+mais `appId`/`appToken`. Estes dois últimos são parâmetros estáticos do cliente;
+seus valores não são documentados nem versionados. A importação local lê os RVAs
+`0x5BB5A8` e `0x5BB5E0` somente após validar o hash exato do executável.
+
+O corpo de login tem `action="account"`, `uniqueId` derivado do MAC local,
+`pwd` MD5 hexadecimal minúsculo e os campos de conta. E-mail usa
+`loginMode="email"` e `email`; telefone usa `loginMode="mobile"`, `mobile`
+e `mobileArea` (país). O fluxo nativo converte a senha para Latin-1 antes do MD5;
+caracteres fora dessa codificação tornam-se `?` por unidade UTF-16. A implementação
+reproduz essa conversão. A resposta aceita é `code=0` e `data.accessId` com
+`data.accessToken`. Um código positivo ou uma sessão incompleta não é sucesso.
+
+A lista é GET em `/openapi/app/user/device/listDevice`. A query contém parâmetros
+comuns, `lastDeviceId="0"` inicialmente e os primeiros 96 caracteres de
+`accessToken`. A mensagem assinada inclui também `host="openapi-iot.cloudlinks.cn"`,
+`x-iotvideo-accessid`, `x-iotvideo-nonce` e `x-iotvideo-timestamp`. Ordena chaves
+lexicograficamente e une pares `chave:valor` com newline, sem newline final.
+A assinatura é Base64 de HMAC-SHA1, usando como chave os 16 bytes decodificados
+dos últimos 32 caracteres hexadecimais do token completo. A estrutura foi também
+comparada com a função de assinatura JavaScript pública do site oficial.
+Cabeçalhos: `X-IotVideo-AccessID`, `X-IotVideo-Nonce`, `X-IotVideo-Timestamp`,
+`X-IotVideo-Signature`. O nonce nativo é um contador módulo 1000; o cliente Python
+usa aleatoriedade no mesmo intervalo. Tokens incompatíveis são rejeitados
+localmente; não se inventam sessões nem se tentam assinaturas alternativas.
+
+A paginação lê `data.deviceList` e `data.leftNum`. O painel recebe apenas ID e
+nome; chaves e tokens de dispositivos não são encaminhados ao navegador.
+A implementação preserva a verificação TLS, apesar de o binário desativá-la.
+
+### Implementação e limites do teste
+
+`configure_desktop.py` importa o perfil ignorado pelo Git, com permissão 0600,
+sem executar o instalador. Só aceita os dois hashes conhecidos. Uma configuração
+existente diferente é preservada; uma importação idêntica é idempotente.
+`desktop.py` implementa o protocolo; `server.py` seleciona o perfil Windows quando
+presente e não tenta novamente pelo protocolo antigo se houver rejeição.
+O teste de comunicação do painel seleciona o endpoint do protocolo ativo,
+sem senha ou tentativa de autenticação.
+
+Importação do instalador real e reimportação idêntica verificadas nesta máquina.
+46 testes Python e 6 de interface passaram com respostas sintéticas, incluindo
+assinatura determinística, erros sem vazamento de tokens, paginação e seleção do
+cliente pelo servidor. Isso não confirma autenticação de uma conta real.
+O proxy da nuvem retornou 403 para o novo host; nenhuma credencial de conta foi
+usada na investigação. O teste real deve ocorrer no painel local do usuário.
+
+Há também `IotVideoSDK.dll`, x64, com exports de registro e player, mas nenhuma
+biblioteca foi executada ou integrada. Transporte P2P, decodificação e entrega de
+vídeo ao navegador continuam pendentes. O acesso remoto do aplicativo original
+não implica que uma simples listagem HTTP forneça os quadros de vídeo.

@@ -15,10 +15,13 @@ async function status() {
   if (!response.ok) throw new Error(data.message || "Não foi possível consultar o servidor.");
   csrf = data.csrf;
   currentStatus = data;
+  $("connect").textContent = data.auth_mode === "windows-experimental" ? "Testar login Windows" : "Testar login experimental";
   $("configuration").textContent = data.configured
     ? (data.authenticated ? "Conta autenticada nesta sessão. O vídeo ainda não está disponível." :
-      (data.auth_mode === "account-experimental"
-        ? "Teste experimental com sua conta: uma solicitação de login, sem credenciais de desenvolvedor. A Yoosee pode rejeitar este método."
+      (data.auth_mode === "windows-experimental"
+        ? "Perfil Windows preparado. O próximo teste usa a API identificada no instalador enviado. Acesso à conta e ao vídeo ainda precisam ser confirmados."
+        : data.auth_mode === "account-experimental"
+        ? "Modo antigo experimental. Para testar a API identificada no Windows, importe primeiro o instalador conforme as instruções do projeto."
         : "Pronto para testar a autenticação com a configuração SDK. Compatibilidade ainda não validada."))
     : data.configuration_message;
   $("cameras").replaceChildren();
@@ -78,8 +81,9 @@ $("login").addEventListener("submit", (event) => {
   const form = event.currentTarget;
   const username = form.elements.username.value;
   const password = form.elements.password.value;
+  const country_code = form.elements.country_code.value;
   form.elements.password.value = "";
-  return action("/api/login", { username, password });
+  return action("/api/login", { username, password, country_code });
 });
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));

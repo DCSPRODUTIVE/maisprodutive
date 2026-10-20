@@ -245,17 +245,22 @@ class YooseeClient:
         raise IntegrationError("protocol", "Consulta excedeu o limite de páginas.")
 
 
-def probe() -> list[dict]:
+def probe(*, desktop=False) -> list[dict]:
     """Read-only service reachability; no credentials or login attempts."""
     opener = urllib.request.build_opener(NoRedirect())
     results = []
-    for host in HOSTS:
+    if desktop:
+        from desktop import DESKTOP_HOST, DESKTOP_LOGIN
+        destinations = [(DESKTOP_HOST, DESKTOP_LOGIN.lstrip("/"))]
+    else:
+        destinations = [(host, LOGIN_PATH) for host in HOSTS]
+    for host, path in destinations:
         observation = {"host": host, "authentication_tested": False,
                        "protocol_response": False}
         try:
             # An HTML landing page does not establish that the API exists.
             # GET without any parameters is a credential-free endpoint check.
-            with opener.open("https://" + host + "/" + LOGIN_PATH, timeout=8) as response:
+            with opener.open("https://" + host + "/" + path, timeout=8) as response:
                 observation.update(http=response.status, reachable=True)
                 raw = response.read(8193)
                 try:
@@ -263,7 +268,7 @@ def probe() -> list[dict]:
                 except (ValueError, UnicodeError):
                     payload = None
                 if isinstance(payload, dict):
-                    code = str(payload.get("error_code", ""))
+                    code = str(payload.get("code" if desktop else "error_code", ""))
                     if re.fullmatch(r"[0-9A-Fa-f]{1,12}", code):
                         observation.update(protocol_response=True, provider_code=code)
         except urllib.error.HTTPError as exc:

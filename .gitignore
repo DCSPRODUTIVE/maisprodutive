@@ -7,3 +7,6 @@ __pycache__/
 *.xapk
 *.aar
 *.jar
+*.exe
+*.dll
+Yoosee-parte-*
