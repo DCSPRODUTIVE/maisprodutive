@@ -4,6 +4,7 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+const desired = new Map();
 const qualities = new Map();
 const snapshots = new Map();
 const feeds = new Map();
@@ -29,12 +30,12 @@ function buttons() {
   $("refresh").disabled = busy || bulk || !auth;
   $("logout").disabled = busy || !auth;
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
-  $("stop-all").disabled = busy || (!feeds.size && !bulk);
+  $("stop-all").disabled = busy || (!feeds.size && !desired.size && !bulk);
   for (const { id, capture, watch, stop, quality } of cameraControls) {
     quality.disabled = busy || bulk || !ready;
     capture.disabled = busy || bulk || !ready || (feeds.has(id) && !feeds.get(id).image);
     watch.disabled = busy || bulk || !ready || feeds.has(id);
-    stop.disabled = busy || !feeds.has(id);
+    stop.disabled = busy || (!feeds.has(id) && !desired.has(id));
   }
   updateMetrics();
 }
@@ -149,7 +150,7 @@ async function post(path, body, keepalive = false) {
       signal: keepalive ? undefined : AbortSignal.timeout(12000),
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify(body) });
     const data = await response.json();
-    if (!response.ok) { const error = new Error(data.message || "Falha na consulta."); error.status = response.status; throw error; }
+    if (!response.ok) { const error = new Error(data.message || "Falha na consulta."); error.status = response.status; error.kind = data.error; throw error; }
     return data;
   } catch (error) {
     if (error.name === "TimeoutError" || error.name === "AbortError") throw new Error("O painel não respondeu a tempo. Tente novamente.");
@@ -162,12 +163,30 @@ function cancelOne(id) {
   feeds.delete(id);
   return feed;
 }
+function forget(id) {
+  const intent = desired.get(id);
+  if (intent?.timer !== undefined) clearTimeout(intent.timer);
+  desired.delete(id);
+}
+function reconnect(id, error) {
+  const intent = desired.get(id);
+  const retryable = !error.status || error.status >= 500 || error.status === 429 ||
+    ["video_timeout", "video_stale", "video_native", "video_decode", "video_resources", "video_stopped", "video_busy", "video_idle"].includes(error.kind);
+  if (!intent || !retryable || !currentStatus?.authenticated) return;
+  const delay = Math.min(60000, 5000 * 2 ** Math.min(intent.attempts++, 4));
+  errors.set(id, `${error.message} Nova tentativa em ${delay / 1000}s.`);
+  intent.timer = setTimeout(() => {
+    if (desired.get(id) === intent) startOne(id, intent.mosaic, true);
+  }, delay);
+}
 function cancelAll() {
+  for (const id of [...desired.keys()]) forget(id);
   batchToken++;
   bulk = false;
   for (const id of [...feeds.keys()]) cancelOne(id);
 }
 async function stopOne(id) {
+  forget(id);
   const feed = cancelOne(id);
   paint(id); buttons();
   if (feed) {
@@ -182,8 +201,12 @@ async function stopAll() {
   try { await post("/api/video/stop", {}); $("message").textContent = "Todas as transmissões foram encerradas."; }
   catch (error) { $("message").textContent = error.message; }
 }
-async function startOne(id, mosaic = false) {
-  if (busy || feeds.has(id)) return;
+async function startOne(id, mosaic = false, retry = false) {
+  if (busy || feeds.has(id)) {
+    if (retry) reconnect(id, new Error("Aguardando o painel ficar disponível."));
+    return;
+  }
+  if (!retry) { forget(id); desired.set(id, { mosaic, attempts: 0 }); }
   const feed = { id, handle: null, sequence: 0, image: null, age: null, updatedAt: null, timer: null, caption: "Conectando. Aguardando o primeiro quadro…" };
   feeds.set(id, feed); errors.delete(id); render();
   try {
@@ -196,7 +219,7 @@ async function startOne(id, mosaic = false) {
     feed.timer = setTimeout(() => pollFeed(feed), 0);
   } catch (error) {
     if (feeds.get(id) === feed) {
-      cancelOne(id); errors.set(id, error.message);
+      cancelOne(id); errors.set(id, error.message); reconnect(id, error);
       $("message").textContent = error.message;
       render();
     }
@@ -223,6 +246,7 @@ async function pollFeed(feed) {
     if (data.device_id !== feed.id) throw new Error("A câmera da transmissão mudou. Inicie novamente.");
     if (typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) {
       feed.image = data.image; feed.sequence = data.sequence;
+      if (desired.has(feed.id)) desired.get(feed.id).attempts = 0;
     }
     feed.state = data.state;
     feed.age = data.age_seconds;
@@ -241,6 +265,7 @@ async function pollFeed(feed) {
       return;
     }
     try { await post("/api/video/stop", { device_id: feed.id, stream_id: feed.handle }); } catch { /* Idle lease is the final fallback. */ }
+    reconnect(feed.id, error);
     $("message").textContent = error.message;
     paint(feed.id); buttons();
   }
@@ -253,7 +278,7 @@ async function action(path, body) {
   if (path === "/api/connectivity") $("network-results").textContent = "Testando a comunicação com os servidores…";
   try {
     if (["/api/login", "/api/logout", "/api/devices"].includes(path)) {
-      const hadFeeds = feeds.size > 0 || bulk;
+      const hadFeeds = feeds.size > 0 || desired.size > 0 || bulk;
       cancelAll(); snapshots.clear(); errors.clear();
       if (hadFeeds) try { await post("/api/video/stop", {}); } catch { /* Session operation also closes streams. */ }
     }
@@ -288,6 +313,18 @@ async function action(path, body) {
     if (openCameras && currentStatus?.authenticated && currentStatus?.snapshot_ready) await startAll();
   }
 }
+// Refresh the HttpOnly cookie and local idle lease, even when cameras are stopped.
+if (typeof setInterval !== "undefined") setInterval(() => {
+  fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(12000) })
+    .then(response => response.ok ? response.json() : null)
+    .then(data => {
+      if (data && currentStatus?.authenticated && !data.authenticated) {
+        cancelAll(); snapshots.clear();
+        status().catch(() => {});
+        $("message").textContent = "A sessão terminou. Entre novamente para continuar.";
+      }
+    }).catch(() => {});
+}, 5 * 60 * 1000);
 if (typeof setInterval !== "undefined") setInterval(() => {
   for (const feed of feeds.values()) {
     if (feed.image && frameAge(feed) > 3) feed.caption = `Sem novos quadros há ${Math.floor(frameAge(feed))} segundos…`;
@@ -317,7 +354,7 @@ $("camera-search").addEventListener("input", render);
 $("watch-all").addEventListener("click", startAll);
 $("stop-all").addEventListener("click", stopAll);
 if (typeof window !== "undefined") window.addEventListener("pagehide", () => {
-  const hadFeeds = feeds.size > 0 || bulk;
+  const hadFeeds = feeds.size > 0 || desired.size > 0 || bulk;
   cancelAll();
   if (hadFeeds) post("/api/video/stop", {}, true).catch(() => {});
 });

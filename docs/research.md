@@ -489,3 +489,19 @@ seis fixtures no Wine com rede desabilitada, incluindo formato 5 de três planos
 NV12 com U/V distintos e seis quadros contínuos. Chromium validou oito cartões,
 resolução exibida e ausência de overflow horizontal/erros JavaScript em desktop,
 Chromebook e celular, com conta e imagens sintéticas apenas no teste.
+
+## Sessão local contínua e recuperação para uso na TV
+
+A expiração local passa a ser por inatividade: requisições da sessão atualizam
+expires e o prazo dos streams. GET /api/status também renova o cookie HttpOnly,
+SameSite=Strict com Max-Age=1200; o navegador consulta esse endpoint a cada cinco
+minutos sem reconstruir os cartões. A falta de consultas ainda encerra os fluxos
+pelo watchdog. Nada é persistido de credenciais ou tokens em disco.
+
+A interface mantém intenção de assistir separada do fluxo atual. Falhas
+transitórias iniciam outra conexão da mesma câmera após 5, 10, 20, 40 e no máximo
+60 segundos; um quadro recebido zera essa espera. Parar, logout e fechamento da
+página removem a intenção e seus timers. Erros de configuração/entrada e sessão
+HTTP inválida não repetem o login. O encerramento nativo aos 20 minutos continua
+limitado, seguido de nova conexão; não se promete vídeo sem intervalo nessa troca.
+O acesso do provedor não é renovado automaticamente e pode exigir novo login.

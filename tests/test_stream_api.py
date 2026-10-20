@@ -91,6 +91,18 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(len(self.server.active_streams),0)
         self.assertIsNone(self.state['client'])
 
+    def test_active_session_renews_cookie_and_live_lease(self):
+        self.post('/api/video/start', {'device_id':'0'})
+        stream = FakeStream.instances[-1]
+        old = self.state['expires'] = time.monotonic()+1
+        request = urllib.request.Request(self.base+'/api/status', headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request) as response:
+            self.assertIn('Max-Age=1200', response.headers['Set-Cookie'])
+            self.assertTrue(json.load(response)['authenticated'])
+        self.assertGreater(self.state['expires'], old+1000)
+        self.assertEqual(stream.expires, self.state['expires'])
+        self.assertFalse(stream.stopped.is_set())
+
     def test_quality_requests_preserve_original_size_and_validate_values(self):
         for quality, definition in (("hd", 1), ("fhd", 2), ("original", 0)):
             with self.subTest(quality=quality):

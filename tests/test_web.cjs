@@ -267,3 +267,20 @@ test("quality selection restarts only that camera with requested definition", as
   assert.equal(starts[2].quality,"fhd");
   assert.equal(calls.filter(c=>c.url==="/api/video/stop").length,1);
 });
+
+
+test("temporary stream failure retries without login and Stop cancels pending retry", async () => {
+  const responses = liveResponses();
+  responses['/api/video/frame'] = {ok:false,status:422,json:async()=>({error:'video_timeout',message:'Sem conexão'})};
+  const {get,calls,runTimer,timers} = await setup(null, liveStatus, null, null, responses);
+  await cardButton(get,0,'Assistir').handlers.click();
+  await runTimer();
+  assert.ok([...timers.values()].some(timer=>timer.ms===5000));
+  await runTimer();
+  assert.equal(calls.filter(call=>call.url==='/api/video/start').length,2);
+  assert.equal(calls.filter(call=>call.url==='/api/login').length,0);
+  await runTimer();
+  assert.equal(cardButton(get,0,'Parar').disabled,false);
+  await cardButton(get,0,'Parar').handlers.click();
+  assert.equal(timers.size,0);
+});

@@ -58,8 +58,8 @@ todas**, **Capturar**, busca pelo nome e o botão de tela cheia em cada imagem.
 
 Os estados **Conectando**, **Ao vivo**, **Aguardando** e **Atenção** são calculados
 pelos dados recebidos. Uma imagem antiga deixa de contar como ao vivo após três
-segundos sem atualização. Falha em uma câmera não encerra as outras. Não há
-reconexão automática nem repetição do login. Compartilhe somente a mensagem de
+segundos sem atualização. Falha em uma câmera não encerra as outras. Falhas transitórias de transmissão são retentadas com espera progressiva de 5 a
+60 segundos, sem repetir o login. Parar/Parar todas cancela as tentativas. Compartilhe somente a mensagem de
 erro exibida, nunca senha, perfil, tokens ou saídas brutas do SDK.
 
 ## Primeira preparação no Chromebook
@@ -128,10 +128,11 @@ aberta. Uma captura sem transmissão abre um processo pontual.
 A transmissão para quando você clica em Parar, sai da conta, entra novamente,
 refaz a consulta de câmeras, encerra o servidor ou deixa de consultar quadros por
 20 segundos. Fechar a página também tenta encerrar todas; a expiração por
-inatividade cobre a ausência dessa solicitação. A sessão dura no máximo 20 minutos,
-sem renovação automática. Sem primeiro quadro em 45 segundos ou sem novos quadros
+inatividade cobre a ausência dessa solicitação. A sessão local expira após 20 minutos sem uso. Enquanto o painel está aberto,
+uma consulta a cada cinco minutos renova o cookie e a sessão local; consultas de
+quadros também renovam a sessão e o prazo dos fluxos ativos. Sem primeiro quadro em 45 segundos ou sem novos quadros
 por 15 segundos, a transmissão termina e informa erro. Mudanças de resolução
-encerram o fluxo para reinício explícito. A captura pontual tem seu próprio limite
+encerram o fluxo e permitem uma nova tentativa automática. A captura pontual tem seu próprio limite
 de 45 segundos mais conversão.
 
 Tokens passam pela entrada padrão do adaptador, sem argumentos de shell, logs
@@ -182,3 +183,18 @@ Use o painel para Windows e vídeo. O proxy desta nuvem bloqueia o novo host HTT
 o teste real bem-sucedido ocorreu na conexão do Chromebook.
 
 Evidências, hashes e investigação em [docs/research.md](docs/research.md).
+
+## Uso contínuo na TV
+
+Mantenha o servidor e a página abertos no computador ligado à TV por HDMI.
+O painel renova a sessão local enquanto aberto e tenta recuperar transmissões
+após quedas, sem guardar senha nem repetir o login. Cada processo nativo ainda
+possui o limite de 20 minutos; o painel abre outra conexão após esse encerramento,
+com uma breve interrupção. Parar uma câmera ou todas cancela as tentativas.
+Use tela cheia do Chrome e configure o Chromebook para não suspender nem apagar
+a tela enquanto estiver na tomada. Uma aba congelada pelo navegador não consegue
+manter o monitoramento. Não feche a tampa se isso suspender o computador.
+
+Esta versão conserva a sessão em memória: reiniciar o servidor/computador ou
+uma invalidação do token pela Yoosee pode exigir novo login. Não há promessa de
+funcionamento ininterrupto nem recuperação de autenticação sem credenciais.

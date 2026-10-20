@@ -97,7 +97,11 @@ class Handler(BaseHTTPRequestHandler):
                     del self.server.sessions[key]
             state = self.server.sessions.get(sid)
             if state:
-                return state, None
+                # Sliding local session while the dashboard is actively used.
+                state["expires"] = now + SESSION_TTL
+                for stream in list(state["streams"].values()):
+                    stream.expires = state["expires"]
+                return state, f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
             if not create or len(self.server.sessions) >= 16:
                 return None, None
             sid = secrets.token_urlsafe(32)
