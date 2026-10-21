@@ -361,3 +361,16 @@ test("person detection is opt-in, saved per camera, and restored", async () => {
   saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
   assert.deepEqual(saved.at(-1).detection_ids,['a']);
 });
+
+
+test("HTML gateway failures show a connection message and retry without raw HTML", async () => {
+  const responses=liveResponses();
+  responses['/api/video/frame']={ok:false,status:502,json:async()=>{throw new SyntaxError('Unexpected token < <!DOCTYPE html> private-details');}};
+  const {get,calls,runTimer,runDelay}=await setup(null,liveStatus,null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  const texts=descendants(get('cameras').children[0]).map(el=>el.textContent).join(' ');
+  assert.match(texts,/HTTP 502/);assert.match(texts,/Nova tentativa/);
+  assert.doesNotMatch(texts,/DOCTYPE|private-details|Unexpected token/);
+  await runDelay(5000);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,2);
+});

@@ -626,3 +626,14 @@ escaping e leitura do config sem credenciais. systemd-analyze verify aprovou os
 dois arquivos gerados, sem instalação/inicialização de serviços na nuvem. A suíte
 Python completa passou com 92 testes. A configuração real depende do systemd do
 Chromebook e deve ser aplicada executando o instalador naquele computador.
+
+## Resposta HTML do túnel durante consultas de câmera
+
+A captura do usuário mostrou Failed to fetch e HTML (!DOCTYPE) onde o painel
+esperava JSON, junto com timeouts P2P. Isso comprova falhas de transporte/resposta,
+mas não determina se houve queda do processo, saturação, túnel ou internet.
+readResponse trata JSON inválido sem exibir HTML/logs e classifica a resposta como
+falha transitória; respostas 5xx mantêm código HTTP. As tentativas existentes são
+preservadas. Teste simula HTML de gateway 502, verifica mensagem de conexão,
+ausência de conteúdo bruto e nova tentativa. 23 testes de interface passaram.
+A causa no Chromebook ainda exige comparar localhost e domínio e checar serviços.

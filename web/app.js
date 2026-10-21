@@ -213,10 +213,25 @@ function render() {
   if (devices.length && !selected.length) $("cameras").append(element("p", "hint", "Nenhuma câmera encontrada para esta busca."));
   buttons();
 }
+async function readResponse(response) {
+  try {
+    const data=await response.json();
+    if(!data || typeof data!=="object" || Array.isArray(data))throw new Error("Invalid response");
+    return data;
+  } catch {
+    const code=Number.isInteger(response.status)?response.status:0;
+    const error=new Error(code>=500
+      ? `O servidor ou túnel está temporariamente indisponível (HTTP ${code}).`
+      : "O painel recebeu uma resposta inválida do servidor ou túnel. Verifique a conexão.");
+    error.status=code>=500 || code===429?code:503;
+    error.kind="connection";
+    throw error;
+  }
+}
 async function status() {
   const response = await fetch("/api/status", { cache: "no-store" });
   if (response.status === 401 && typeof window !== "undefined") window.location.replace("/access");
-  const data = await response.json();
+  const data = await readResponse(response);
   if (!response.ok) throw new Error(data.message || "Não foi possível consultar o servidor.");
   csrf = data.csrf;
   const wasAuthenticated = currentStatus?.authenticated;
@@ -255,11 +270,12 @@ async function post(path, body, keepalive = false) {
       signal: keepalive ? undefined : AbortSignal.timeout(12000),
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify(body) });
     if (response.status === 401 && typeof window !== "undefined") window.location.replace("/access");
-    const data = await response.json();
+    const data = await readResponse(response);
     if (!response.ok) { const error = new Error(data.message || "Falha na consulta."); error.status = response.status; error.kind = data.error; throw error; }
     return data;
   } catch (error) {
     if (error.name === "TimeoutError" || error.name === "AbortError") throw new Error("O painel não respondeu a tempo. Tente novamente.");
+    if(error instanceof TypeError) throw new Error("A conexão com o painel foi perdida. Verifique o servidor, o túnel e a internet.");
     throw error;
   }
 }
@@ -396,7 +412,7 @@ async function action(path, body) {
     }
     // Snapshot can take up to one minute; no new login or automatic retries.
     const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify(body) });
-    const data = await response.json();
+    const data = await readResponse(response);
     if (!response.ok) throw new Error(data.message || "Falha na consulta.");
     if (path === "/api/video/snapshot" && typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) {
       snapshots.set(body.device_id, data.image); errors.delete(body.device_id);
@@ -428,7 +444,7 @@ async function action(path, body) {
 // Refresh the HttpOnly cookie and local idle lease, even when cameras are stopped.
 if (typeof setInterval !== "undefined") setInterval(() => {
   fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(12000) })
-    .then(response => response.ok ? response.json() : null)
+    .then(response => response.ok ? readResponse(response) : null)
     .then(data => {
       if (data && currentStatus?.authenticated && !data.authenticated) {
         cancelAll(); snapshots.clear();
