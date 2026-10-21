@@ -1,4 +1,4 @@
-let csrf = "", before = null, loading = false, view = "photos";
+let csrf = "", before = null, loading = false, view = location.hash==="#videos" ? "videos" : "photos";
 const $ = id => document.getElementById(id);
 function node(tag, text, cls) { const el=document.createElement(tag); if(text)el.textContent=text;if(cls)el.className=cls;return el; }
 async function load(reset=false) {
@@ -54,3 +54,39 @@ for(const [id,tab] of [['photos-tab','photos'],['videos-tab','videos']]) $(id).a
   $('videos-tab').className=view==='videos'?'selected':'secondary';
   load(true);
 });
+
+async function telegramRequest(action, body={}) {
+  const sessionResponse=await fetch('/api/status',{cache:'no-store'});
+  if(sessionResponse.status===401){window.location.replace('/access');throw new Error('Entre no sistema.');}
+  const session=await sessionResponse.json();
+  if(!session.authenticated)throw new Error('Abra Câmeras e entre na conta Yoosee.');
+  const response=await fetch('/api/telegram/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrf},body:JSON.stringify(body)});
+  const data=await response.json();if(!response.ok)throw new Error(data.message||'Não foi possível configurar Telegram.');
+  return data;
+}
+async function telegramStatus() {
+  try{
+    const data=await telegramRequest('status');
+    $('telegram-enabled').checked=data.enabled;$('telegram-chat').value=data.chat_id;
+    $('telegram-token').placeholder=data.configured?'Token salvo. Deixe vazio para manter.':'Cole o token do BotFather';
+    $('telegram-status').textContent=(data.enabled?'Alertas ativados. ':'Alertas desativados. ')+data.message;
+  }catch(error){$('telegram-status').textContent=error.message;}
+}
+$('telegram-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.submitter;if(button)button.disabled=true;
+  try{
+    await telegramRequest('save',{enabled:$('telegram-enabled').checked,chat_id:$('telegram-chat').value.trim(),token:$('telegram-token').value.trim()});
+    $('telegram-token').value='';await telegramStatus();
+  }catch(error){$('telegram-status').textContent=error.message;}
+  finally{if(button)button.disabled=false;}
+});
+$('telegram-test').addEventListener('click',async()=>{
+  $('telegram-test').disabled=true;
+  try{$('telegram-status').textContent=(await telegramRequest('test')).message;}
+  catch(error){$('telegram-status').textContent=error.message;}
+  finally{$('telegram-test').disabled=false;}
+});
+$('telegram-refresh').addEventListener('click',telegramStatus);
+$('photos-tab').className=view==='photos'?'selected':'secondary';
+$('videos-tab').className=view==='videos'?'selected':'secondary';
+telegramStatus();

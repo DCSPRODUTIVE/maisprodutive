@@ -637,3 +637,23 @@ falha transitória; respostas 5xx mantêm código HTTP. As tentativas existentes
 preservadas. Teste simula HTML de gateway 502, verifica mensagem de conexão,
 ausência de conteúdo bruto e nova tentativa. 23 testes de interface passaram.
 A causa no Chromebook ainda exige comparar localhost e domínio e checar serviços.
+
+
+## Background monitoring and Telegram (21/10/2026)
+
+Enabled person-detection sources are now owned by a server worker, independently
+of browser handles. Economy windows remain five minutes active per thirty-minute
+cycle. Native streams and recorders enforce the window deadline. Camera account
+authorization remains in memory and requires login after a server restart.
+
+Telegram delivery is opt-in per account, using a bounded asynchronous queue and
+HTTPS requests to the fixed api.telegram.org host without redirects. The bot token
+is stored in the private local SQLite database and omitted from API responses and
+logs. Notification failures do not stop local detection. Photo alerts link to the
+authenticated Reports video list, rather than exposing private video files.
+
+Validation: final Python suite passed all 105 tests, including API security and
+Telegram delivery failure isolation. JavaScript suite
+passed all 25 tests. Chromium mobile QA verified configuration, token clearing,
+test submission and the video tab link with simulated APIs. No Telegram message
+was sent and no real camera was accessed in this environment for these changes.

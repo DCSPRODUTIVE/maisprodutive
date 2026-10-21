@@ -192,7 +192,8 @@ class ReportMonitor:
                 for stream in streams:
                     if self.stopped.is_set():break
                     owner=getattr(stream,'report_owner',None)
-                    if not owner or stream.stopped.is_set() or not getattr(stream,'report_detect',False):continue
+                    if (not owner or stream.stopped.is_set() or not getattr(stream,'report_detect',False)
+                        or time.monotonic() >= getattr(stream,'monitor_until',float('inf'))):continue
                     key=(owner,stream.device_id)
                     now=time.monotonic()
                     if now-self.last.get(key,0)<5:continue
@@ -213,6 +214,9 @@ class ReportMonitor:
                         self.store.add(owner,stream.device_id,stream.report_name,kind,jpeg,
                                        max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
                         self.saved[event_key]=now
+                        alerts = getattr(self.server, 'telegram', None)
+                        if alerts:
+                            alerts.enqueue(owner, stream.report_name, jpeg, max(row['confidence'] for row in matches))
                 active={(getattr(s,'report_owner',None),s.device_id) for s in streams}
                 self.last={k:v for k,v in self.last.items() if k in active}
                 self.saved={k:v for k,v in self.saved.items() if k[:2] in active}

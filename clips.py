@@ -99,7 +99,8 @@ class Recorder:
             watchdog.daemon=True;watchdog.start()
             started=time.monotonic();deadline=started+DURATION;next_frame=started
             while time.monotonic()<deadline:
-                if self.stopped.is_set() or self.stream.stopped.is_set() or not getattr(self.stream,'report_detect',False):
+                if (self.stopped.is_set() or self.stream.stopped.is_set() or not getattr(self.stream,'report_detect',False)
+                        or time.monotonic() >= getattr(self.stream,'monitor_until',float('inf'))):
                     interrupted=True;reason='interrupted';break
                 now=time.monotonic()
                 if now<next_frame:

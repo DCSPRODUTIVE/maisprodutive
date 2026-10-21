@@ -15,6 +15,7 @@ from yoosee import Config, IntegrationError, YooseeClient, probe
 from desktop import DesktopClient, load_profile, profile_path
 from video import readiness as video_readiness
 from live import LiveStream
+from background import BackgroundMonitor
 from reports import EventStore, ReportMonitor
 from access import Gate, TTL as ACCESS_TTL, origin as validate_origin
 
@@ -26,6 +27,9 @@ def current_config():
     # An invalid imported profile is an error, never a reason to silently retry
     # the same credentials through another protocol or server.
     return load_profile() if profile_path().exists() else Config.from_environment()
+
+
+from telegram_alerts import TelegramAlerts
 
 
 class Workbench(ThreadingHTTPServer):
@@ -45,8 +49,39 @@ class Workbench(ThreadingHTTPServer):
         self.active_streams = set()
         self.stream_guard = threading.Lock()
         self.reports = ReportMonitor(self, EventStore())
+        self.telegram = TelegramAlerts(self.reports.store, self.public_origin)
+        self.background = BackgroundMonitor(self.open_background, self.stream_snapshot)
         super().__init__(address, Handler)
         self.reports.start()
+        self.background.start()
+
+    def stream_snapshot(self):
+        with self.stream_guard:
+            return list(self.active_streams)
+
+    def open_background(self, entry):
+        if not self.video_guard.acquire(blocking=False):
+            raise IntegrationError("video_busy", "Aguardando uma das 12 conexões disponíveis.")
+        stream = None
+        def release():
+            with self.stream_guard:
+                self.active_streams.discard(stream)
+            self.video_guard.release()
+        try:
+            stream = LiveStream(entry.account, entry.device_id, float("inf"), release, preview_width=entry.width, definition=entry.definition)
+            stream.background = True
+            stream.monitor_until = entry.active_until(self.background.clock())
+            stream.report_owner, stream.report_name, stream.report_detect = entry.owner, entry.name, True
+            with self.stream_guard:
+                self.active_streams.add(stream)
+            stream.start()
+            return stream
+        except Exception:
+            if stream is not None and stream.worker.ident is not None:
+                stream.stop()
+            else:
+                release()
+            raise
 
     def process_request(self, request, client_address):
         if not self.request_guard.acquire(blocking=False):
@@ -77,13 +112,16 @@ class Workbench(ThreadingHTTPServer):
         else:
             stream = streams.pop(device_id, None)
             selected = [stream] if stream is not None else []
+        selected = [stream for stream in selected if not getattr(stream, "background", False)]
         for stream in selected:
             stream.stop(wait=False)
         for stream in selected:
             stream.stop()
 
     def server_close(self):
+        self.background.close()
         self.reports.close()
+        self.telegram.close()
         with self.stream_guard:
             streams = list(self.active_streams)
         for stream in streams:
@@ -301,6 +339,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "authenticated": state["client"] is not None,
                                        "devices": state["devices"], "video_available": False,
                                        "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message,
+                                       "server_monitoring": True,
+                                       "background_status": self.server.background.status(self.report_owner(state)) if isinstance(state["client"], DesktopClient) else None,
                                        "preferences_key": self.report_owner(state) if isinstance(state["client"], DesktopClient) else None,
                                        "preferences": self.server.reports.store.preferences(self.report_owner(state)) if isinstance(state["client"], DesktopClient) else None}, cookie=cookie)
         return self.send(404, {"message": "Recurso não encontrado."})
@@ -328,6 +368,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"message": "Requisição inválida."})
         with state["lock"]:
             try:
+                if self.path in ("/api/telegram/status", "/api/telegram/save", "/api/telegram/test"):
+                    if not isinstance(state["client"], DesktopClient):
+                        raise IntegrationError("authentication", "Entre na conta para configurar Telegram.")
+                    owner = self.report_owner(state)
+                    if self.path.endswith('/save'):
+                        try:
+                            self.server.telegram.config(owner, body)
+                        except ValueError as error:
+                            return self.send(400, {"message": str(error)})
+                    if self.path.endswith('/test'):
+                        if time.monotonic()-state.get('last_telegram_test', 0)<30:
+                            return self.send(429, {"message":"Aguarde 30 segundos entre testes."})
+                        state['last_telegram_test'] = time.monotonic()
+                        if not self.server.telegram.enqueue(owner):
+                            return self.send(400, {"message":"Ative e salve o Telegram antes de testar; confira também a fila de envio."})
+                        return self.send(200, {"message":"Teste colocado na fila. Aguarde alguns segundos e confira o celular ou Atualizar status."})
+                    return self.send(200, self.server.telegram.status(owner))
                 if self.path == "/api/connectivity":
                     if body:
                         return self.send(400, {"message": "O teste de rede não recebe login ou senha."})
@@ -357,7 +414,8 @@ class Handler(BaseHTTPRequestHandler):
                         for stream in self.server.active_streams:
                             if getattr(stream,"report_owner",None)==self.report_owner(state):
                                 stream.report_detect=stream.device_id in values["detection_ids"]
-                    return self.send(200, {"message":"Preferências salvas.","preferences":values})
+                    self.server.background.configure(self.report_owner(state), state["client"].account, state["devices"], values)
+                    return self.send(200, {"message":"Preferências salvas. Monitoramento habilitado continua com a página fechada.","preferences":values,"background_status":self.server.background.status(self.report_owner(state))})
                 if self.path in ("/api/reports", "/api/reports/videos"):
                     if not isinstance(state["client"], DesktopClient):
                         raise IntegrationError("authentication", "Entre na conta para acessar Reports.")
@@ -368,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
                                            "detection_ready": self.server.reports.ready,
                                            "message": self.server.reports.message})
                 if self.path == "/api/logout":
+                    if isinstance(state["client"], DesktopClient):
+                        self.server.background.remove(self.report_owner(state))
                     self.server.stop_streams(state)
                     state["client"], state["devices"] = None, []
                     state["csrf"] = secrets.token_urlsafe(32)
@@ -399,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
                     target = state["streams"].get(device_id) if device_id is not None else None
                     if target is None or body.get("stream_id") is None or target.handle == body["stream_id"]:
                         self.server.stop_streams(state, device_id)
-                    return self.send(200, {"message": "Transmissão encerrada."})
+                    return self.send(200, {"message": "Visualização encerrada. Câmeras habilitadas para detecção continuam em segundo plano."})
                 if self.path == "/api/video/frame":
                     device_id = body.get("device_id")
                     if not isinstance(device_id, str):
@@ -416,6 +476,21 @@ class Handler(BaseHTTPRequestHandler):
                         raise IntegrationError("authentication", "Entre pelo perfil Windows e consulte as câmeras primeiro.")
                     device_id = body.get("device_id")
                     client.require_device(device_id)
+                    owner = self.report_owner(state)
+                    prefs = self.server.reports.store.preferences(owner)
+                    self.server.background.configure(owner, client.account, state["devices"], prefs)
+                    if self.server.background.enabled(owner, device_id):
+                        mosaic = body.get("mosaic", False)
+                        quality = body.get("quality", "balanced")
+                        if not isinstance(mosaic, bool) or quality not in ("balanced", "original", "hd", "fhd"):
+                            raise IntegrationError("input", "Qualidade de imagem inválida.")
+                        previous = state["streams"].get(device_id)
+                        if previous is not None and not previous.stopped.is_set() and hasattr(previous, "manager"):
+                            return self.send(200, {"device_id":device_id,"stream_id":previous.handle,"background":True})
+                        self.server.stop_streams(state, device_id)
+                        view = self.server.background.view(owner, device_id, (640 if mosaic else 960) if quality == "balanced" else 0, {"hd":1,"fhd":2}.get(quality,0))
+                        state["streams"][device_id] = view
+                        return self.send(200, {"device_id":device_id,"stream_id":view.handle,"background":True})
                     previous = state["streams"].get(device_id)
                     if previous is not None and not previous.stopped.is_set():
                         return self.send(200, {"device_id": device_id, "stream_id": previous.handle, "message": "Esta câmera já está em transmissão."})
@@ -457,6 +532,14 @@ class Handler(BaseHTTPRequestHandler):
                         raise IntegrationError("authentication", "Entre pelo perfil Windows e consulte as câmeras primeiro.")
                     device_id = body.get("device_id")
                     client.require_device(device_id)
+                    owner=self.report_owner(state)
+                    if self.server.background.enabled(owner,device_id):
+                        data=self.server.background.frame(owner,device_id,0)
+                        if data["state"]=="paused":
+                            raise IntegrationError("video_waiting", "A câmera está na pausa de economia. Aguarde a próxima janela de monitoramento.")
+                        if not data["image"] or data["age_seconds"] is None or data["age_seconds"]>3:
+                            raise IntegrationError("video_waiting", "Aguarde um quadro recente do monitoramento.")
+                        return self.send(200,{"image":data["image"],"message":"Captura obtida do monitoramento em segundo plano."})
                     stream = state["streams"].get(device_id)
                     if stream is not None and not stream.stopped.is_set():
                         data = stream.frame(0, wait=False)
@@ -475,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
                     if state["client"] is None:
                         raise IntegrationError("authentication", "Entre na conta primeiro.")
                     state["devices"] = state["client"].devices()
+                    if isinstance(state["client"],DesktopClient):
+                        self.server.background.configure(self.report_owner(state),state["client"].account,state["devices"],self.server.reports.store.preferences(self.report_owner(state)))
                     return self.send(200, {"devices": state["devices"]})
                 return self.send(404, {"message": "Recurso não encontrado."})
             except IntegrationError as exc:

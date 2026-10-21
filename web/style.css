@@ -761,3 +761,5 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 .report-tabs { display:flex;gap:10px; margin:20px 0; }
 .report-tabs button.selected { background:#40d9b6;color:#082d24; }
 .report-card video { width:100%; display:block; background:#000; }
+
+.focus-mode #background-status { display:none; }

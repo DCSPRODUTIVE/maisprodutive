@@ -68,6 +68,8 @@ class LiveStream:
         self.device_id = device_id
         self.handle = secrets.token_urlsafe(18)
         self.expires = expires
+        self.background = False
+        self.monitor_until = float("inf")
         self._payload = ('\n'.join(values)+'\n').encode()
         self._on_close = on_close
         self.condition = threading.Condition()
@@ -99,9 +101,11 @@ class LiveStream:
             now = time.monotonic()
             with self.condition:
                 last_seen, last_frame = self.last_seen, self.last_frame
-            if now >= self.expires:
+            if self.background and now >= self.monitor_until:
+                self._fail("video_stopped", "Câmera na pausa programada de economia de dados.")
+            elif not self.background and now >= self.expires:
                 self._fail('authentication', 'A sessão expirou. Entre novamente para continuar.')
-            elif now - last_seen > IDLE_TIMEOUT:
+            elif not self.background and now - last_seen > IDLE_TIMEOUT:
                 self._fail('video_idle', 'A transmissão foi encerrada por falta de visualização.')
             elif last_frame is None and self.connect_started is not None and now - self.connect_started > FIRST_FRAME_TIMEOUT:
                 self._fail('video_timeout', 'A câmera não entregou o primeiro quadro no tempo esperado.')

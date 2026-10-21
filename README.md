@@ -127,15 +127,20 @@ imagem. O painel recebe somente o JPEG mais recente de cada câmera, sem acumula
 um histórico. **Capturar** reaproveita um quadro da transmissão quando ela já está
 aberta. Uma captura sem transmissão abre um processo pontual.
 
-A transmissão para quando você clica em Parar, sai da conta, entra novamente,
-refaz a consulta de câmeras, encerra o servidor ou deixa de consultar quadros por
-20 segundos. Fechar a página também tenta encerrar todas; a expiração por
-inatividade cobre a ausência dessa solicitação. A sessão local expira após 20 minutos sem uso. Enquanto o painel está aberto,
-uma consulta a cada cinco minutos renova o cookie e a sessão local; consultas de
-quadros também renovam a sessão e o prazo dos fluxos ativos. Sem primeiro quadro em 45 segundos ou sem novos quadros
-por 15 segundos, a transmissão termina e informa erro. Mudanças de resolução
-encerram o fluxo e permitem uma nova tentativa automática. A captura pontual tem seu próprio limite
-de 45 segundos mais conversão.
+As câmeras **sem Detectar pessoas** continuam dependendo da visualização e param
+após 20 segundos sem consultas ou ao fechar a página. As câmeras **com Detectar
+pessoas** são controladas pelo servidor e seguem ativas em segundo plano,
+independentemente de aba, cookie ou sessão do navegador. **Parar** e **Parar todas**
+encerram apenas suas visualizações. Para parar o monitoramento, desative Detectar
+pessoas, use **Sair da conta** ou encerre o serviço.
+
+A sessão de navegação expira após 20 minutos sem uso, mas isso não cancela o
+monitoramento já autorizado. Após expirar, entre novamente para ver o painel e os
+Reports. O servidor guarda a autorização da Yoosee somente em memória; reinício
+do serviço ou invalidação pelo provedor exige novo login. Sem primeiro quadro em
+45 segundos ou sem novos quadros por 15 segundos, a conexão é encerrada e o
+servidor tenta novamente, respeitando a janela de economia. A captura pontual tem
+limite próprio e não abre uma câmera monitorada durante a pausa de economia.
 
 Tokens passam pela entrada padrão do adaptador, sem argumentos de shell, logs
 ou respostas ao navegador. Senhas da conta não são gravadas. Sessões e imagens
@@ -188,7 +193,8 @@ Evidências, hashes e investigação em [docs/research.md](docs/research.md).
 
 ## Uso contínuo na TV
 
-Mantenha o servidor e a página abertos no computador ligado à TV por HDMI.
+Mantenha o servidor ativo no computador ligado à TV por HDMI. A página só precisa
+ficar aberta para visualizar; o monitoramento habilitado continua sem ela.
 O painel renova a sessão local enquanto aberto e tenta recuperar transmissões
 após quedas, sem guardar senha nem repetir o login. Cada processo nativo ainda
 possui o limite de 20 minutos; o painel abre outra conexão após esse encerramento,
@@ -235,11 +241,11 @@ identificação facial. Registros antigos de veículos e de abertura de câmeras
 sem apagar o banco existente. O modelo instalado anteriormente pode ser reutilizado.
 
 Fotos, horário, câmera, caixas e confiança ficam em `.local/reports/events.sqlite3`,
-com acesso pelo painel autenticado e separação por conta. A senha/token não são
-salvos. Retenção de fotos: até 1.000 registros por conta e 30 dias. Uma rotina
+com acesso pelo painel autenticado e separação por conta. As credenciais Yoosee não são
+salvas. O token Telegram, se configurado, é salvo neste banco privado. Retenção de fotos: até 1.000 registros por conta e 30 dias. Uma rotina
 de manutenção remove os expirados enquanto o servidor está ligado. O arquivo de banco pode ocupar espaço mesmo após expirar registros;
 SQLite reutiliza essas páginas. Faça backup desse diretório se desejar preservar
-os registros. Parar/pausar a câmera também para a produção de novos eventos dela.
+os registros. A pausa de economia e desativar Detectar pessoas interrompem novos eventos; Parar apenas encerra a visualização das câmeras monitoradas em segundo plano.
 
 Em **Reports**, as abas **Fotos** e **Vídeos** separam os registros. Uma detecção
 inicia um MP4 H.264 de até 120 segundos, sem áudio, a 2 quadros/s, reutilizando os
@@ -251,7 +257,7 @@ mínimo de 60 segundos antes de nova tentativa de gravação.
 Os vídeos ficam em `.local/reports/videos`, com metadados privados no banco.
 São excluídos após 5 dias por manutenção periódica (a cada minuto com servidor
 ligado) e ao acessar o armazenamento. Após desligamento, a limpeza ocorre na
-próxima inicialização. Parar, perder conexão, desativar detecção ou entrar na pausa
+próxima inicialização. Encerrar a conexão, perder conexão, desativar detecção ou entrar na pausa
 de economia encerra o clipe no trecho disponível, identificado **trecho parcial**.
 O sistema não prolonga a janela 4G para completar dois minutos. Ao reiniciar o
 servidor, gravações interrompidas ficam como falha, sem disponibilizar MP4 incompleto.
@@ -275,10 +281,12 @@ limita o volume exato em MB nem elimina o tráfego de negociação.
 
 O erro de 15 segundos sem quadros causa reconexão automática dentro da janela
 ativa. Ao chegar a pausa, o painel cancela também as tentativas pendentes. **Parar**
-ou **Parar todas** cancela o agendamento. Desativar Economia volta à transmissão
-contínua. O agendamento roda enquanto a página estiver aberta. As câmeras escolhidas para
+ou **Parar todas** cancela o agendamento apenas das câmeras sem detecção. Desativar Economia volta à transmissão
+contínua. Para câmeras com Detectar pessoas, o agendamento roda no servidor, mesmo com
+a página fechada. Sem detecção, continua dependendo da página aberta. As câmeras escolhidas para
 economia e o mosaico 8/12 são salvos por conta e restaurados ao entrar novamente.
-O novo acesso começa um novo ciclo. Parar cancela o ciclo atual, mas mantém a preferência. O computador não pode suspender.
+Reabrir o painel não reinicia o ciclo das câmeras monitoradas pelo servidor.
+Parar encerra a visualização; desativar Detectar pessoas encerra o monitoramento. O computador não pode suspender.
 
 ## Chromecast, Fire TV e alertas
 
@@ -325,6 +333,65 @@ caso de falha. Pode fechar os terminais após conferir duas linhas active em
 
 [Instruções completas e remoção](docs/remote-access.md#iniciar-servidor-e-túnel-automaticamente-no-linux).
 No Chromebook pode ser necessário abrir o Terminal uma vez para iniciar o Linux.
-A senha da Yoosee não é armazenada: o login e a abertura do painel continuam
-necessários após reiniciar o servidor. As preferências das câmeras permanecem
+A senha da Yoosee não é armazenada: é preciso abrir o painel e fazer login uma vez após reiniciar o servidor,
+mas depois a página pode ser fechada. As preferências das câmeras permanecem
 salvas. Atualizações de código exigem reiniciar os serviços.
+
+## Monitoramento com navegador fechado
+
+Faça login uma vez após iniciar o servidor e deixe **Detectar pessoas** ativado
+nas câmeras desejadas. O servidor mantém a autorização em memória e inicia o
+monitoramento automaticamente, mesmo que nenhuma visualização esteja aberta.
+
+- Detectar pessoas ligado, Economia desligada: monitoramento contínuo.
+- Detectar pessoas e Economia ligados: até 5 minutos de conexão/análise em cada
+  ciclo de 30 minutos, seguidos de 25 minutos desconectada, sem fotos ou vídeos.
+- Detectar pessoas desligado: não há monitoramento em segundo plano.
+
+Pode fechar a aba ou o navegador. Não é preciso deixar o site aberto no
+Chromebook, nem manter o túnel disponível para a análise local continuar. Linux,
+serviço DCS, acesso à internet das câmeras e computador precisam permanecer ativos,
+sem suspensão. Os serviços instalados permitem fechar também os terminais.
+**Sair da conta** é o botão do próprio painel e encerra o monitoramento daquela
+conta; não é o ato de fechar o Chrome.
+
+O painel e o monitor compartilham a mesma conexão por câmera, dentro do limite
+global de 12. Abrir o site não cria outra conexão nem reinicia a economia. Alterar
+qualidade pode reiniciar a conexão, sem prolongar a janela de 5 minutos. A fase
+do ciclo é mantida em memória pelo servidor; após reiniciar e fazer novo login,
+um novo ciclo começa. Não há armazenamento da senha nem do token Yoosee em disco.
+Os clipes continuam limitados a dois minutos e terminam parcialmente se a janela
+fechar. A retenção de fotos/vídeos continua em 30/5 dias.
+
+
+## Alertas gratuitos pelo Telegram
+
+Em **Reports → Alertas no Telegram**, configure por conta:
+
+1. No celular, abra o Telegram e converse com **@BotFather**. Use `/newbot`, escolha nome e usuário do bot e copie o token.
+2. Abra seu novo bot e toque em **Iniciar**. Consulte seu ID numérico pessoal no **@userinfobot**.
+3. Informe token e ID no painel, marque **Ativar alertas com foto** e salve. Clique em **Enviar teste**. Após alguns segundos, confira o celular e **Atualizar status**.
+
+Não envie seu token ao desenvolvedor nem publique capturas com o token. Ele é
+armazenado apenas no banco privado `.local/reports/events.sqlite3`, separado por
+conta, e nunca devolvido pela API. Deixar o campo vazio mantém o token salvo.
+Desmarque a ativação e salve para interromper envios. A configuração sobrevive a
+reinicializações; a autorização das câmeras Yoosee ainda exige login após reiniciar.
+
+Cada nova foto de pessoa salva no Reports entra numa fila limitada de envio.
+A mensagem contém foto, câmera, horário do servidor e confiança. Quando o servidor
+tem `--public-origin`, inclui link autenticado para **Reports → Vídeos**. É um
+link para a lista de gravações, não um vídeo público. A gravação pode levar até
+dois minutos para finalizar. O celular pode precisar entrar no sistema e na conta
+Yoosee para acessar a lista. Sem endereço público configurado, o alerta orienta a
+consultar o painel, sem fornecer um link local inacessível.
+
+O envio não abre conexão adicional com a câmera e respeita Detectar pessoas e a
+janela de economia. Fotos seguem o intervalo de registro de 60 segundos por câmera.
+O Telegram recebe uma cópia da foto; a retenção de 30/5 dias do Reports não apaga
+mensagens do Telegram. O serviço do bot é gratuito, mas usa internet do servidor e
+do celular. Ative notificações para a conversa no aplicativo.
+
+Falhas são exibidas em Atualizar status, sem expor token. Não há reenvio automático:
+fila cheia, servidor reiniciado ou indisponibilidade podem impedir alertas, enquanto
+os registros locais permanecem independentes. Itens da fila expiram em cinco minutos.

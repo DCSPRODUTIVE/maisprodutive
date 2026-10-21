@@ -76,8 +76,8 @@ O mosaico 8/12 e as câmeras em Economia de dados/Detectar pessoas ficam no banc
 por login da conta Yoosee. Ao entrar novamente, inclusive por outro navegador,
 essas escolhas são recuperadas. Parar cancela o agendamento atual, mas conserva
 a preferência; Assistir ou um novo acesso volta a aplicar o modo escolhido.
-Um novo acesso começa um novo ciclo, sem recuperar o minuto exato de uma janela
-anterior. Economia desativada pelo botão é salva como desativada.
+Nas câmeras com detecção, reabrir o painel preserva o ciclo mantido no servidor.
+Após reiniciar o servidor e fazer login, começa um novo ciclo. Economia desativada pelo botão é salva como desativada.
 
 Reports agora mostra e grava somente pessoas detectadas. Registros antigos de
 abertura e veículos ficam ocultos, sem apagar o banco de dados.
@@ -132,10 +132,10 @@ credenciais ou tokens.
 podem forçar o ChromeOS a iniciar a máquina Linux após ligar o computador. Se o
 Linux não iniciar automaticamente no seu aparelho, abra o aplicativo Terminal
 uma vez; depois os serviços iniciam sem comandos. Não há mudança no endereço fixo.
-A aba do navegador precisa ser aberta para acompanhar as câmeras e executar seus
-ciclos. O login Yoosee continua necessário após reiniciar o servidor: as sessões
-são mantidas em memória e a senha da conta não é armazenada. O instalador não
-promete monitoramento completamente autônomo após ligar o ChromeOS.
+A aba só precisa ficar aberta para visualizar. O servidor executa os ciclos das
+câmeras com Detectar pessoas habilitado mesmo quando o navegador está fechado. O login Yoosee continua necessário após reiniciar o servidor: as sessões
+são mantidas em memória e a senha da conta não é armazenada. Após esse login inicial, a página pode ser fechada. O instalador não
+promete iniciar a VM Linux nem autenticar na Yoosee automaticamente ao ligar o ChromeOS.
 
 Para aplicar uma atualização de código aos serviços, após git pull:
 
@@ -158,3 +158,17 @@ python3 configure_startup.py --uninstall
 Se o Linux não estiver executando systemd, o instalador informa isso e não instala
 serviços. Nesse caso, é necessário adaptar a inicialização ao ambiente mostrado
 pelo aparelho; não substitua isso por comandos que executem o sistema como root.
+
+
+## Monitorar em segundo plano
+
+Após atualizar, reinicie os serviços e faça login no painel uma vez. Câmeras com
+**Detectar pessoas** habilitado ficam sob controle do servidor. O navegador pode
+ser fechado; as câmeras com Economia conectam por 5 minutos e pausam por 25, sem
+que reabrir o site altere esse ciclo. O último quadro aparece como pausado.
+
+**Parar** e fechar a aba encerram somente a visualização. Para encerrar a análise,
+desative **Detectar pessoas**, clique no botão **Sair da conta** dentro do painel
+ou pare o serviço DCS. A autorização é mantida só em memória; reiniciar o serviço
+ou uma invalidação da Yoosee pode exigir novo login. Não é necessário manter o
+site aberto no computador servidor após o primeiro login.

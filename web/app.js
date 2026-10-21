@@ -20,12 +20,13 @@ let views = new Map();
 let cameraControls = [];
 const $ = (id) => document.getElementById(id);
 
+function serverManaged(id) { return !!currentStatus?.server_monitoring && detectionIds.has(id); }
 function frameAge(feed) {
   return feed.updatedAt ? (feed.age || 0) + (Date.now() - feed.updatedAt) / 1000 : Infinity;
 }
 function updateMetrics() {
   $("camera-count").textContent = String(currentStatus?.devices.length || 0);
-  $("live-count").textContent = String([...feeds.values()].filter((f) => f.image && frameAge(f) <= 3).length);
+  $("live-count").textContent = String([...feeds.values()].filter((f) => f.image && f.state !== "paused" && frameAge(f) <= 3).length);
   $("capture-count").textContent = String(snapshots.size);
 }
 function buttons() {
@@ -43,7 +44,7 @@ function buttons() {
     quality.disabled = busy || bulk || !ready;
     detector.disabled = busy || bulk || !ready || detectionPending.has(id);
     saver.disabled = busy || bulk || !ready;
-    capture.disabled = busy || bulk || !ready || !!economy.get(id)?.paused || (feeds.has(id) && !feeds.get(id).image);
+    capture.disabled = busy || bulk || !ready || (!!economy.get(id)?.paused || feeds.get(id)?.state === "paused") || (feeds.has(id) && !feeds.get(id).image);
     watch.disabled = busy || bulk || !ready || feeds.has(id);
     stop.disabled = busy || (!feeds.has(id) && !desired.has(id) && !economy.has(id));
   }
@@ -61,6 +62,7 @@ function stopEconomy(id) {
   economy.delete(id);
 }
 async function economyCycle(id) {
+  if(serverManaged(id)){stopEconomy(id);return startOne(id,true);}
   const schedule = economy.get(id);
   if (!schedule) return;
   clearTimeout(schedule.pauseTimer); clearTimeout(schedule.nextTimer);
@@ -86,9 +88,15 @@ function savePreferences() {
   const owner=currentStatus?.preferences_key;
   preferenceSave = preferenceSave.then(() => {
     if(owner!==currentStatus?.preferences_key)throw new Error("A conta mudou. Salve novamente.");
-    return post("/api/preferences", payload);
+    return post("/api/preferences", payload).then(data=>{
+      if(data.background_status && currentStatus){
+        currentStatus.background_status=data.background_status;
+        $("background-status").textContent=`Monitoramento em segundo plano: ${data.background_status.configured} câmera(s) habilitada(s). Fechar a página não interrompe os registros.`;
+      }
+      return data;
+    });
   }).catch(error => {
-    $("message").textContent = `Não foi possível salvar as preferências: ${error.message}`;
+    $("message").textContent = `Não foi possível confirmar as preferências. Recarregue para verificar: ${error.message}`;
   });
   return preferenceSave;
 }
@@ -97,17 +105,29 @@ async function toggleDetection(id) {
   const wasEnabled=detectionIds.has(id);
   if(wasEnabled)detectionIds.delete(id);else detectionIds.add(id);
   detectionPending.add(id);render();
+  const wasViewing=feeds.has(id)||economy.has(id);
   const saved=await savePreferences();
   if(!saved){if(wasEnabled)detectionIds.add(id);else detectionIds.delete(id);}
+  if(saved && currentStatus?.server_monitoring && wasViewing){
+    stopEconomy(id);await stopOne(id,true);await watchCamera(id);
+  }
   detectionPending.delete(id);render();
 }
 async function watchCamera(id) {
+  if(serverManaged(id))return startOne(id,true);
   if (preferredEconomy.has(id)) {
     if (!economy.has(id)) economy.set(id, {paused:false});
     await economyCycle(id);
   } else await startOne(id);
 }
 async function toggleEconomy(id) {
+  if(serverManaged(id)){
+    const wasSaving=preferredEconomy.has(id);
+    if(wasSaving)preferredEconomy.delete(id);else preferredEconomy.add(id);
+    const saved=await savePreferences();
+    if(!saved){if(wasSaving)preferredEconomy.add(id);else preferredEconomy.delete(id);render();return;}
+    stopEconomy(id);await stopOne(id,true);await startOne(id,true);render();return;
+  }
   if (preferredEconomy.has(id)) {
     preferredEconomy.delete(id);
     stopEconomy(id);
@@ -127,9 +147,9 @@ function paint(id) {
   const saving = economy.get(id);
   const snapshot = snapshots.get(id);
   const image = feed ? feed.image : snapshot;
-  const fresh = feed && feed.image && frameAge(feed) <= 3;
+  const fresh = feed && feed.image && feed.state !== "paused" && frameAge(feed) <= 3;
   view.card.className = "camera-card" + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
-  view.badge.textContent = feed ? fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
+  view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image;
   view.placeholder.hidden = !!image;
   if (image && view.img.src !== image) view.img.src = image;
@@ -141,7 +161,7 @@ function paint(id) {
     view.badge.textContent = "ECONOMIA · PAUSADA";
     view.caption.textContent = `Último quadro · câmera desconectada. Próxima abertura: ${new Date(saving.nextAt).toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"})}.`;
   }
-  view.overlay.textContent = saving?.paused ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
+  view.overlay.textContent = (saving?.paused || feed?.state === "paused") ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
   $("cameras").className = "camera-grid" + (mosaicLimit === 12 ? " mosaic-12" : "");
@@ -262,6 +282,9 @@ async function status() {
   if (data.detection_message) $("snapshot-status").textContent += " " + data.detection_message;
   $("mosaic-label").textContent = `MOSAICO · ATÉ ${mosaicLimit} CÂMERAS`;
   render();
+  const monitoring=data.background_status;
+  $("background-status").textContent=data.authenticated && data.server_monitoring
+    ? `Monitoramento em segundo plano: ${monitoring?.configured || 0} câmera(s) habilitada(s), ${monitoring?.paused || 0} em pausa. Fechar a página não interrompe os registros.` : "";
   if (restored && !busy && data.snapshot_ready) await startAll();
 }
 async function post(path, body, keepalive = false) {
@@ -322,7 +345,7 @@ async function stopOne(id, preserveEconomy = false) {
 async function stopAll() {
   cancelAll();
   render();
-  try { await post("/api/video/stop", {}); $("message").textContent = "Todas as transmissões foram encerradas."; }
+  try { await post("/api/video/stop", {}); $("message").textContent = currentStatus?.server_monitoring ? "Visualizações encerradas. Câmeras com Detectar pessoas continuam monitorando no servidor." : "Todas as transmissões foram encerradas."; }
   catch (error) { $("message").textContent = error.message; }
 }
 async function startOne(id, mosaic = false, retry = false) {
@@ -358,6 +381,7 @@ async function startAll() {
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
   for (const camera of (currentStatus?.devices || []).slice(0, mosaicLimit)) {
     if (token !== batchToken) break;
+    if (serverManaged(camera.id)) { await startOne(camera.id,true); continue; }
     if (preferredEconomy.has(camera.id)) {
       if (!economy.has(camera.id)) { economy.set(camera.id, {paused:false}); await economyCycle(camera.id); }
       continue;
@@ -379,7 +403,9 @@ async function pollFeed(feed) {
     feed.state = data.state;
     feed.age = data.age_seconds;
     feed.updatedAt = Date.now();
-    feed.caption = data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
+    feed.caption = data.state === "paused" ? `${feed.image ? "Último quadro · conexão fechada" : "Câmera pausada para economizar dados"}. Nova janela em ${Math.ceil((data.next_open_seconds || 0)/60)} min. Agendamento mantido pelo servidor.`
+      : data.state === "retrying" ? `${data.message || "Reconectando a câmera."} Nova tentativa em ${data.retry_seconds || 0}s pelo servidor.`
+      : data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
       : feed.image ? "Recebendo imagens contínuas · até 5 imagens/s · sem áudio." : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
     paint(feed.id); buttons();
     feed.timer = setTimeout(() => pollFeed(feed), 200);
@@ -455,7 +481,7 @@ if (typeof setInterval !== "undefined") setInterval(() => {
 }, 5 * 60 * 1000);
 if (typeof setInterval !== "undefined") setInterval(() => {
   for (const feed of feeds.values()) {
-    if (feed.image && frameAge(feed) > 3) feed.caption = `Sem novos quadros há ${Math.floor(frameAge(feed))} segundos…`;
+    if (feed.image && feed.state !== "paused" && frameAge(feed) > 3) feed.caption = `Sem novos quadros há ${Math.floor(frameAge(feed))} segundos…`;
     paint(feed.id);
   }
   updateMetrics();

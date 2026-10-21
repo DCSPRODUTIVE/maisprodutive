@@ -374,3 +374,31 @@ test("HTML gateway failures show a connection message and retry without raw HTML
   await runDelay(5000);
   assert.equal(calls.filter(c=>c.url==='/api/video/start').length,2);
 });
+
+
+test("server-managed detection economy uses no browser schedule and displays paused last frame", async () => {
+  const responses=liveResponses();
+  responses['/api/video/frame']=options=>({ok:true,json:async()=>({device_id:JSON.parse(options.body).device_id,
+    sequence:1,image:'data:image/jpeg;base64,paused',state:'paused',age_seconds:1,next_open_seconds:1500})});
+  const {get,timers,runTimer,calls}=await setup(null,{...liveStatus,server_monitoring:true,
+    preferences_key:'bg-owner',background_status:{configured:1,paused:1},
+    preferences:{detection_ids:['a'],economy_ids:['a'],mosaic_limit:8}},null,null,responses);
+  assert.ok(![...timers.values()].some(t=>t.ms===300000||t.ms===1800000));
+  await runTimer();
+  assert.ok(descendants(get('cameras').children[0]).some(el=>/ECONOMIA · PAUSADA/.test(el.textContent)));
+  assert.equal(get('live-count').textContent,'0');
+  await get('stop-all').handlers.click();
+  assert.match(get('message').textContent,/continuam monitorando no servidor/);
+  assert.equal(calls.filter(c=>c.url==='/api/logout').length,0);
+});
+
+
+test("server economy button does not claim a configuration that was not acknowledged", async () => {
+  const responses=liveResponses();
+  responses['/api/preferences']={ok:false,status:503,json:async()=>({message:'Sem comunicação'})};
+  const {get}=await setup(null,{...liveStatus,server_monitoring:true,preferences_key:'owner',
+    preferences:{detection_ids:['a'],economy_ids:[],mosaic_limit:8}},null,null,responses);
+  await cardButton(get,0,'Economia de dados').handlers.click();
+  assert.equal(cardButton(get,0,'Economia de dados').className,'data-saver');
+  assert.match(get('message').textContent,/confirmar as preferências/);
+});

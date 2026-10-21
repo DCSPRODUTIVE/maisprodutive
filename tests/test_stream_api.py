@@ -3,7 +3,7 @@ import threading
 import time
 import types
 import tempfile
-from reports import EventStore
+from reports import EventStore, ReportMonitor
 import unittest
 import urllib.error
 import urllib.request
@@ -22,7 +22,7 @@ class FakeStream:
         self.device_id, self.expires, self.callback = device_id, expires, on_close
         self.handle = 'local-handle-'+device_id+'-'+str(len(self.instances))
         self.stopped = threading.Event()
-        self.condition=threading.Condition();self.image=None;self.last_frame=None
+        self.condition=threading.Condition();self.image=None;self.last_frame=None;self.sequence=0
         self.worker = types.SimpleNamespace(ident=1)
         self.instances.append(self)
     def start(self): pass
@@ -97,6 +97,23 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(len(self.server.active_streams),0)
         self.assertIsNone(self.state['client'])
 
+    def test_telegram_config_requires_account_and_csrf_and_hides_token(self):
+        token='123456789:'+ 'A'*35
+        values={'enabled':True,'token':token,'chat_id':'12345'}
+        self.assertEqual(self.post('/api/telegram/save',values,csrf='invalid')[0],403)
+        cookie,csrf,state=self.new_session()
+        self.assertEqual(self.post('/api/telegram/status',{},cookie,csrf)[0],422)
+        code,data=self.post('/api/telegram/save',values)
+        self.assertEqual(code,200)
+        self.assertTrue(data['configured'])
+        self.assertNotIn(token,json.dumps(data))
+        with patch.object(self.server.telegram,'enqueue',return_value=True) as enqueue:
+            self.assertEqual(self.post('/api/telegram/test',{})[0],200)
+            self.assertEqual(self.post('/api/telegram/test',{})[0],429)
+            enqueue.assert_called_once()
+        self.post('/api/telegram/save',{'enabled':False,'token':'','chat_id':'12345'})
+        self.assertFalse(self.post('/api/telegram/status',{})[1]['enabled'])
+
     def test_report_records_and_images_are_session_scoped(self):
         self.post('/api/video/start', {'device_id':'0'})
         code,data=self.post('/api/reports', {})
@@ -142,6 +159,61 @@ class StreamApiTests(unittest.TestCase):
         request=urllib.request.Request(self.base+'/api/reports/video/'+str(video_id),headers={'Cookie':other_cookie})
         with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
         self.assertEqual(error.exception.code,403)
+
+    def test_background_survives_page_close_and_session_expiration(self):
+        values={'economy_ids':[], 'detection_ids':['0'], 'mosaic_limit':8}
+        self.assertEqual(self.post('/api/preferences',values)[0],200)
+        self.server.background.tick()
+        native=FakeStream.instances[-1]
+        code,data=self.post('/api/video/start',{'device_id':'0','mosaic':True})
+        self.assertEqual(code,200);self.assertTrue(data['background'])
+        self.post('/api/video/stop',{}) # Same request sent by pagehide.
+        self.assertFalse(native.stopped.is_set())
+        self.state['expires']=time.monotonic()-1
+        self.assertEqual(self.post('/api/video/frame',{'device_id':'0','mosaic':True})[0],403)
+        self.assertFalse(native.stopped.is_set())
+        self.assertEqual(self.server.background.status(__import__('hashlib').sha256(b'123').hexdigest())['configured'],1)
+        self.server.background.remove(__import__('hashlib').sha256(b'123').hexdigest())
+        self.assertTrue(native.stopped.is_set())
+
+    def test_background_economy_pause_blocks_snapshot_and_extra_connection(self):
+        now=[1000.]
+        self.server.background.clock=lambda:now[0]
+        values={'economy_ids':['0'], 'detection_ids':['0'], 'mosaic_limit':8}
+        self.post('/api/preferences',values);self.server.background.tick()
+        code,data=self.post('/api/video/start',{'device_id':'0','mosaic':True})
+        self.assertEqual(code,200)
+        before=len(FakeStream.instances)
+        now[0]+=300;self.server.background.tick()
+        self.assertEqual(self.post('/api/video/frame',{'device_id':'0','stream_id':data['stream_id']})[1]['state'],'paused')
+        self.assertEqual(self.post('/api/video/snapshot',{'device_id':'0'})[0],422)
+        self.post('/api/video/stop',{})
+        self.post('/api/video/start',{'device_id':'0'})
+        self.server.background.tick()
+        self.assertEqual(len(FakeStream.instances),before)
+
+    def test_person_reports_continue_without_browser_session(self):
+        store=self.server.reports.store
+        self.server.reports.close()
+        with patch('reports.readiness',return_value=(True,'Ready')), patch('reports.Detector') as detector, patch('reports.RecordingService') as recorders:
+            detector.return_value.detect.return_value=([{'kind':'person','confidence':.9,'box':[0,0,1,1]}],None)
+            self.server.reports=ReportMonitor(self.server,store)
+            self.server.reports.start()
+            try:
+                values={'economy_ids':[], 'detection_ids':['0'], 'mosaic_limit':8}
+                self.post('/api/preferences',values);self.server.background.tick()
+                native=FakeStream.instances[-1]
+                self.post('/api/video/stop',{})
+                self.state['expires']=time.monotonic()-1
+                self.assertEqual(self.post('/api/video/frame',{'device_id':'0'})[0],403)
+                native.image=b'background-frame';native.last_frame=time.monotonic();native.sequence=1
+                owner=__import__('hashlib').sha256(b'123').hexdigest()
+                deadline=time.monotonic()+3
+                while not store.list(owner) and time.monotonic()<deadline:time.sleep(.02)
+                self.assertEqual(store.list(owner)[0]['kind'],'person')
+                recorders.return_value.trigger.assert_called_with(native)
+                self.assertFalse(native.stopped.is_set())
+            finally:self.server.reports.close()
 
     def test_active_session_renews_cookie_and_live_lease(self):
         self.post('/api/video/start', {'device_id':'0'})

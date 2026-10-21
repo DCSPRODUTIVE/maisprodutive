@@ -114,6 +114,19 @@ for i in range(40):
             finally:
                 stream.stop()
 
+    def test_background_ignores_viewer_idle_and_session_expiry_but_respects_window(self):
+        stream, closed, processes=self.create_stream(expires=time.monotonic()+.1)
+        stream.background=True
+        stream.monitor_until=time.monotonic()+1.2
+        with patch('live.IDLE_TIMEOUT',.1):
+            try:
+                stream.start()
+                self.assertFalse(stream.done.wait(.5))
+                self.assertTrue(stream.done.wait(4))
+                self.assertEqual(stream.error.kind,'video_stopped')
+            finally:stream.stop()
+        self.assertEqual(closed,[True])
+
     def test_idle_and_expired_sessions_stop_without_browser_requests(self):
         for kind in ('video_idle', 'authentication'):
             stream, closed, processes = self.create_stream(time.monotonic()+.1 if kind=='authentication' else None)
