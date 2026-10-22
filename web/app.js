@@ -4,6 +4,8 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+let expandedCamera = null;
+let expandedPrevious = null;
 let mosaicLimit = 8;
 let preferenceKey = null;
 let preferenceSave = Promise.resolve();
@@ -148,7 +150,7 @@ function paint(id) {
   const snapshot = snapshots.get(id);
   const image = feed ? feed.image : snapshot;
   const fresh = feed && feed.image && feed.state !== "paused" && frameAge(feed) <= 3;
-  view.card.className = "camera-card" + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
+  view.card.className = "camera-card" + (id===expandedCamera ? " camera-expanded" : "") + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
   view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image;
   view.placeholder.hidden = !!image;
@@ -190,9 +192,16 @@ function render() {
     const overlay = element("span", "camera-overlay");
     const expand = element("button", "camera-expand", "⛶");
     expand.title = "Ampliar câmera";
-    expand.addEventListener("click", () => {
-      if (media.requestFullscreen) media.requestFullscreen().catch(() => { $("message").textContent = "Não foi possível abrir a tela cheia."; });
+    expand.addEventListener("click", async () => {
+      if(expandedCamera===camera.id){await closeExpanded();return;}
+      expandedCamera=camera.id;
+      expandedPrevious=qualities.get(camera.id)||"balanced";
+      // Keep the 4G source selection: enlarging must not silently increase its data use.
+      qualities.set(camera.id,preferredEconomy.has(camera.id)?expandedPrevious:"fhd");
+      document.documentElement?.requestFullscreen?.().catch(()=>{});
+      await stopOne(camera.id,true);await startOne(camera.id);render();
     });
+    if(expandedCamera===camera.id){expand.textContent="✕";expand.title="Voltar ao mosaico";}
     media.append(placeholder, img, overlay, expand);
     const caption = element("p", "camera-caption");
     const controls = element("div", "camera-controls");
@@ -318,7 +327,7 @@ function reconnect(id, error) {
   const retryable = !error.status || error.status >= 500 || error.status === 429 ||
     ["video_timeout", "video_stale", "video_native", "video_decode", "video_resources", "video_stopped", "video_busy", "video_idle"].includes(error.kind);
   if (!intent || !retryable || !currentStatus?.authenticated) return;
-  const delay = Math.min(60000, 5000 * 2 ** Math.min(intent.attempts++, 4));
+  const delay = Math.min(60000, 2000 * 2 ** Math.min(intent.attempts++, 5));
   errors.set(id, `${error.message} Nova tentativa em ${delay / 1000}s.`);
   intent.timer = setTimeout(() => {
     if (desired.get(id) === intent) return startOne(id, intent.mosaic, true);
@@ -357,7 +366,10 @@ async function startOne(id, mosaic = false, retry = false) {
   const feed = { id, handle: null, sequence: 0, image: null, age: null, updatedAt: null, timer: null, caption: "Conectando. Aguardando o primeiro quadro…" };
   feeds.set(id, feed); errors.delete(id); render();
   try {
-    const data = await post("/api/video/start", { device_id: id, mosaic, quality: qualities.get(id) || "balanced" });
+    const chosen=qualities.get(id)||'balanced';
+    const attempts=desired.get(id)?.attempts||0;
+    const effective=attempts>=4?'balanced':attempts>=2&&chosen==='fhd'?'hd':chosen;
+    const data = await post("/api/video/start", { device_id: id, mosaic, quality: effective });
     feed.handle = data.stream_id;
     if (feeds.get(id) !== feed) {
       await post("/api/video/stop", { device_id: id, stream_id: feed.handle });
@@ -400,15 +412,16 @@ async function pollFeed(feed) {
       feed.image = data.image; feed.sequence = data.sequence;
       if (desired.has(feed.id)) desired.get(feed.id).attempts = 0;
     }
+    feed.health = data.health;
     feed.state = data.state;
     feed.age = data.age_seconds;
     feed.updatedAt = Date.now();
     feed.caption = data.state === "paused" ? `${feed.image ? "Último quadro · conexão fechada" : "Câmera pausada para economizar dados"}. Nova janela em ${Math.ceil((data.next_open_seconds || 0)/60)} min. Agendamento mantido pelo servidor.`
       : data.state === "retrying" ? `${data.message || "Reconectando a câmera."} Nova tentativa em ${data.retry_seconds || 0}s pelo servidor.`
       : data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
-      : feed.image ? "Recebendo imagens contínuas · até 5 imagens/s · sem áudio." : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
+      : feed.image ? `Recebendo imagens · ${data.health?.fps ?? "—"} fps · ${data.health?.resolution?.join(" × ") || "resolução em leitura"} · sem áudio.${data.health?.detection?.error ? " Falha na análise; nova tentativa automática." : data.health?.detection?.age_seconds !== undefined ? " Análise há "+data.health.detection.age_seconds+"s · "+data.health.detection.people+" pessoa(s)." : ""}` : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
     paint(feed.id); buttons();
-    feed.timer = setTimeout(() => pollFeed(feed), 200);
+    feed.timer = setTimeout(() => pollFeed(feed), data.state === "paused" ? 1000 : data.image ? 70 : 100);
   } catch (error) {
     if (feeds.get(feed.id) !== feed) return;
     cancelOne(feed.id); errors.set(feed.id, error.message);
@@ -525,3 +538,12 @@ if (typeof window !== "undefined") window.addEventListener("pagehide", () => {
   if (hadFeeds) post("/api/video/stop", {}, true).catch(() => {});
 });
 status().catch((error) => { $("message").textContent = error.message; });
+
+async function closeExpanded(){
+  const id=expandedCamera;if(!id)return;
+  expandedCamera=null;qualities.set(id,expandedPrevious||'balanced');expandedPrevious=null;
+  if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
+  if(feeds.has(id)){await stopOne(id,true);await startOne(id,true);}else render();
+}
+document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement&&expandedCamera)closeExpanded();});
+document.addEventListener?.('keydown',event=>{if(event.key==='Escape'&&expandedCamera)closeExpanded();});

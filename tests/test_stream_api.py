@@ -114,6 +114,49 @@ class StreamApiTests(unittest.TestCase):
         self.post('/api/telegram/save',{'enabled':False,'token':'','chat_id':'12345'})
         self.assertFalse(self.post('/api/telegram/status',{})[1]['enabled'])
 
+    def test_faces_routes_are_account_scoped_and_support_manual_learning(self):
+        self.assertEqual(self.post('/api/faces/settings',{'enabled':True},csrf='invalid')[0],403)
+        self.assertEqual(self.post('/api/faces/settings',{'enabled':True})[0],200)
+        owner=__import__('hashlib').sha256(b'123').hexdigest()
+        self.server.reports.faces.add(owner,'0','Entrada',b'face-photo',[1.0]+[0.0]*127)
+        row=self.post('/api/faces/list',{})[1]['events'][0]
+        self.assertNotIn('embedding',row)
+        self.assertEqual(self.post('/api/faces/label',{'id':row['id'],'name':'Ana'})[0],200)
+        self.assertEqual(self.post('/api/faces/list',{})[1]['events'][0]['label'],'Ana')
+        request=urllib.request.Request(self.base+'/api/faces/image/'+str(row['id']),headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request) as response:self.assertEqual(response.read(),b'face-photo')
+        cookie,csrf,state=self.new_session()
+        state['client']=DesktopClient(DesktopProfile('a'*32,'b'*64))
+        state['client'].account=DesktopAccount('456','other-token')
+        self.assertEqual(self.post('/api/faces/list',{},cookie,csrf)[1]['events'],[])
+        self.assertEqual(self.post('/api/faces/label',{'id':row['id'],'name':'Bia'},cookie,csrf)[0],400)
+        request=urllib.request.Request(self.base+'/api/faces/image/'+str(row['id']),headers={'Cookie':cookie})
+        with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+        self.assertEqual(error.exception.code,404)
+        self.assertEqual(self.post('/api/faces/settings',{})[0],400)
+        self.assertEqual(self.post('/api/faces/clear',{})[0],200)
+        self.assertEqual(self.post('/api/faces/list',{})[1]['events'],[])
+        self.assertFalse(self.post('/api/faces/status',{})[1]['enabled'])
+
+    def test_slow_frame_does_not_block_other_cameras_in_same_account(self):
+        first=self.post('/api/video/start',{'device_id':'0'})[1]['stream_id']
+        second=self.post('/api/video/start',{'device_id':'1'})[1]['stream_id']
+        entered,release=threading.Event(),threading.Event()
+        source=self.state['streams']['0'];original=source.frame
+        def slow(*args,**kwargs):
+            entered.set();release.wait(3);return original(*args,**kwargs)
+        source.frame=slow
+        result=[]
+        worker=threading.Thread(target=lambda:result.append(self.post('/api/video/frame',{'device_id':'0','stream_id':first})))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            started=time.monotonic()
+            code,_=self.post('/api/video/frame',{'device_id':'1','stream_id':second})
+            self.assertEqual(code,200);self.assertLess(time.monotonic()-started,1)
+        finally:release.set();worker.join(4)
+        self.assertEqual(result[0][0],200)
+
     def test_report_records_and_images_are_session_scoped(self):
         self.post('/api/video/start', {'device_id':'0'})
         code,data=self.post('/api/reports', {})

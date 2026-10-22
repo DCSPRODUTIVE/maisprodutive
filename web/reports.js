@@ -1,4 +1,4 @@
-let csrf = "", before = null, loading = false, view = location.hash==="#videos" ? "videos" : "photos";
+let csrf = "", before = null, loading = false, view = location.hash==="#faces" ? "faces" : location.hash==="#videos" ? "videos" : "photos";
 const $ = id => document.getElementById(id);
 function node(tag, text, cls) { const el=document.createElement(tag); if(text)el.textContent=text;if(cls)el.className=cls;return el; }
 async function load(reset=false) {
@@ -9,10 +9,13 @@ async function load(reset=false) {
     if(sessionResponse.status===401){window.location.replace('/access');return;}
     const session=await sessionResponse.json();csrf=session.csrf;
     if(!session.authenticated)throw new Error('Abra o painel e entre na sua conta para ver os registros.');
-    const response=await fetch(view==='videos'?'/api/reports/videos':'/api/reports',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({before})});
+    const response=await fetch(view==='faces'?'/api/faces/list':view==='videos'?'/api/reports/videos':'/api/reports',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({before})});
     const data=await response.json();if(!response.ok)throw new Error(data.message);
     $("report-status").textContent=data.message;
+    $("faces-settings").hidden=view!=='faces';
+    if(view==='faces'){ $("faces-enabled").checked=data.enabled;$("faces-status").textContent=data.message; }
     for(const event of data.events){
+      if(view==='faces'){renderFace(event);before=event.id;continue;}
       const card=node('article',null,'report-card');
       if(view==='videos'){
         if(event.status==='ready'||event.status==='partial'){
@@ -48,25 +51,27 @@ $("reload-reports").addEventListener('click',()=>load(true));
 $("older-reports").addEventListener('click',()=>load());
 load(true);
 
-for(const [id,tab] of [['photos-tab','photos'],['videos-tab','videos']]) $(id).addEventListener('click',()=>{
+for(const [id,tab] of [['photos-tab','photos'],['videos-tab','videos'],['faces-tab','faces']]) $(id).addEventListener('click',()=>{
   if(loading)return;view=tab;
   $('photos-tab').className=view==='photos'?'selected':'secondary';
   $('videos-tab').className=view==='videos'?'selected':'secondary';
+  $('faces-tab').className=view==='faces'?'selected':'secondary';
+  location.hash=view;
   load(true);
 });
 
-async function telegramRequest(action, body={}) {
+async function settingsRequest(action, body={}) {
   const sessionResponse=await fetch('/api/status',{cache:'no-store'});
   if(sessionResponse.status===401){window.location.replace('/access');throw new Error('Entre no sistema.');}
   const session=await sessionResponse.json();
   if(!session.authenticated)throw new Error('Abra Câmeras e entre na conta Yoosee.');
-  const response=await fetch('/api/telegram/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrf},body:JSON.stringify(body)});
+  const response=await fetch((action.startsWith('faces/')?'/api/'+action:'/api/telegram/'+action),{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrf},body:JSON.stringify(body)});
   const data=await response.json();if(!response.ok)throw new Error(data.message||'Não foi possível configurar Telegram.');
   return data;
 }
 async function telegramStatus() {
   try{
-    const data=await telegramRequest('status');
+    const data=await settingsRequest('status');
     $('telegram-enabled').checked=data.enabled;$('telegram-chat').value=data.chat_id;
     $('telegram-token').placeholder=data.configured?'Token salvo. Deixe vazio para manter.':'Cole o token do BotFather';
     $('telegram-status').textContent=(data.enabled?'Alertas ativados. ':'Alertas desativados. ')+data.message;
@@ -75,18 +80,42 @@ async function telegramStatus() {
 $('telegram-form').addEventListener('submit',async event=>{
   event.preventDefault();const button=event.submitter;if(button)button.disabled=true;
   try{
-    await telegramRequest('save',{enabled:$('telegram-enabled').checked,chat_id:$('telegram-chat').value.trim(),token:$('telegram-token').value.trim()});
+    await settingsRequest('save',{enabled:$('telegram-enabled').checked,chat_id:$('telegram-chat').value.trim(),token:$('telegram-token').value.trim()});
     $('telegram-token').value='';await telegramStatus();
   }catch(error){$('telegram-status').textContent=error.message;}
   finally{if(button)button.disabled=false;}
 });
 $('telegram-test').addEventListener('click',async()=>{
   $('telegram-test').disabled=true;
-  try{$('telegram-status').textContent=(await telegramRequest('test')).message;}
+  try{$('telegram-status').textContent=(await settingsRequest('test')).message;}
   catch(error){$('telegram-status').textContent=error.message;}
   finally{$('telegram-test').disabled=false;}
 });
 $('telegram-refresh').addEventListener('click',telegramStatus);
 $('photos-tab').className=view==='photos'?'selected':'secondary';
 $('videos-tab').className=view==='videos'?'selected':'secondary';
+$('faces-tab').className=view==='faces'?'selected':'secondary';
 telegramStatus();
+
+function renderFace(event){
+  const card=node('article',null,'report-card face-card');
+  const img=node('img');img.src='/api/faces/image/'+event.id;img.alt='Rosto capturado';img.loading='lazy';card.append(img);
+  const info=node('div',null,'report-info');
+  const label=event.label?'Cadastrado: '+event.label:event.state==='known'?'Possível conhecido: '+event.name:'Pessoa não reconhecida';
+  info.append(node('h2',label),node('p',event.camera_name+' · '+new Date(event.created*1000).toLocaleString('pt-BR')));
+  if(event.state==='known')info.append(node('p','Sugestão por semelhança facial; confirme antes de cadastrar.'));
+  const form=node('form'),input=node('input');input.type='text';input.maxLength=80;input.value=event.label||'';
+  input.placeholder='Nome da pessoa';input.setAttribute('aria-label','Nome deste rosto');
+  const save=node('button','Salvar nome','secondary'),remove=node('button','Excluir foto','secondary');
+  save.type='submit';remove.type='button';form.append(input,save);info.append(form,remove);card.append(info);$('report-list').append(card);
+  form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await settingsRequest('faces/label',{id:event.id,name:input.value});await load(true);}catch(error){$('report-status').textContent=error.message;}finally{save.disabled=false;}});
+  remove.addEventListener('click',async()=>{remove.disabled=true;try{await settingsRequest('faces/delete',{id:event.id});await load(true);}catch(error){$('report-status').textContent=error.message;}finally{remove.disabled=false;}});
+}
+$('faces-save').addEventListener('click',async()=>{
+  try{const data=await settingsRequest('faces/settings',{enabled:$('faces-enabled').checked});$('faces-status').textContent=(data.enabled?'Captura facial ativada. ':'Captura facial desativada. ')+data.message;}
+  catch(error){$('faces-status').textContent=error.message;}
+});
+$('faces-clear').addEventListener('click',async()=>{
+  if(!window.confirm('Apagar todos os recortes e nomes desta conta e desativar a captura facial?'))return;
+  try{await settingsRequest('faces/clear');await load(true);}catch(error){$('faces-status').textContent=error.message;}
+});

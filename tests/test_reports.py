@@ -79,3 +79,38 @@ class StoreTests(unittest.TestCase):
         rows=self.store.list('mine');self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]['kind'],'person')
         self.assertFalse(stream.stopped.is_set())
+
+    def test_person_analysis_samples_new_frames_after_one_second(self):
+        stream=SimpleNamespace(report_owner='mine',report_name='Camera',device_id='id',report_detect=True,
+            condition=threading.Condition(),image=b'jpeg',last_frame=100.,stopped=threading.Event())
+        server=SimpleNamespace(stream_guard=threading.Lock(),active_streams=[stream])
+        with patch('reports.RecordingService'),patch('reports.readiness',return_value=(True,'ready')):
+            monitor=ReportMonitor(server,self.store)
+        from unittest.mock import Mock
+        detector=Mock();detector.detect.return_value=([{'kind':'person','confidence':.9,'box':[0,0,1,1]}],None)
+        with patch('reports.time.monotonic',return_value=100.):monitor.process(stream,detector)
+        with patch('reports.time.monotonic',return_value=100.2):monitor.process(stream,detector)
+        stream.last_frame=101.1
+        with patch('reports.time.monotonic',return_value=101.1):monitor.process(stream,detector)
+        self.assertEqual(detector.detect.call_count,2)
+        self.assertEqual(len(self.store.list('mine')),1)
+        self.assertEqual(stream.detection_health['people'],1)
+
+    def test_bad_camera_frame_does_not_stop_other_camera_detection(self):
+        def stream(device):
+            return SimpleNamespace(report_owner='mine',report_name='Camera',device_id=device,report_detect=True,
+                condition=threading.Condition(),image=device.encode(),last_frame=time.monotonic(),stopped=threading.Event())
+        bad,good=stream('bad'),stream('good')
+        server=SimpleNamespace(stream_guard=threading.Lock(),active_streams=[bad,good])
+        def detect(image):
+            if image==b'bad':raise ValueError('bad image')
+            return [{'kind':'person','confidence':.9,'box':[0,0,1,1]}],None
+        with patch('reports.readiness',return_value=(True,'ready')),patch('reports.RecordingService'),patch('reports.Detector') as detector:
+            detector.return_value.detect.side_effect=detect
+            monitor=ReportMonitor(server,self.store);monitor.start()
+            deadline=time.monotonic()+2
+            while not self.store.list('mine') and time.monotonic()<deadline:time.sleep(.02)
+            monitor.close()
+        self.assertEqual(self.store.list('mine')[0]['camera'],'good')
+        self.assertTrue(bad.detection_health['error'])
+        self.assertTrue(monitor.ready)

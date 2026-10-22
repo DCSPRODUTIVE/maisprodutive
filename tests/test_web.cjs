@@ -280,7 +280,7 @@ test("temporary stream failure retries without login and Stop cancels pending re
   const {get,calls,runTimer,timers} = await setup(null, liveStatus, null, null, responses);
   await cardButton(get,0,'Assistir').handlers.click();
   await runTimer();
-  assert.ok([...timers.values()].some(timer=>timer.ms===5000));
+  assert.ok([...timers.values()].some(timer=>timer.ms===2000));
   await runTimer();
   assert.equal(calls.filter(call=>call.url==='/api/video/start').length,2);
   assert.equal(calls.filter(call=>call.url==='/api/login').length,0);
@@ -310,13 +310,13 @@ test("data saver closes native stream after five minutes and reopens at thirty p
   assert.equal(timers.size,0);
 });
 
-test("15-second native frame failure reconnects but economy pause cancels retries", async () => {
+test("8-second native frame failure reconnects but economy pause cancels retries", async () => {
   const responses=liveResponses();
   responses['/api/video/frame']={ok:false,status:422,json:async()=>({error:'video_native',message:'A câmera parou de entregar quadros por 15 segundos.'})};
   const {get,calls,runTimer,runDelay,timers}=await setup(null,liveStatus,null,null,responses);
   await cardButton(get,0,'Economia de dados').handlers.click();
   await runTimer();
-  await runDelay(5000);
+  await runDelay(2000);
   assert.equal(calls.filter(c=>c.url==='/api/video/start').length,2);
   await runTimer();
   await runDelay(5*60*1000);
@@ -371,7 +371,7 @@ test("HTML gateway failures show a connection message and retry without raw HTML
   const texts=descendants(get('cameras').children[0]).map(el=>el.textContent).join(' ');
   assert.match(texts,/HTTP 502/);assert.match(texts,/Nova tentativa/);
   assert.doesNotMatch(texts,/DOCTYPE|private-details|Unexpected token/);
-  await runDelay(5000);
+  await runDelay(2000);
   assert.equal(calls.filter(c=>c.url==='/api/video/start').length,2);
 });
 
@@ -401,4 +401,30 @@ test("server economy button does not claim a configuration that was not acknowle
   await cardButton(get,0,'Economia de dados').handlers.click();
   assert.equal(cardButton(get,0,'Economia de dados').className,'data-saver');
   assert.match(get('message').textContent,/confirmar as preferências/);
+});
+
+test('expanding a camera requests full quality and closing restores mosaic quality',async()=>{
+  const {get,calls}=await setup(null,{authenticated:true,snapshot_ready:true,devices:[{id:'a',name:'Entrada'}]},null,null,{
+    '/api/video/start':{ok:true,json:async()=>({device_id:'a',stream_id:'handle'})},
+    '/api/video/stop':{ok:true,json:async()=>({})}
+  });
+  await descendants(get('cameras')).find(e=>e.className==='camera-expand').handlers.click();
+  let starts=calls.filter(c=>c.url==='/api/video/start');
+  assert.equal(JSON.parse(starts.at(-1).options.body).quality,'fhd');
+  assert.ok(descendants(get('cameras')).some(e=>e.className?.includes('camera-expanded')));
+  await descendants(get('cameras')).find(e=>e.className==='camera-expand').handlers.click();
+  starts=calls.filter(c=>c.url==='/api/video/start');
+  assert.equal(JSON.parse(starts.at(-1).options.body).quality,'balanced');
+  assert.equal(JSON.parse(starts.at(-1).options.body).mosaic,true);
+});
+
+test('camera health shows measured FPS and person analysis without claiming the target rate',async()=>{
+  const {get,runTimer}=await setup(null,{authenticated:true,snapshot_ready:true,devices:[{id:'a',name:'Entrada'}]},null,null,{
+    '/api/video/start':{ok:true,json:async()=>({device_id:'a',stream_id:'handle'})},
+    '/api/video/frame':{ok:true,json:async()=>({device_id:'a',sequence:1,image:'data:image/jpeg;base64,AA==',age_seconds:.1,state:'receiving',health:{fps:7.8,resolution:[1280,720],detection:{age_seconds:.5,people:1}}})}
+  });
+  await descendants(get('cameras')).find(e=>e.className==='play').handlers.click();
+  await runTimer();
+  const caption=descendants(get('cameras')).find(e=>e.className==='camera-caption').textContent;
+  assert.match(caption,/7.8 fps/);assert.match(caption,/1280 × 720/);assert.match(caption,/1 pessoa/);
 });

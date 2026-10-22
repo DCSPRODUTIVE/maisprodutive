@@ -10,9 +10,9 @@ import time
 import uuid
 
 DURATION = 120
-FPS = 2
+FPS = 10
 MIN_FREE = 256 * 1024 * 1024
-MAX_BYTES = 32 * 1024 * 1024
+MAX_BYTES = 96 * 1024 * 1024
 
 
 class RecordingService:
@@ -89,8 +89,8 @@ class Recorder:
                 raise RuntimeError('disk_space')
             process = subprocess.Popen([shutil.which('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y',
                 '-filter_threads','1','-threads','1','-f','image2pipe','-vcodec','mjpeg','-framerate',str(FPS),
-                '-i','pipe:0','-an','-vf',"scale='min(1280,iw)':-2,format=yuv420p",
-                '-c:v','libx264','-threads','1','-preset','ultrafast','-crf','28',
+                '-i','pipe:0','-an','-vf',"scale='min(1920,iw)':-2,format=yuv420p",
+                '-c:v','libx264','-threads','1','-preset','ultrafast','-crf','22',
                 '-movflags','+faststart',str(temporary)],stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
             self.process=process
@@ -110,7 +110,8 @@ class Recorder:
                     age=now-self.stream.last_frame if self.stream.last_frame is not None else 999
                 if image and age<=3:
                     process.stdin.write(image);process.stdin.flush();frames+=1
-                next_frame=now+1/FPS
+                next_frame+=1/FPS
+                if next_frame < time.monotonic()-1/FPS:next_frame=time.monotonic()+1/FPS
                 if frames % 20 == 0 and (shutil.disk_usage(directory).free<MIN_FREE or (temporary.exists() and temporary.stat().st_size>MAX_BYTES)):
                     interrupted=True;reason='disk_space';break
             if process.stdin:

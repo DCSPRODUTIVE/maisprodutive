@@ -1,5 +1,6 @@
 """Own enabled camera connections and economy schedules independently of browser sessions."""
 import base64
+import health
 import secrets
 import threading
 import time
@@ -85,6 +86,8 @@ class BackgroundMonitor:
                     entry = self.entries[key] = Entry(owner, device_id, account, names[device_id], device_id in economy, now)
                     existing = next((stream for stream in candidates if getattr(stream, 'report_owner', None) == owner
                                      and stream.device_id == device_id and not stream.stopped.is_set()), None)
+                    if not entry.economy:
+                        entry.width, entry.definition = 960, 1
                     if existing:
                         existing.background = True
                         existing.report_detect = True
@@ -99,6 +102,9 @@ class BackgroundMonitor:
                 if entry.economy != (device_id in economy):
                     entry.economy = device_id in economy
                     entry.anchor = now
+                    self._drop(entry)
+                    entry.width, entry.definition = (640,0) if entry.economy else (960,1)
+                    entry.retry_at = now
                 if entry.native is not None:
                     entry.native.monitor_until = entry.active_until(now)
 
@@ -111,6 +117,8 @@ class BackgroundMonitor:
             entry = self.entries.get((owner, device_id))
             if entry is None:
                 raise IntegrationError('video_stopped', 'Monitoramento desativado nesta câmera.')
+            if not entry.economy and definition == 0 and width != 0:
+                width, definition = 960, 1
             if (entry.width, entry.definition) != (width, definition):
                 self._drop(entry)
                 entry.width, entry.definition = width, definition
@@ -153,8 +161,12 @@ class BackgroundMonitor:
                     entry.message = str(error) if isinstance(error, IntegrationError) else 'A câmera interrompeu a conexão.'
                     entry.native = None
                     entry.native_sequence = -1
-                    entry.retry_at = now + min(60, 5 * 2 ** min(entry.attempts, 4))
+                    entry.retry_at = now + min(60, 2 * 2 ** min(entry.attempts, 5))
                     entry.attempts += 1
+                    if entry.attempts>=2 and entry.definition>0:
+                        entry.definition-=1
+                        entry.width=960 if entry.definition else 640
+                        entry.message="Qualidade ajustada para recuperar a conexão. " + entry.message
                 if entry.native is not None:
                     entry.native.monitor_until = entry.active_until(now)
                 if entry.native is not None or now < entry.retry_at:
@@ -165,7 +177,7 @@ class BackgroundMonitor:
                     entry.message = ''
                 except Exception as error:
                     entry.message = str(error) if isinstance(error, IntegrationError) else 'Não foi possível preparar a conexão da câmera.'
-                    entry.retry_at = now + min(60, 5 * 2 ** min(entry.attempts, 4))
+                    entry.retry_at = now + min(60, 2 * 2 ** min(entry.attempts, 5))
                     entry.attempts += 1
 
     def frame(self, owner, device_id, after):
@@ -190,7 +202,7 @@ class BackgroundMonitor:
                     'age_seconds': round(age, 2) if age is not None else None, 'state': state,
                     'next_open_seconds': round(entry.next_open(now)),
                     'retry_seconds': max(0, round(entry.retry_at-now)), 'message': entry.message,
-                    'background': True}
+                    'background': True, 'health': health.snapshot(stream) if has_native else None}
 
     def status(self, owner):
         with self.lock:

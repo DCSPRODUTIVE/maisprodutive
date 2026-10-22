@@ -61,7 +61,7 @@ static void frame(void *self, const unsigned char *av) {
         InterlockedExchange(&finished, -23); return;
     }
     last_frame = now;
-    if (streaming && frame_count && now - last_sent < 200) {
+    if (streaming && frame_count && now - last_sent < 100) {
         InterlockedExchange(&writing, 0); return;
     }
     if (format == 5 && !planar) {
@@ -79,7 +79,7 @@ static void frame(void *self, const unsigned char *av) {
     width = w; height = h;
     char header[120];
     int n;
-    if (!frame_count) n = snprintf(header, sizeof(header), "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C420jpeg\nFRAME\n", w, h, streaming ? 5 : 1);
+    if (!frame_count) n = snprintf(header, sizeof(header), "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C420jpeg\nFRAME\n", w, h, streaming ? 10 : 1);
     else n = snprintf(header, sizeof(header), "FRAME\n");
     if (!emit(header, n) || !emit(y, w*h) || !emit(u, w*h/4) || !emit(v, w*h/4)) {
         InterlockedExchange(&finished, -21); return;
@@ -170,7 +170,7 @@ int main(int argc, char **argv) {
         ULONGLONG now = GetTickCount64();
         if (state < 0 || (!streaming && state==1)) break;
         if (!frame_count && now-started>=25000) break;
-        if (streaming && frame_count && now-last_frame>=15000) ExitProcess(24);
+        if (streaming && frame_count && now-last_frame>=8000) ExitProcess(24);
         /* Absolute bound even if the controlling process disappears. */
         if (streaming && now-started>=1200000) ExitProcess(25);
         Sleep(100);

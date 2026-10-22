@@ -49,8 +49,8 @@ class EncoderTests(unittest.TestCase):
             self.assertFalse(recorder.thread.is_alive());self.assertEqual(closed,[True])
             row=store.videos('owner')[0];self.assertEqual(row['status'],'ready');self.assertGreater(row['duration'],1.5)
             path=store.video('owner',row['id']);self.assertIsNotNone(path)
-            probe=subprocess.run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=codec_name','-of','csv=p=0',str(path)],capture_output=True,check=True,timeout=5)
-            self.assertEqual(probe.stdout.strip(),b'h264')
+            probe=subprocess.run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=codec_name,avg_frame_rate','-of','csv=p=0',str(path)],capture_output=True,check=True,timeout=5)
+            self.assertEqual(probe.stdout.strip(),b'h264,10/1')
             self.assertFalse(list((Path(directory)/'videos').glob('*.part.mp4')))
 
     def test_economy_pause_finishes_a_partial_clip(self):

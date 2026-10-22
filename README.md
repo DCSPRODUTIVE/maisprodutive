@@ -138,7 +138,7 @@ A sessão de navegação expira após 20 minutos sem uso, mas isso não cancela 
 monitoramento já autorizado. Após expirar, entre novamente para ver o painel e os
 Reports. O servidor guarda a autorização da Yoosee somente em memória; reinício
 do serviço ou invalidação pelo provedor exige novo login. Sem primeiro quadro em
-45 segundos ou sem novos quadros por 15 segundos, a conexão é encerrada e o
+45 segundos ou sem novos quadros por 8 segundos, a conexão é encerrada e o
 servidor tenta novamente, respeitando a janela de economia. A captura pontual tem
 limite próprio e não abre uma câmera monitorada durante a pausa de economia.
 
@@ -232,9 +232,9 @@ O modelo pode gerar falsos positivos/negativos; não determina identidade.
 
 Ative **Detectar pessoas** em cada câmera desejada; o padrão é desativado.
 A escolha é salva por conta, junto com Economia de dados e o mosaico. Somente
-as câmeras habilitadas produzem fotos e vídeos. A análise usa o último quadro recente, no máximo a cada 5 segundos por câmera.
-Uma foto por câmera é registrada no máximo a cada 60 segundos para reduzir
-repetições. Esse intervalo não identifica se uma pessoa é diferente da anterior;
+as câmeras habilitadas produzem fotos e vídeos. A análise usa o último quadro recente, a cada 1 segundo por câmera, conforme a capacidade do servidor.
+A presença contínua gera uma foto a cada 30 segundos; uma nova aparição após
+ausência pode gerar outra após 5 segundos. Esse intervalo não identifica se uma pessoa é diferente da anterior;
 pessoas que passam rapidamente podem não aparecer entre as amostras. Apenas a
 classe pessoa é utilizada. Não há detecção de veículos, leitura de placas nem
 identificação facial. Registros antigos de veículos e de abertura de câmeras ficam ocultos em Reports,
@@ -248,7 +248,7 @@ SQLite reutiliza essas páginas. Faça backup desse diretório se desejar preser
 os registros. A pausa de economia e desativar Detectar pessoas interrompem novos eventos; Parar apenas encerra a visualização das câmeras monitoradas em segundo plano.
 
 Em **Reports**, as abas **Fotos** e **Vídeos** separam os registros. Uma detecção
-inicia um MP4 H.264 de até 120 segundos, sem áudio, a 2 quadros/s, reutilizando os
+inicia um MP4 H.264 de até 120 segundos, sem áudio, com alvo de 10 quadros/s, reutilizando os
 JPEGs da conexão existente. Não abre outra conexão P2P. Cada câmera pode ter um
 clipe em andamento; enquanto grava, novas detecções não criam vídeos sobrepostos.
 Depois de concluir, outra detecção pode iniciar outro vídeo. Falhas têm intervalo
@@ -262,8 +262,8 @@ de economia encerra o clipe no trecho disponível, identificado **trecho parcial
 O sistema não prolonga a janela 4G para completar dois minutos. Ao reiniciar o
 servidor, gravações interrompidas ficam como falha, sem disponibilizar MP4 incompleto.
 
-Para limitar consumo local, os encoders usam uma thread, largura máxima de 1280
-pixels, e cada arquivo é limitado a aproximadamente 32 MB durante a captura.
+Para limitar consumo local, os encoders usam uma thread, largura máxima de 1920
+pixels, e cada arquivo é limitado a aproximadamente 96 MB durante a captura.
 Novas gravações são recusadas com menos de 256 MB livres; o Reports informa a
 falha de espaço. Essa proteção não substitui conferir o armazenamento. Fotos
 apagadas liberam páginas reutilizáveis no SQLite; vídeos expirados são removidos
@@ -279,7 +279,7 @@ próxima abertura; ele não conta como ao vivo. Não há captura nem detecção 
 a pausa. Em rede normal, isso reduz o tempo de vídeo em cerca de 83%, mas não
 limita o volume exato em MB nem elimina o tráfego de negociação.
 
-O erro de 15 segundos sem quadros causa reconexão automática dentro da janela
+O erro de 8 segundos sem quadros causa reconexão automática dentro da janela
 ativa. Ao chegar a pausa, o painel cancela também as tentativas pendentes. **Parar**
 ou **Parar todas** cancela o agendamento apenas das câmeras sem detecção. Desativar Economia volta à transmissão
 contínua. Para câmeras com Detectar pessoas, o agendamento roda no servidor, mesmo com
@@ -387,7 +387,7 @@ Yoosee para acessar a lista. Sem endereço público configurado, o alerta orient
 consultar o painel, sem fornecer um link local inacessível.
 
 O envio não abre conexão adicional com a câmera e respeita Detectar pessoas e a
-janela de economia. Fotos seguem o intervalo de registro de 60 segundos por câmera.
+janela de economia. Fotos seguem o agrupamento por presença do Reports (30 segundos contínuos; nova aparição após pelo menos 5 segundos).
 O Telegram recebe uma cópia da foto; a retenção de 30/5 dias do Reports não apaga
 mensagens do Telegram. O serviço do bot é gratuito, mas usa internet do servidor e
 do celular. Ative notificações para a conversa no aplicativo.
@@ -395,3 +395,82 @@ do celular. Ative notificações para a conversa no aplicativo.
 Falhas são exibidas em Atualizar status, sem expor token. Não há reenvio automático:
 fila cheia, servidor reiniciado ou indisponibilidade podem impedir alertas, enquanto
 os registros locais permanecem independentes. Itens da fila expiram em cinco minutos.
+
+
+## Atualização de qualidade e rostos — 22/10/2026
+
+Execute no Linux do Chromebook, na pasta do projeto, antes de reiniciar os serviços:
+
+```sh
+git pull origin main
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
+python3 configure_faces.py
+sudo systemctl restart dcs-control.service dcs-tunnel.service
+```
+
+O primeiro comando de preparação recompila o adaptador de vídeo com alvo de 10
+quadros/s (anteriormente 5). O segundo baixa os modelos públicos YuNet e SFace do
+OpenCV e confere SHA-256 fixado antes de instalá-los em `.local/faces`. Nenhuma foto
+é enviada para preparar modelos. Requer OpenCV 4.8 ou superior com YuNet/SFace;
+no Debian 13, `sudo apt install python3-opencv` fornece essas APIs. Se o adaptador
+não for atualizado, o diagnóstico pede recompilação e não executa binário incompatível.
+
+O painel mostra a resolução **recebida após conversão**, FPS medido e a idade da
+última análise de pessoas. Isso não mede a resolução do sensor nem o atraso desde
+a captura física. O alvo é até 10 fps; câmera, 4G, navegador e CPU podem entregar
+menos. A maior qualidade não cria detalhes ausentes no fluxo enviado pela câmera.
+
+Câmeras monitoradas sem Economia começam em HD com prévia de até 960px, melhorando
+a fonte das fotos e gravações. Em Economia, mantêm definição SD e prévia de 640px.
+Ampliar uma câmera solicita FHD sem redução da prévia, com retorno ao perfil anterior
+ao sair. Em Economia, ampliar mantém a definição escolhida, sem elevar o perfil
+automaticamente. Abrir uma qualidade diferente requer reconectar e pode finalizar
+um clipe em andamento como parcial. Após falhas repetidas sem quadros, o monitor
+reduz a definição para recuperar disponibilidade. FPS pode variar conforme o fluxo;
+a gravação amostra a 10fps e pode repetir quadros quando a câmera entrega menos.
+MP4 mantém duração de tempo real, sem acelerar movimentos para simular fluidez.
+
+A recuperação começa após 8 segundos sem quadros, com nova tentativa inicial em
+2 segundos e recuo progressivo até 60. A negociação P2P ainda pode demorar e usa
+fila limitada a duas inicializações simultâneas para preservar o computador. As
+pausas de Economia continuam impedindo capturas, análise e reconexões fora da janela.
+
+A detecção de pessoas usa limiar 0,55, análise de quadros novos a cada segundo e
+uma segunda escala para cenas largas sem detecção inicial. O ciclo pode demorar
+mais em computadores sobrecarregados. Falha de análise em uma câmera não encerra
+as demais; o painel informa falhas locais separadamente do status de envio no Telegram.
+Movimento rápido, oclusão e baixa resolução ainda podem causar detecções ausentes.
+
+### Aprendizado supervisionado de rostos
+
+No **Reports → Rostos**, ative a captura/comparação e salve. Só câmeras com
+**Detectar pessoas** produzem recortes; Economia continua sendo respeitada.
+É necessário o rosto estar frontal o suficiente para o detector, ter pelo menos
+64px, nitidez e luminosidade adequadas. Sem rosto utilizável, o evento continua
+como Pessoa detectada e sem identificação; não é cadastrado um recorte ruim.
+
+Digite um nome numa foto e clique **Salvar nome**. Cada foto nomeada vira um
+exemplo SFace normalizado de 128 dimensões, usado imediatamente nas próximas
+comparações desta conta. Use o mesmo nome para vários exemplos da mesma pessoa
+em iluminação e ângulos diferentes. Há três estados na galeria: exemplo nomeado,
+possível conhecido e não reconhecido. Sugestões automáticas não se tornam exemplos
+sem sua confirmação. Não há retreinamento dos pesos do modelo nem identificação
+infalível. A comparação usa cosseno mínimo 0,55 e margem mínima 0,08 entre nomes;
+valores de semelhança não são probabilidades de identidade. Não reconhecido não
+significa necessariamente desconhecido, e o recurso não é controle de acesso.
+
+Corrija um nome para corrigir o cadastro. Salvar o campo vazio remove aquele
+exemplo do aprendizado. **Excluir foto** remove recorte e descritor. **Apagar todos
+os rostos e nomes** elimina a base desta conta e desativa novas capturas. Ao
+remover um exemplo, ele deixa de participar das comparações seguintes. Contas
+não compartilham nomes, imagens ou descritores. Os recortes não são enviados ao
+Telegram; alertas continuam usando as fotos de pessoas do Reports.
+
+Rostos sem nome expiram em 30 dias, com limite de 500 por conta. Exemplos nomeados
+ficam até exclusão manual, com limite de 1.000 por conta. Recortes semelhantes da
+mesma câmera em 30 segundos são agrupados. Fotos, nomes e descritores faciais são
+dados biométricos privados, armazenados no mesmo SQLite protegido dos Reports;
+limite o acesso e o cadastro às pessoas e finalidades autorizadas. Pesos dos modelos
+e imagens não entram no Git. Fontes: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+e [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface),
+com licenças indicadas pelos respectivos projetos.

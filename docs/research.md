@@ -657,3 +657,40 @@ Telegram delivery failure isolation. JavaScript suite
 passed all 25 tests. Chromium mobile QA verified configuration, token clearing,
 test submission and the video tab link with simulated APIs. No Telegram message
 was sent and no real camera was accessed in this environment for these changes.
+
+## Qualidade, detecção e aprendizado facial — 22/10/2026
+
+O adaptador passou de 5 para alvo de 10 fps, JPEGs usam menor compressão e os
+clipes H.264 são amostrados a 10 fps, CRF 22, largura até 1920 e teto aproximado
+96 MiB. FPS exibido é medido nos quadros recebidos; geometria vem do JPEG. Não se
+trata de resolução do sensor nem de medição de latência ponta a ponta.
+
+A análise de pessoas usa quadros distintos a cada segundo, limiar 0,55 e segunda
+escala para imagens largas sem resultado inicial. O modelo MobileNetSSD instalado
+foi executado em foto pública de teste, retornando duas pessoas em cerca de 78ms
+neste ambiente; não representa desempenho garantido do Chromebook ou cobertura
+de todos os casos. Falhas por câmera ficam isoladas. Um teste HTTP de concorrência
+confirma que uma câmera lenta não bloqueia respostas das demais na mesma conta.
+
+O cadastro facial usa YuNet 2023mar e SFace 2021dec. Os hashes vieram dos ponteiros
+LFS públicos do OpenCV Zoo. Apenas nomes confirmados por usuário alimentam a base
+local de exemplos. Descritores são normalizados, separados por conta e não saem
+na API. Sugestões usam cosseno 0,55 com margem 0,08 entre nomes distintos. Não há
+retreinamento de pesos, identificação garantida, proteção contra apresentação de
+fotos nem uso para decidir acesso físico.
+
+O C compilou com avisos tratados como erro, usando Zig para destino Windows x64
+sem executar DLL do fabricante. O instalador do usuário continua usando MinGW.
+O download de pesos YuNet/SFace foi bloqueado pela rede deste ambiente nos hosts
+GitHub Media e Hugging Face; por isso o reconhecimento de rostos reais não foi
+validado aqui. O instalador verifica hashes e o painel mantém mensagem de modelos
+ausentes, preservando o detector de pessoas. O teste OpenCV de qualidade de recorte
+usa saídas simuladas de landmarks/descritores e pixels sintéticos; testes de base
+cobrem aprendizado manual, correção, exclusão, ambiguidades, retenção e isolamento.
+Chromium validou nomes, ativação/desativação, layout móvel, ampliação, FPS e Reports
+na mesma aba, com câmeras simuladas. Nenhuma câmera real ou mensagem Telegram foi
+utilizada durante esta atualização.
+
+Validação final: suíte de 115 testes Python sem falhas (um teste de pixels pulado no Python
+sem OpenCV; executado e aprovado separadamente no ambiente com OpenCV), além de
+27 testes JavaScript e a navegação Chromium descrita acima.

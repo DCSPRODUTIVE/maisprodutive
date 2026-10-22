@@ -1,5 +1,7 @@
 """One authenticated, bounded, persistent native connection and latest JPEG only."""
 import base64
+from collections import deque
+import health
 import os
 import secrets
 import shutil
@@ -15,7 +17,7 @@ from yoosee import IntegrationError
 MAX_JPEG = 8 * 1024 * 1024
 IDLE_TIMEOUT = 20
 FIRST_FRAME_TIMEOUT = 45
-STALE_TIMEOUT = 15
+STALE_TIMEOUT = 8
 STARTUP_GATE = threading.BoundedSemaphore(2)
 
 
@@ -81,6 +83,8 @@ class LiveStream:
         self.last_frame = None
         self.image = None
         self.sequence = 0
+        self.frame_times = deque(maxlen=60)
+        self.resolution = None
         self.error = None
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.watchdog = threading.Thread(target=self._watch, daemon=True)
@@ -182,7 +186,7 @@ class LiveStream:
                                             '-threads', '1', '-probesize', '32', '-analyzeduration', '0',
                                             '-protocol_whitelist', 'pipe', '-f', 'yuv4mpegpipe', '-i', 'pipe:0',
                                             *(['-vf', f"scale='min({self.preview_width},iw)':-2"] if self.preview_width else []),
-                                            '-threads', '1', '-q:v', '5' if self.preview_width else '2',
+                                            '-threads', '1', '-q:v', '3' if self.preview_width else '2',
                                             '-f', 'image2pipe', '-vcodec', 'mjpeg', '-flush_packets', '1', 'pipe:1'],
                                            stdin=native.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     self.error_reader = threading.Thread(target=self._read_encoder_errors, args=(encoder.stderr,), daemon=True)
@@ -199,6 +203,8 @@ class LiveStream:
                             self.image = image
                             self.sequence += 1
                             self.last_frame = time.monotonic()
+                            self.frame_times.append(self.last_frame)
+                            self.resolution = health.jpeg_size(image)
                             self.condition.notify_all()
                     if not self.stopped.is_set():
                         try:
@@ -279,4 +285,5 @@ class LiveStream:
             return {'device_id': self.device_id, 'sequence': self.sequence,
                     'image': 'data:image/jpeg;base64,'+base64.b64encode(image).decode() if image else None,
                     'age_seconds': round(age, 2) if age is not None else None,
+                    'health': health.snapshot(self),
                     'state': 'receiving' if image else 'waiting' if self.sequence else 'connecting' if self.connect_started is not None else 'queued'}

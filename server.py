@@ -296,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in assets:
             filename, mime = assets[self.path]
             return self.send(200, (ROOT / "web" / filename).read_bytes(), mime)
-        if self.path.startswith(("/api/reports/image/", "/api/reports/video/")):
+        if self.path.startswith(("/api/reports/image/", "/api/reports/video/", "/api/faces/image/")):
             state, cookie = self.session()
             if state is None:
                 return self.send(403, {"message": "Entre na conta para acessar os registros."})
@@ -308,7 +308,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not 0 < event_id <= 9223372036854775807:
                         raise ValueError
                     is_video = self.path.startswith("/api/reports/video/")
-                    image = (self.server.reports.store.video if is_video else self.server.reports.store.image)(self.report_owner(state), event_id)
+                    media = self.server.reports.faces.image if self.path.startswith("/api/faces/image/") else self.server.reports.store.video if is_video else self.server.reports.store.image
+                    image = media(self.report_owner(state), event_id)
                 except (ValueError, OSError, sqlite3.Error):
                     image = None
             if image is None:
@@ -366,8 +367,45 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, UnicodeError):
             return self.send(400, {"message": "Requisição inválida."})
+        if self.path == "/api/video/frame":
+            # Never hold the account lock while encoding or sending camera bytes.
+            # A slow viewer/source must not serialize every camera in the mosaic.
+            try:
+                device_id=body.get('device_id')
+                with state['lock']:
+                    if not isinstance(device_id,str):raise IntegrationError('input','Selecione uma câmera da transmissão.')
+                    stream=state['streams'].get(device_id)
+                    if stream is None or state['client'] is None:raise IntegrationError('authentication','Inicie a transmissão desta câmera nesta sessão primeiro.')
+                    if body.get('stream_id')!=stream.handle:raise IntegrationError('video_stopped','Esta transmissão foi substituída. Inicie novamente.')
+                data=stream.frame(body.get('after',0),wait=False)
+                return self.send(200,data)
+            except IntegrationError as error:return self.send(422,{'error':error.kind,'message':str(error)})
+            except Exception:return self.send(500,{'message':'Falha na leitura da imagem; tente novamente.'})
         with state["lock"]:
             try:
+                if self.path.startswith('/api/faces/'):
+                    if not isinstance(state['client'], DesktopClient):
+                        raise IntegrationError('authentication','Entre na conta para acessar os rostos.')
+                    owner=self.report_owner(state)
+                    faces=self.server.reports.faces
+                    action=self.path.rsplit('/',1)[1]
+                    try:
+                        if action=='settings':
+                            if type(body.get('enabled')) is not bool:raise ValueError('Opção facial inválida.')
+                            faces.enabled(owner,body['enabled'])
+                        elif action in ('label','delete'):
+                            face_id=body.get('id')
+                            if type(face_id) is not int or not 0<face_id<=9223372036854775807:raise ValueError('Rosto inválido.')
+                            if action=='label':faces.label(owner,face_id,body.get('name'))
+                            else:faces.delete(owner,face_id)
+                        elif action=='clear':faces.clear(owner)
+                        elif action not in ('list','status'):return self.send(404,{'message':'Recurso não encontrado.'})
+                        before=body.get('before')
+                        if before is not None and (type(before) is not int or not 0<before<=9223372036854775807):raise ValueError('Página inválida.')
+                        events=faces.list(owner,before) if action=='list' else []
+                    except ValueError as error:return self.send(400,{'message':str(error)})
+                    return self.send(200,{'events':events,'enabled':faces.enabled(owner),
+                        'ready':self.server.reports.face_ready,'message':self.server.reports.face_message})
                 if self.path in ("/api/telegram/status", "/api/telegram/save", "/api/telegram/test"):
                     if not isinstance(state["client"], DesktopClient):
                         raise IntegrationError("authentication", "Entre na conta para configurar Telegram.")
@@ -460,16 +498,6 @@ class Handler(BaseHTTPRequestHandler):
                     if target is None or body.get("stream_id") is None or target.handle == body["stream_id"]:
                         self.server.stop_streams(state, device_id)
                     return self.send(200, {"message": "Visualização encerrada. Câmeras habilitadas para detecção continuam em segundo plano."})
-                if self.path == "/api/video/frame":
-                    device_id = body.get("device_id")
-                    if not isinstance(device_id, str):
-                        raise IntegrationError("input", "Selecione uma câmera da transmissão.")
-                    stream = state["streams"].get(device_id)
-                    if stream is None or state["client"] is None:
-                        raise IntegrationError("authentication", "Inicie a transmissão desta câmera nesta sessão primeiro.")
-                    if body.get("stream_id") != stream.handle:
-                        raise IntegrationError("video_stopped", "Esta transmissão foi substituída. Inicie novamente.")
-                    return self.send(200, stream.frame(body.get("after", 0), wait=False))
                 if self.path == "/api/video/start":
                     client = state["client"]
                     if not isinstance(client, DesktopClient):
@@ -525,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             release_slot()
                         raise
-                    return self.send(200, {"device_id": device_id, "stream_id": stream.handle, "message": "Conectando à câmera. Até 5 imagens/s, sem áudio."})
+                    return self.send(200, {"device_id": device_id, "stream_id": stream.handle, "message": "Conectando à câmera. Até 10 imagens/s, sem áudio."})
                 if self.path == "/api/video/snapshot":
                     client = state["client"]
                     if not isinstance(client, DesktopClient):

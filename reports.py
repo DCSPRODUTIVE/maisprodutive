@@ -10,6 +10,7 @@ import threading
 import time
 
 from clips import RecordingService
+from faces import FaceStore, FaceEngine, readiness as face_readiness
 
 ROOT = Path(__file__).parent / '.local' / 'reports'
 MODEL_ROOT = Path(__file__).parent / '.local' / 'detection'
@@ -29,7 +30,7 @@ def readiness():
                 return False, 'Modelo de detecção ausente ou inválido. Execute configure_reports.py.'
     except OSError:
         return False, 'Modelo de detecção ausente. Execute configure_reports.py.'
-    return True, 'Detecção local ativa: pessoas; amostragem a cada 5 segundos por câmera.'
+    return True, 'Detecção local ativa: pessoas; análise de quadros novos a cada 1 segundo por câmera, conforme a capacidade do servidor.'
 
 
 class EventStore:
@@ -144,18 +145,27 @@ class Detector:
         if frame is None:
             return [], None
         height, width = frame.shape[:2]
-        self.net.setInput(self.cv.dnn.blobFromImage(frame, 0.007843, (300,300), 127.5))
-        detections = self.net.forward().reshape(-1,7)
-        rows = []
-        classes = {15:'person'}
-        for row in detections:
-            label = classes.get(int(row[1])); confidence = float(row[2])
-            if not label or confidence < .65:
-                continue
-            x1,y1,x2,y2 = row[3:7].clip(0,1).tolist()
-            if x2<=x1 or y2<=y1:
-                continue
-            rows.append({'kind':label,'confidence':round(confidence,3),'box':[x1,y1,x2,y2]})
+        rows=[]
+        def infer(image, region):
+            self.net.setInput(self.cv.dnn.blobFromImage(image,0.007843,(300,300),127.5))
+            detections=self.net.forward().reshape(-1,7)
+            ox,oy,rw,rh=region
+            for row in detections:
+                confidence=float(row[2])
+                if int(row[1])!=15 or confidence<.55:continue
+                x1,y1,x2,y2=row[3:7].clip(0,1).tolist()
+                if x2<=x1 or y2<=y1:continue
+                box=[(ox+x1*rw)/width,(oy+y1*rh)/height,(ox+x2*rw)/width,(oy+y2*rh)/height]
+                rows.append({'kind':'person','confidence':round(confidence,3),'box':box})
+        infer(frame,(0,0,width,height))
+        # A second scale preserves small-person detail that a whole-frame 300px input loses.
+        if width>=960 and not rows:
+            span=width*2//3
+            for left in (0,width-span):infer(frame[:,left:left+span],(left,0,span,height))
+        if rows:
+            boxes=[[int(r['box'][0]*width),int(r['box'][1]*height),int((r['box'][2]-r['box'][0])*width),int((r['box'][3]-r['box'][1])*height)] for r in rows]
+            indices=self.cv.dnn.NMSBoxes(boxes,[r['confidence'] for r in rows],.55,.4)
+            rows=[rows[int(i)] for i in indices.flatten()] if len(indices) else []
         return rows, frame
 
 
@@ -169,6 +179,11 @@ class ReportMonitor:
         self.guard=threading.Lock()
         self.last={}
         self.saved={}
+        self.presence={}
+        self.face_last={}
+        self.faces=FaceStore(self.store)
+        self.face_ready,self.face_message=face_readiness()
+        self.face_engine=None
         self.ready,self.message=readiness()
         self.recordings=RecordingService(self.store)
 
@@ -178,48 +193,69 @@ class ReportMonitor:
                 self.thread=threading.Thread(target=self.run,daemon=True)
                 self.thread.start()
 
+    def process(self, stream, detector):
+        owner=getattr(stream,'report_owner',None)
+        now=time.monotonic()
+        if (not owner or stream.stopped.is_set() or not getattr(stream,'report_detect',False)
+            or now>=getattr(stream,'monitor_until',float('inf'))):return
+        key=(owner,stream.device_id)
+        if now-self.last.get(key,0)<1:return
+        with stream.condition:
+            jpeg=stream.image
+            stamp=stream.last_frame
+            age=now-stamp if stamp is not None else 999
+        if not jpeg or age>2 or stamp==getattr(stream,'report_sample_stamp',None):return
+        self.last[key]=now
+        stream.report_sample_stamp=stamp
+        started=time.monotonic()
+        rows,frame=detector.detect(jpeg)
+        if not getattr(stream,'report_detect',False) or time.monotonic()>=getattr(stream,'monitor_until',float('inf')):return
+        matches=[row for row in rows if row['kind']=='person']
+        stream.detection_health={'people':len(matches),'analysis_ms':round((time.monotonic()-started)*1000),
+                                 'analyzed_at':time.monotonic(),'error':False}
+        if not matches:return
+        previous=self.presence.get(key,0)
+        self.presence[key]=now
+        self.recordings.trigger(stream)
+        event_key=key+('person',)
+        elapsed=now-self.saved.get(event_key,0)
+        if elapsed>=30 or (now-previous>=3 and elapsed>=5):
+            self.store.add(owner,stream.device_id,stream.report_name,'person',jpeg,
+                           max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
+            self.saved[event_key]=now
+            alerts=getattr(self.server,'telegram',None)
+            if alerts:alerts.enqueue(owner,stream.report_name,jpeg,max(row['confidence'] for row in matches))
+        if frame is not None and self.face_ready and now-self.face_last.get(key,0)>=3 and self.faces.enabled(owner):
+            self.face_last[key]=now
+            try:
+                if self.face_engine is None:self.face_engine=FaceEngine()
+                for crop,feature in self.face_engine.extract(frame,[row['box'] for row in matches]):
+                    if not getattr(stream,'report_detect',False) or not self.faces.enabled(owner):break
+                    self.faces.add(owner,stream.device_id,stream.report_name,crop,feature)
+            except Exception:
+                self.face_message='Não foi possível analisar rostos. Confira os modelos e a versão do OpenCV; a detecção de pessoas continua.'
+
     def run(self):
         try:
             self.store.recover_recordings()
             detector=Detector() if self.ready else None
             last_cleanup=0
-            while not self.stopped.wait(.2):
+            while not self.stopped.wait(.1):
                 if time.monotonic()-last_cleanup>=60:
                     self.store.cleanup();last_cleanup=time.monotonic()
                 if detector is None:continue
-                with self.server.stream_guard:
-                    streams=list(self.server.active_streams)
+                with self.server.stream_guard:streams=list(self.server.active_streams)
+                # Each camera gets one turn; a bad frame must not stop other cameras.
                 for stream in streams:
                     if self.stopped.is_set():break
-                    owner=getattr(stream,'report_owner',None)
-                    if (not owner or stream.stopped.is_set() or not getattr(stream,'report_detect',False)
-                        or time.monotonic() >= getattr(stream,'monitor_until',float('inf'))):continue
-                    key=(owner,stream.device_id)
-                    now=time.monotonic()
-                    if now-self.last.get(key,0)<5:continue
-                    self.last[key]=now
-                    # Do not heartbeat: reports never keep an abandoned camera alive.
-                    with stream.condition:
-                        jpeg=stream.image
-                        age=now-stream.last_frame if stream.last_frame is not None else 999
-                    if not jpeg or age>3:continue
-                    rows,frame=detector.detect(jpeg)
-                    if not getattr(stream,'report_detect',False):continue
-                    for kind in ('person',):
-                        matches=[row for row in rows if row['kind']==kind]
-                        event_key=key+(kind,)
-                        if not matches:continue
-                        self.recordings.trigger(stream)
-                        if now-self.saved.get(event_key,0)<60:continue
-                        self.store.add(owner,stream.device_id,stream.report_name,kind,jpeg,
-                                       max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
-                        self.saved[event_key]=now
-                        alerts = getattr(self.server, 'telegram', None)
-                        if alerts:
-                            alerts.enqueue(owner, stream.report_name, jpeg, max(row['confidence'] for row in matches))
-                active={(getattr(s,'report_owner',None),s.device_id) for s in streams}
-                self.last={k:v for k,v in self.last.items() if k in active}
-                self.saved={k:v for k,v in self.saved.items() if k[:2] in active}
+                    try:self.process(stream,detector)
+                    except Exception:
+                        stream.detection_health={'error':True,'analyzed_at':time.monotonic()}
+                cutoff=time.monotonic()-600
+                self.last={k:v for k,v in self.last.items() if v>cutoff}
+                self.saved={k:v for k,v in self.saved.items() if v>cutoff}
+                self.presence={k:v for k,v in self.presence.items() if v>cutoff}
+                self.face_last={k:v for k,v in self.face_last.items() if v>cutoff}
         except Exception:
             self.ready=False
             self.message='Detecção interrompida. Verifique a instalação e o espaço em disco; as câmeras continuam independentes.'

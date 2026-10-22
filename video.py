@@ -55,7 +55,7 @@ def native_failure(code, raw=b''):
                20: 'Os buffers do quadro não têm os tamanhos esperados.',
                21: 'Não foi possível transferir o quadro do adaptador.',
                23: 'A resolução da câmera mudou durante a transmissão. Inicie novamente.',
-               24: 'A câmera parou de entregar quadros por 15 segundos.',
+               24: 'A câmera parou de entregar quadros por 8 segundos.',
                25: 'O limite de tempo da transmissão foi atingido. Inicie novamente.',
                26: 'Não foi possível reservar memória para converter a imagem.'}
     diagnostic = re.fullmatch(rb'MPVD1 (17|18|19|20) (-?[0-9]{1,11}) (-?[0-9]{1,11}) (-?[0-9]{1,11})\n', raw)
@@ -99,8 +99,8 @@ def capture(account, device_id):
     try:
         result = subprocess.run([shutil.which('ffmpeg'), '-hide_banner', '-loglevel', 'error',
                                  '-protocol_whitelist', 'pipe', '-f', 'yuv4mpegpipe', '-i', 'pipe:0',
-                                 '-frames:v', '1', '-vf', "scale='min(1280,iw)':-2", '-f', 'image2pipe',
-                                 '-vcodec', 'mjpeg', 'pipe:1'], input=raw, capture_output=True, timeout=15)
+                                 '-frames:v', '1', '-vf', "scale='min(1920,iw)':-2", '-f', 'image2pipe',
+                                 '-q:v', '2', '-vcodec', 'mjpeg', 'pipe:1'], input=raw, capture_output=True, timeout=15)
     except subprocess.TimeoutExpired:
         raise IntegrationError('video_decode', 'A conversão da imagem excedeu o tempo esperado.') from None
     image = result.stdout
