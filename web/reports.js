@@ -2,7 +2,7 @@ let csrf = "", before = null, loading = false, view = location.hash==="#faces" ?
 const $ = id => document.getElementById(id);
 function node(tag, text, cls) { const el=document.createElement(tag); if(text)el.textContent=text;if(cls)el.className=cls;return el; }
 async function load(reset=false) {
-  if(loading)return;loading=true;$("reload-reports").disabled=true;
+  if(loading)return;$('faces-settings').hidden=view!=='faces';loading=true;$("reload-reports").disabled=true;
   try {
     if(reset){before=null;$("report-list").replaceChildren();}
     const sessionResponse=await fetch('/api/status',{cache:'no-store'});
@@ -13,7 +13,12 @@ async function load(reset=false) {
     const data=await response.json();if(!response.ok)throw new Error(data.message);
     $("report-status").textContent=data.message;
     $("faces-settings").hidden=view!=='faces';
-    if(view==='faces'){ $("faces-enabled").checked=data.enabled;$("faces-status").textContent=data.message; }
+    if(view==='faces'){
+      $("faces-enabled").checked=data.enabled;$("faces-status").textContent=(data.enabled?'Captura ativada. ':'Captura desativada. ')+data.message;
+      $('faces-diagnostics').replaceChildren();
+      for(const item of data.diagnostics||[])$('faces-diagnostics').append(node('p',`${item.camera_name}: ${item.reason} (há ${item.age_seconds}s)`));
+      if(!(data.diagnostics||[]).length)$('faces-diagnostics').append(node('p','Ainda sem análise facial. Ative a captura, habilite Detectar pessoas na câmera e aguarde uma janela ativa de monitoramento.'));
+    }
     for(const event of data.events){
       if(view==='faces'){renderFace(event);before=event.id;continue;}
       const card=node('article',null,'report-card');
@@ -36,6 +41,9 @@ async function load(reset=false) {
       if(view==='videos'){
         const label=event.status==='recording'?'Gravando · até 2 minutos':event.status==='failed'?'Não foi possível gravar':`${Math.round(event.duration)} segundos · ${event.status==='partial'?'trecho parcial':'concluído'} · sem áudio`;
         info.append(node('p',label));
+        info.append(node('p',event.source==='sd'?`Origem: cartão da câmera · ${event.pre_roll||0}s anteriores confirmados`:`Origem: gravação local · ${event.pre_roll||0}s anteriores disponíveis`));
+        const archiveLabels={disk_space:'Sem espaço suficiente para preparar o vídeo do cartão. Vídeo local preservado.',adapter_update_required:'Atualize o adaptador com configure_video.py --update para tentar consultar o cartão.',no_recording:'A câmera não entregou gravação nesse horário; confira cartão e gravação no app Yoosee. Vídeo local preservado.',timestamp_unverified:'Não foi possível confirmar o horário da gravação do cartão. Vídeo local preservado.',fetching:'Buscando a gravação do cartão; o vídeo local continua disponível.',unavailable:'Cartão indisponível ou exportação incompatível. Vídeo local preservado.',busy:'Sem conexão livre para consultar o cartão. Vídeo local preservado.',cooldown:'Consulta ao cartão em espera após falha anterior.',economy_or_disabled:'Consulta ao cartão não iniciada para respeitar economia ou detecção desativada.'};
+        if(archiveLabels[event.archive_status])info.append(node('p',archiveLabels[event.archive_status]));
         if(event.reason==='disk_space')info.append(node('p','Espaço em disco insuficiente. Libere espaço para novas gravações.'));
       }
       info.append(node('p',`${event.name} · ${new Date(event.created*1000).toLocaleString('pt-BR')}`));
@@ -44,7 +52,7 @@ async function load(reset=false) {
     }
     $("older-reports").hidden=data.events.length<24;
     if(reset&&!data.events.length)$("report-list").append(node('p','Ainda não há registros nesta aba. Ative Detectar pessoas nas câmeras desejadas.'));
-  }catch(error){$("report-status").textContent=error.message;}
+  }catch(error){$("report-status").textContent=error.message;if(view==='faces')$("faces-status").textContent=error.message+' Se atualizou o projeto, reinicie o serviço DCS e recarregue a página.';}
   finally{loading=false;$("reload-reports").disabled=false;}
 }
 $("reload-reports").addEventListener('click',()=>load(true));

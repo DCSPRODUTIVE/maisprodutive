@@ -16,6 +16,7 @@ from desktop import DesktopClient, load_profile, profile_path
 from video import readiness as video_readiness
 from live import LiveStream
 from background import BackgroundMonitor
+from camera_archive import CameraArchive
 from reports import EventStore, ReportMonitor
 from access import Gate, TTL as ACCESS_TTL, origin as validate_origin
 
@@ -49,6 +50,8 @@ class Workbench(ThreadingHTTPServer):
         self.active_streams = set()
         self.stream_guard = threading.Lock()
         self.reports = ReportMonitor(self, EventStore())
+        self.archive = CameraArchive(self.reports.store,self.video_guard)
+        self.reports.recordings.archive=self.archive
         self.telegram = TelegramAlerts(self.reports.store, self.public_origin)
         self.background = BackgroundMonitor(self.open_background, self.stream_snapshot)
         super().__init__(address, Handler)
@@ -69,6 +72,7 @@ class Workbench(ThreadingHTTPServer):
             self.video_guard.release()
         try:
             stream = LiveStream(entry.account, entry.device_id, float("inf"), release, preview_width=entry.width, definition=entry.definition)
+            stream.archive_account=entry.account
             stream.background = True
             stream.monitor_until = entry.active_until(self.background.clock())
             stream.report_owner, stream.report_name, stream.report_detect = entry.owner, entry.name, True
@@ -121,6 +125,7 @@ class Workbench(ThreadingHTTPServer):
     def server_close(self):
         self.background.close()
         self.reports.close()
+        self.archive.close()
         self.telegram.close()
         with self.stream_guard:
             streams = list(self.active_streams)
@@ -405,7 +410,8 @@ class Handler(BaseHTTPRequestHandler):
                         events=faces.list(owner,before) if action=='list' else []
                     except ValueError as error:return self.send(400,{'message':str(error)})
                     return self.send(200,{'events':events,'enabled':faces.enabled(owner),
-                        'ready':self.server.reports.face_ready,'message':self.server.reports.face_message})
+                        'ready':self.server.reports.face_ready,'message':self.server.reports.face_message,
+                        'diagnostics':self.server.reports.face_status(owner,state['devices'],self.server.reports.store.preferences(owner))})
                 if self.path in ("/api/telegram/status", "/api/telegram/save", "/api/telegram/test"):
                     if not isinstance(state["client"], DesktopClient):
                         raise IntegrationError("authentication", "Entre na conta para configurar Telegram.")
@@ -541,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
                         state["streams"][device_id] = stream
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)
+                        stream.archive_account=client.account
                         stream.report_owner = self.report_owner(state)
                         stream.report_detect = device_id in self.server.reports.store.preferences(stream.report_owner).get("detection_ids",[])
                         stream.report_name = next((item["name"] for item in state["devices"] if item["id"] == device_id), device_id)

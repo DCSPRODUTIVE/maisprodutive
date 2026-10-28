@@ -694,3 +694,51 @@ utilizada durante esta atualização.
 Validação final: suíte de 115 testes Python sem falhas (um teste de pixels pulado no Python
 sem OpenCV; executado e aprovado separadamente no ambiente com OpenCV), além de
 27 testes JavaScript e a navegação Chromium descrita acima.
+
+## Cartão, pré-evento, retenção e diagnóstico facial — 28/10/2026
+
+A inspeção de exports do DLL confirmou `setPlaybackDataResource`, `startRecord`,
+`stopRecord` e `setTimeListener`. As chamadas de reprodução do cliente Windows
+usam valores derivados de `QDateTime::toMSecsSinceEpoch` (por exemplo, chamada em
+0x140123157 salva em +0x170, usado pela reprodução em 0x1401233e0). O adaptador
+passa intervalos em milissegundos, registra a reprodução usando o gravador do SDK
+e exige timestamps absolutos coerentes, além de validar arquivo e duração.
+
+O callback usa o layout MSVC observado (objeto std::function de 64 bytes, ponteiro
+de implementação em +0x38). O exportador é isolado em processo e tem limites de
+tempo, tamanho e espaço livre. Essa compatibilidade ABI e o acesso ao cartão
+continuam **experimentais e sem teste em câmera real**; a compilação não comprova
+que um firmware aceite o intervalo ou forneça callbacks de horário. Respostas
+incompatíveis preservam o vídeo local. Não há uso de APIs de exclusão do cartão.
+
+Uma fila limitada a 12 itens, um exportador e o semáforo global de 12 conexões
+limitam trabalho adicional. Economia ou detecção desativada impedem novas buscas;
+o processo ativo é encerrado quando a janela termina. O vídeo local é gravado
+primeiro; somente após validação o arquivo é trocado por outro nome numa transação.
+H.264 é remultiplexado sem reduzir FPS; outros codecs usam conversão H.264 sem
+forçar uma taxa artificial. O teste com vídeo sintético a 25fps confirmou a
+preservação dessa taxa. Testes também rejeitam horários de outro evento, verificam
+que tokens ficam fora dos argumentos e mantêm o arquivo local em caso de falha.
+
+O pré-evento local usa ring buffer de cinco segundos/12 MiB por câmera habilitada,
+com timestamps monotônicos. Um teste de codificação conferiu duração e cor do
+primeiro quadro para comprovar que quadros anteriores entram antes dos atuais.
+Retenção passou a quinze dias para vídeos; fotos permanecem em trinta.
+
+A análise facial não depende mais de uma detecção de corpo positiva no mesmo
+quadro. Foram revisados margem da região, resolução mínima (40px), limiar do
+detector e nitidez, mantendo o classificador de identidade conservador. Diagnósticos
+por conta mostram detecção desativada, modelo ausente e motivo de rejeição. Erros
+faciais não interrompem o registro de pessoas e são exibidos sem detalhes internos.
+
+Chromium conferiu origem dos vídeos, estado de fallback por horário, retenção,
+diagnósticos, cadastro e saída de rostos, além de ajuste contain para 4:3 e retrato.
+Não foi identificado filtro de crop no layout ou conversor. Diferenças de campo
+visual entre SD/HD, lentes e aplicativo precisam ser comparadas nas câmeras reais;
+o tamanho do OSD não é evidência suficiente de crop pelo painel.
+
+Validação desta versão: 123 testes Python sem falhas, com um teste de pixels
+pulado no Python padrão; o conjunto de 15 testes de rostos/Reports passou no
+ambiente com OpenCV. Também passaram 27 testes JavaScript, as verificações Chromium
+e a compilação Windows x64 com avisos tratados como erro. Nenhuma câmera real
+nem conta Telegram foi acessada durante os testes desta atualização.

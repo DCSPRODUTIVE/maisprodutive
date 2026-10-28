@@ -85,8 +85,10 @@ abertura e veículos ficam ocultos, sem apagar o banco de dados.
 
 Reports oferece Fotos e Vídeos. Apenas câmeras com **Detectar pessoas** ativado
 produzem esses registros. As fotos duram até 30 dias (máximo 1.000 por conta), e
-os vídeos de até dois minutos duram até 5 dias. Gravar não abre uma conexão extra
-com a câmera. Pausa de economia, desligamento ou desativação encerra o clipe com o
+os vídeos de até dois minutos mais até cinco segundos anteriores duram até 15 dias.
+A gravação local reutiliza os quadros existentes. A busca experimental no cartão
+pode abrir uma conexão adicional, quando há uma vaga e tempo na janela ativa, e
+só substitui o local após validar horário e arquivo. Pausa de economia, desligamento ou desativação encerra o clipe com o
 trecho disponível; não prolonga o consumo de 4G.
 
 ## Iniciar servidor e túnel automaticamente no Linux

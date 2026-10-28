@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from frame_buffer import PRE_ROLL
 import shutil
 import signal
 import subprocess
@@ -16,8 +17,9 @@ MAX_BYTES = 96 * 1024 * 1024
 
 
 class RecordingService:
-    def __init__(self, store):
+    def __init__(self, store, archive=None):
         self.store = store
+        self.archive = archive
         self.lock = threading.Lock()
         self.active = {}
         self.last_started = {}
@@ -32,7 +34,7 @@ class RecordingService:
             if now-self.last_started.get(key,0)<60:return
             self.last_started={k:v for k,v in self.last_started.items() if now-v<600}
             self.last_started[key]=now
-            recorder = Recorder(self.store, stream, lambda: self.finished(key))
+            recorder = Recorder(self.store, stream, lambda: self.finished(key), archive=self.archive)
             self.active[key] = recorder
             recorder.start()
 
@@ -52,8 +54,15 @@ class RecordingService:
 
 
 class Recorder:
-    def __init__(self, store, stream, on_close):
+    def __init__(self, store, stream, on_close, archive=None):
         self.store, self.stream, self.on_close = store, stream, on_close
+        self.archive=archive
+        self.triggered=time.monotonic()
+        self.wall_trigger=time.time()
+        with stream.condition:
+            history=getattr(stream,'history',None)
+            self.pre_frames=history.snapshot(self.triggered) if history else []
+        self.pre_roll=min(PRE_ROLL,max(0,self.triggered-self.pre_frames[0][0])) if self.pre_frames else 0
         self.stopped = threading.Event()
         self.process = None
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -95,9 +104,17 @@ class Recorder:
                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
             self.process=process
             # An encoder blocked on input/output cannot outlive the bounded recording.
-            watchdog=threading.Timer(DURATION+15,lambda: self.kill(process))
+            watchdog=threading.Timer(DURATION+PRE_ROLL+15,lambda: self.kill(process))
             watchdog.daemon=True;watchdog.start()
-            started=time.monotonic();deadline=started+DURATION;next_frame=started
+            # Replay the pre-event ring at its actual timeline, not one frame per source callback.
+            if self.pre_frames:
+                index=0;tick=self.pre_frames[0][0]
+                while tick<self.triggered:
+                    while index+1<len(self.pre_frames) and self.pre_frames[index+1][0]<=tick:index+=1
+                    process.stdin.write(self.pre_frames[index][1]);frames+=1;tick+=1/FPS
+                process.stdin.flush()
+            self.pre_frames=[]
+            started=time.monotonic();deadline=self.triggered+DURATION;next_frame=started
             while time.monotonic()<deadline:
                 if (self.stopped.is_set() or self.stream.stopped.is_set() or not getattr(self.stream,'report_detect',False)
                         or time.monotonic() >= getattr(self.stream,'monitor_until',float('inf'))):
@@ -128,6 +145,9 @@ class Recorder:
             os.chmod(temporary,0o600);temporary.replace(final)
             status='ready' if not interrupted and duration>=DURATION-1 else 'partial'
             self.store.video_finish(record_id,status,round(duration,2),reason)
+            self.store.video_details(record_id,pre_roll=round(self.pre_roll,2),source='live')
+            if self.archive and not interrupted:
+                self.archive.enqueue(record_id,self.stream,self.wall_trigger-PRE_ROLL,self.wall_trigger+DURATION)
         except Exception as error:
             # Only fixed reason categories are persisted, never raw tool output.
             known=str(error) if isinstance(error,RuntimeError) else ''

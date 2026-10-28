@@ -88,6 +88,7 @@ class FaceStore:
             if any(sum(a*b for a,b in zip(feature,json.loads(r[0])))>.85 for r in recent):return
             db.execute('INSERT INTO faces(owner,camera,name,created,image,embedding) VALUES (?,?,?,?,?,?)',(owner,camera,name,time.time(),image,json.dumps(feature)))
             db.execute('DELETE FROM faces WHERE owner=? AND label="" AND id NOT IN (SELECT id FROM faces WHERE owner=? AND label="" ORDER BY id DESC LIMIT 500)',(owner,owner))
+            return True
 
     def list(self, owner, before=None):
         with self.store.guard, self.store.connect() as db:
@@ -133,7 +134,7 @@ class FaceEngine:
     def __init__(self):
         import cv2
         self.cv=cv2
-        self.detector=cv2.FaceDetectorYN.create(str(MODEL_ROOT/'face_detection_yunet_2023mar.onnx'),'',(320,320),.9,.3,100)
+        self.detector=cv2.FaceDetectorYN.create(str(MODEL_ROOT/'face_detection_yunet_2023mar.onnx'),'',(320,320),.85,.3,100)
         self.recognizer=cv2.FaceRecognizerSF.create(str(MODEL_ROOT/'face_recognition_sface_2021dec.onnx'),'')
 
     def extract(self, frame, boxes):
@@ -141,26 +142,39 @@ class FaceEngine:
         height,width=frame.shape[:2]
         # Detect within person regions to retain small face detail without upscaling.
         results=[]
+        self.last_reason='Nenhum rosto frontal encontrado nesta imagem.'
         for box in boxes[:8]:
             x1,y1,x2,y2=[max(0,min(1,v)) for v in box]
-            left,top,right,bottom=int(x1*width),int(y1*height),int(x2*width),int(y2*height)
+            padding=.08
+            left,top,right,bottom=max(0,int((x1-padding)*width)),max(0,int((y1-padding)*height)),min(width,int((x2+padding)*width)),min(height,int((y2+padding)*height))
             region=frame[top:bottom,left:right]
-            if region.size==0 or min(region.shape[:2])<64:continue
-            if max(region.shape[:2])>960:
-                scale=960/max(region.shape[:2]);region=cv.resize(region,(round(region.shape[1]*scale),round(region.shape[0]*scale)))
+            if region.size==0 or min(region.shape[:2])<40:
+                self.last_reason='Região muito pequena para localizar um rosto.';continue
+            scale=1.
+            if max(region.shape[:2])>1280:
+                scale=1280/max(region.shape[:2]);region=cv.resize(region,(round(region.shape[1]*scale),round(region.shape[0]*scale)))
             self.detector.setInputSize((region.shape[1],region.shape[0]))
             _,faces=self.detector.detect(region)
             for face in ([] if faces is None else faces[:4]):
                 x,y,w,h=face[:4]
-                if min(w,h)<64:continue
+                if min(w,h)<40:
+                    self.last_reason='Rosto muito pequeno (menos de 40 pixels). Aproxime a câmera ou aumente a resolução.';continue
                 crop=region[max(0,int(y)):min(region.shape[0],int(y+h)),max(0,int(x)):min(region.shape[1],int(x+w))]
                 if crop.size==0:continue
                 gray=cv.cvtColor(crop,cv.COLOR_BGR2GRAY)
-                if cv.Laplacian(gray,cv.CV_64F).var()<65 or not 35<gray.mean()<230:continue
-                aligned=self.recognizer.alignCrop(region,face)
-                feature=vector(self.recognizer.feature(aligned).flatten().tolist())
+                if min(gray.shape)<40:continue
+                if cv.Laplacian(gray,cv.CV_64F).var()<40:
+                    self.last_reason='Rosto desfocado; aguardando uma imagem mais nítida.';continue
+                if not 25<gray.mean()<235:
+                    self.last_reason='Rosto muito escuro ou muito claro.';continue
+                try:
+                    aligned=self.recognizer.alignCrop(region,face)
+                    feature=vector(self.recognizer.feature(aligned).flatten().tolist())
+                except (cv.error,ValueError):
+                    self.last_reason='Não foi possível alinhar este rosto. Aguardando outra posição.';continue
                 if max(crop.shape[:2])>512:
                     scale=512/max(crop.shape[:2]);crop=cv.resize(crop,(round(crop.shape[1]*scale),round(crop.shape[0]*scale)))
                 ok,jpeg=cv.imencode('.jpg',crop,[cv.IMWRITE_JPEG_QUALITY,95])
-                if ok:results.append((jpeg.tobytes(),feature))
+                if ok:
+                    results.append((jpeg.tobytes(),feature));self.last_reason='Rosto com qualidade suficiente encontrado.'
         return results

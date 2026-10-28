@@ -255,7 +255,7 @@ Depois de concluir, outra detecção pode iniciar outro vídeo. Falhas têm inte
 mínimo de 60 segundos antes de nova tentativa de gravação.
 
 Os vídeos ficam em `.local/reports/videos`, com metadados privados no banco.
-São excluídos após 5 dias por manutenção periódica (a cada minuto com servidor
+São excluídos após 15 dias por manutenção periódica (a cada minuto com servidor
 ligado) e ao acessar o armazenamento. Após desligamento, a limpeza ocorre na
 próxima inicialização. Encerrar a conexão, perder conexão, desativar detecção ou entrar na pausa
 de economia encerra o clipe no trecho disponível, identificado **trecho parcial**.
@@ -361,7 +361,7 @@ qualidade pode reiniciar a conexão, sem prolongar a janela de 5 minutos. A fase
 do ciclo é mantida em memória pelo servidor; após reiniciar e fazer novo login,
 um novo ciclo começa. Não há armazenamento da senha nem do token Yoosee em disco.
 Os clipes continuam limitados a dois minutos e terminam parcialmente se a janela
-fechar. A retenção de fotos/vídeos continua em 30/5 dias.
+fechar. A retenção de fotos/vídeos continua em 30/15 dias.
 
 
 ## Alertas gratuitos pelo Telegram
@@ -388,7 +388,7 @@ consultar o painel, sem fornecer um link local inacessível.
 
 O envio não abre conexão adicional com a câmera e respeita Detectar pessoas e a
 janela de economia. Fotos seguem o agrupamento por presença do Reports (30 segundos contínuos; nova aparição após pelo menos 5 segundos).
-O Telegram recebe uma cópia da foto; a retenção de 30/5 dias do Reports não apaga
+O Telegram recebe uma cópia da foto; a retenção de 30/15 dias do Reports não apaga
 mensagens do Telegram. O serviço do bot é gratuito, mas usa internet do servidor e
 do celular. Ative notificações para a conversa no aplicativo.
 
@@ -446,7 +446,7 @@ Movimento rápido, oclusão e baixa resolução ainda podem causar detecções a
 No **Reports → Rostos**, ative a captura/comparação e salve. Só câmeras com
 **Detectar pessoas** produzem recortes; Economia continua sendo respeitada.
 É necessário o rosto estar frontal o suficiente para o detector, ter pelo menos
-64px, nitidez e luminosidade adequadas. Sem rosto utilizável, o evento continua
+40px, nitidez e luminosidade adequadas. Sem rosto utilizável, o evento continua
 como Pessoa detectada e sem identificação; não é cadastrado um recorte ruim.
 
 Digite um nome numa foto e clique **Salvar nome**. Cada foto nomeada vira um
@@ -474,3 +474,69 @@ limite o acesso e o cadastro às pessoas e finalidades autorizadas. Pesos dos mo
 e imagens não entram no Git. Fontes: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
 e [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface),
 com licenças indicadas pelos respectivos projetos.
+
+
+## Gravação do cartão, pré-evento e diagnóstico — 28/10/2026
+
+Esta atualização exige recompilar o adaptador (`python3 configure_video.py
+~/Yoosee-1.0.0.8.exe --update`) e reiniciar o serviço. A biblioteca original do
+instalador continua privada; o Git contém apenas o código do adaptador.
+
+Cada câmera habilitada para detecção mantém até cinco segundos de JPEGs recentes
+em memória (limite de 12 MiB por câmera). Ao detectar, a gravação local inclui o
+histórico disponível e até 120 segundos seguintes. Não é possível recuperar os
+cinco segundos completos se a câmera acabou de abrir, não entregou quadros ou o
+limite de memória reduziu o buffer. A pausa de Economia continua fechando a fonte
+e finalizando clipes parciais. Não há gravação ou coleta contínua fora da janela.
+
+Após finalizar um clipe local não interrompido, o servidor tenta buscar a mesma
+janela no cartão pelo SDK, **experimentalmente**, com apenas uma busca por vez.
+A tentativa requer uma das 12 conexões livre, autorização ainda ativa e tempo
+suficiente na janela de Economia para terminar; caso contrário mantém o vídeo
+local. Falhas têm espera de dez minutos por câmera para reduzir tráfego. O SDK
+precisa disponibilizar o intervalo, não bastando haver um cartão inserido.
+Confira se a gravação está ativa e se o relógio da câmera está correto no Yoosee.
+
+O caminho usa `setPlaybackDataResource`, `startRecord`, `stopRecord` e
+`setTimeListener` do DLL inspecionado. Os horários são Unix em milissegundos,
+conforme as chamadas do cliente Windows analisado. Nenhum comando de exclusão ou
+formatação do cartão é usado. O processo fica isolado, com limites de tempo,
+espaço e tamanho de arquivo; credenciais passam exclusivamente pela entrada padrão.
+
+O original só substitui o local após confirmar timestamps no intervalo solicitado,
+duração e decodificação inicial do vídeo. Se o SDK não confirmar o horário, o
+local permanece. Em H.264 o servidor remultiplexa sem reduzir FPS nem recodificar;
+outros codecs são convertidos para H.264 preservando a cadência recebida, sem
+forçar 10fps. O original do cartão nunca é apagado. O Reports identifica a origem,
+pré-evento confirmado e situação da busca. Buscar o cartão pode levar alguns
+minutos e usa dados adicionais durante a janela permitida. Até ser validado,
+o vídeo local fica disponível normalmente.
+
+O caminho do cartão foi compilado e testado com fixtures, incluindo preservação
+de 25fps num original H.264 sintético. **A consulta real ao cartão não foi validada
+neste ambiente sem acesso às suas câmeras**, e firmwares podem exigir adaptação.
+Não é promessa de compatibilidade com todos os modelos. Consulte o status do
+clipe no Reports para distinguir busca em andamento, falta de gravação, falta
+de conexão livre ou horário não confirmado.
+
+Vídeos do servidor passam a expirar após **15 dias**; fotos continuam em 30 dias.
+Arquivos já removidos pela regra antiga não são recuperados. O limite de disco
+livre continua impedindo novas gravações quando necessário; quinze dias podem
+exigir mais armazenamento. A duração máxima local passa a até 125 segundos com
+pré-evento; falhas e Economia podem gerar trechos menores.
+
+Em **Reports → Rostos**, os diagnósticos mostram a última tentativa por câmera,
+modelos ausentes, detecção desativada, imagem pequena, falta de nitidez ou luz.
+O detector agora verifica rostos mesmo se o detector de corpos não encontrar a
+pessoa no mesmo quadro, a cada dois segundos conforme a capacidade do servidor.
+O recorte inclui margem ao redor da caixa da pessoa; o mínimo passa de 64 para
+40px, com filtro de nitidez revisado. Os critérios de comparação de identidades
+continuam conservadores e apenas nomes confirmados treinam os exemplos. Fotos de
+pessoas de costas ou com rosto virado para baixo ainda podem não gerar cadastro.
+
+A visualização, as fotos e vídeos usam `object-fit: contain`, sem zoom, corte ou
+esticamento. Uma imagem 4:3 ou vertical pode deixar faixas. Não há filtro de crop
+na conversão. Isso não recupera áreas ausentes do fluxo fornecido pela câmera.
+Se SD mostra um campo diferente do app, compare os perfis SD original, HD e FHD;
+use imagens da mesma câmera e posição para confirmar se o SDK fornece outro fluxo.
+O tamanho da data sozinho não comprova um corte feito pelo painel.

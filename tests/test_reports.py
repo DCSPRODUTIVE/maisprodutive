@@ -114,3 +114,40 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.list('mine')[0]['camera'],'good')
         self.assertTrue(bad.detection_health['error'])
         self.assertTrue(monitor.ready)
+
+    def test_faces_are_checked_even_when_body_detector_misses_and_diagnostics_are_scoped(self):
+        from unittest.mock import Mock
+        stream=SimpleNamespace(report_owner='mine',report_name='Entrada',device_id='a',report_detect=True,
+            condition=threading.Condition(),image=b'jpeg',last_frame=time.monotonic(),stopped=threading.Event())
+        server=SimpleNamespace(stream_guard=threading.Lock(),active_streams=[stream])
+        with patch('reports.RecordingService'),patch('reports.readiness',return_value=(True,'ready')):
+            monitor=ReportMonitor(server,self.store)
+        monitor.face_ready=True;monitor.faces.enabled('mine',True)
+        engine=Mock();engine.extract.return_value=[(b'face',[1.0]+[0.0]*127)];engine.last_reason='Face found'
+        monitor.face_engine=engine
+        detector=Mock();detector.detect.return_value=([],object())
+        monitor.process(stream,detector)
+        self.assertEqual(len(monitor.faces.list('mine')),1)
+        self.assertEqual(self.store.list('mine'),[])
+        self.assertEqual(monitor.face_status('mine')[0]['captured'],1)
+        self.assertEqual(monitor.face_status('other'),[])
+        rows=monitor.face_status('mine',[{'id':'b','name':'Desativada'}],{'detection_ids':['a']})
+        self.assertIn('desativado',rows[-1]['reason'])
+
+    def test_face_runtime_failure_is_visible_without_stopping_person_reports(self):
+        from unittest.mock import Mock
+        stream=SimpleNamespace(report_owner='mine',report_name='Entrada',device_id='a',report_detect=True,
+            condition=threading.Condition(),image=b'jpeg',last_frame=time.monotonic(),stopped=threading.Event())
+        server=SimpleNamespace(stream_guard=threading.Lock(),active_streams=[stream])
+        with patch('reports.RecordingService'),patch('reports.readiness',return_value=(True,'ready')):
+            monitor=ReportMonitor(server,self.store)
+        monitor.face_ready=True;monitor.faces.enabled('mine',True)
+        engine=Mock();engine.extract.side_effect=RuntimeError('sensitive internal information')
+        monitor.face_engine=engine
+        detector=Mock();detector.detect.return_value=([{'kind':'person','confidence':.9,'box':[0,0,1,1]}],object())
+        monitor.process(stream,detector)
+        self.assertEqual(len(self.store.list('mine')),1)
+        self.assertFalse(monitor.face_ready)
+        diagnostic=monitor.face_status('mine')[0]
+        self.assertIn('Falha',diagnostic['reason'])
+        self.assertNotIn('sensitive',diagnostic['reason'])

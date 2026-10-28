@@ -156,9 +156,9 @@ function paint(id) {
   view.placeholder.hidden = !!image;
   if (image && view.img.src !== image) view.img.src = image;
   view.img.onload = () => {
-    if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
+    if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
   };
-  view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Imagem: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
+  view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
   if (saving?.paused) {
     view.badge.textContent = "ECONOMIA · PAUSADA";
     view.caption.textContent = `Último quadro · câmera desconectada. Próxima abertura: ${new Date(saving.nextAt).toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"})}.`;
@@ -188,6 +188,7 @@ function render() {
     placeholder.append(element("strong", "", "▣"), element("p", "", "Aguardando visualização"));
     const img = element("img");
     img.alt = `Câmera ${camera.name}`;
+    img.title = "Quadro recebido inteiro, sem zoom. Se faltar uma área, compare os perfis SD original, HD e FHD com o aplicativo Yoosee.";
     img.hidden = true;
     const overlay = element("span", "camera-overlay");
     const expand = element("button", "camera-expand", "⛶");

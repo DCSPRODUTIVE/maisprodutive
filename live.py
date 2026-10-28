@@ -2,6 +2,7 @@
 import base64
 from collections import deque
 import health
+from frame_buffer import FrameBuffer
 import os
 import secrets
 import shutil
@@ -85,6 +86,7 @@ class LiveStream:
         self.sequence = 0
         self.frame_times = deque(maxlen=60)
         self.resolution = None
+        self.history = FrameBuffer()
         self.error = None
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.watchdog = threading.Thread(target=self._watch, daemon=True)
@@ -204,6 +206,8 @@ class LiveStream:
                             self.sequence += 1
                             self.last_frame = time.monotonic()
                             self.frame_times.append(self.last_frame)
+                            if getattr(self, "report_detect", False):self.history.append(self.last_frame,image)
+                            else:self.history.clear()
                             self.resolution = health.jpeg_size(image)
                             self.condition.notify_all()
                     if not self.stopped.is_set():
@@ -259,6 +263,7 @@ class LiveStream:
         self.stopped.set()
         with self.condition:
             self.image = None
+            self.history.clear()
             self.condition.notify_all()
         with self.process_guard:
             for process in reversed(self.processes):

@@ -777,3 +777,8 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 .face-settings label {display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.5;margin:16px 0;}
 .face-settings input[type="checkbox"] {width:18px;height:18px;flex:0 0 18px;margin-top:2px;}
 .face-settings button {margin-bottom:8px;}
+
+/* Always fit the full decoded frame, including portrait and 4:3 cameras. */
+.camera-media img,.report-image img,.report-card video {object-fit:contain;object-position:center;transform:none;clip-path:none;}
+.camera-media img {max-width:100%;max-height:100%;}
+.report-image {background:#060a0e;}
