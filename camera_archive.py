@@ -16,7 +16,8 @@ import time
 import video
 
 MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
-EXPORT_OVERHEAD = 90
+EXPORT_OVERHEAD = 180
+MAX_CARD_ATTEMPTS = 6
 LIST_BUDGET = 60
 MAX_BOUNDARY_GAP_MS = 250
 MAX_TOTAL_GAP_MS = 1000
@@ -28,7 +29,7 @@ class ArchiveFailure(RuntimeError):
 
 
 def native_failure(code,data):
-    reasons={31:"no_recording",32:"recording_unavailable",33:"timestamp_unverified",34:"list_unavailable",
+    reasons={14:"authentication",31:"no_recording",32:"recording_unavailable",33:"timestamp_unverified",34:"list_unavailable",
         35:"seek_unavailable",36:"playback_unavailable",37:"list_request_rejected",38:"list_response_unsupported",39:"list_incomplete"}
     diagnostic={}
     match=re.fullmatch(rb"SDFAIL1 ([0-9]{1,3}) ([0-9]) (-?[0-9]{1,3}) ([0-9]{1,4}) ([0-9]{1,10}) ([0-9]) (-?[0-9]{1,19}) ([0-9]{1,10}) ([0-9]{1,3})\n",data)
@@ -60,8 +61,9 @@ def playback_segments(records,start,end):
 
 
 class CameraArchive:
-    def __init__(self, store, slots):
+    def __init__(self, store, slots,event_sink=None):
         self.store,self.slots=store,slots
+        self.event_sink=event_sink
         self.queue=queue.Queue(maxsize=12)
         self.stopped=threading.Event()
         self.lock=threading.Lock();self.process=None
@@ -74,6 +76,9 @@ class CameraArchive:
             except OSError:pass
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
 
+    def event(self,stream,event,**values):
+        if self.event_sink:self.event_sink(stream.report_owner,stream.device_id,event,**values)
+
     def enqueue(self, record_id, stream, start, end):
         if self.stopped.is_set() or not getattr(stream,'archive_account',None):return
         try:
@@ -84,12 +89,13 @@ class CameraArchive:
         stream=SimpleNamespace(report_owner=owner,device_id=camera['id'],report_name=camera['name'],
             report_detect=True,archive_account=account,monitor_until=monitor_until)
         key=secrets.token_urlsafe(18)
+        stream.archive_job_id=key
         record_id=None
         with self.lock:
             self.jobs={k:v for k,v in self.jobs.items() if time.monotonic()-v['created']<3600}
             if len(self.jobs)>=32:raise RuntimeError('busy')
             self.jobs[key]={'owner':owner,'created':time.monotonic(),'status':'queued','records':[],
-                'record_id':None,'stream':stream,'partial':False,'diagnostic':{}}
+                'record_id':None,'stream':stream,'partial':False,'diagnostic':{},'progress':{}}
         try:
             if action=='backup':
                 import uuid
@@ -115,7 +121,7 @@ class CameraArchive:
         with self.lock:
             value=self.jobs.get(key)
             if not value or value['owner']!=owner:return None
-            return {name:value[name] for name in ('status','records','record_id','partial','diagnostic')}
+            return {name:value[name] for name in ('status','records','record_id','partial','diagnostic','progress')}
 
     def cancel(self,owner):
         with self.lock:
@@ -199,9 +205,21 @@ class CameraArchive:
             self.process=subprocess.Popen(args,start_new_session=True,stderr=subprocess.DEVNULL,**kwargs)
             return self.process
 
+    def probe_piece(self,path,expected):
+        try:
+            probe=subprocess.run([shutil.which('ffprobe'),'-v','error','-read_intervals','0%+1','-count_frames','-select_streams','v:0',
+                '-show_entries','stream=codec_name,width,height,nb_read_frames:format=duration','-of','json',str(path)],capture_output=True,timeout=10)
+            info=json.loads(probe.stdout) if probe.returncode==0 else {}
+            stream=info.get('streams',[{}])[0];duration=float(info.get('format',{}).get('duration',0))
+            frames=int(stream.get('nb_read_frames',0))
+            if frames<1 or duration<=0 or abs(duration-expected)>max(2,expected*.03):
+                raise ArchiveFailure('invalid_video',{'stage':5,'duration':duration,'expected_seconds':round(expected,3),'probe_frames':frames})
+            return (stream.get('codec_name'),stream.get('width'),stream.get('height'))
+        except (OSError,ValueError,KeyError,IndexError,subprocess.TimeoutExpired):raise ArchiveFailure('invalid_video',{'stage':5})
+
     def export(self,stream,start,end,directory):
-        if not self.allowed(stream,end-start+EXPORT_OVERHEAD):return None
-        deadline=time.monotonic()+end-start+EXPORT_OVERHEAD
+        if not self.allowed(stream,30):return None
+        deadline=min(time.monotonic()+min(600,(end-start)*2+EXPORT_OVERHEAD),getattr(stream,'monitor_until',float('inf')))
         records=self.query_records(stream,start,end,directory)
         if not records:raise RuntimeError('no_recording')
         try:parts=playback_segments(records,start,end)
@@ -209,49 +227,72 @@ class CameraArchive:
             if getattr(stream,'archive_list_partial',False):raise RuntimeError('list_incomplete')
             raise
         stream.archive_gap_seconds=round(max(0,end-start-sum(b-a for a,b in parts)),3)
-        paths=[];pre_roll=0;coverage=[]
+        paths=[];pre_roll=0;coverage=[];signatures=[];serial=0;last_error=None
         stream.archive_partial=False
         stream.archive_actual_start=0;stream.archive_actual_end=0
-        for index,(begin,finish) in enumerate(parts):
-            if not self.allowed(stream) or time.monotonic()>=deadline:raise RuntimeError('bounded_export')
-            folder=Path(directory)/f'piece-{index:02d}';folder.mkdir(mode=0o700)
-            stream.archive_piece=None
+        retryable={'list_unavailable','list_incomplete','playback_unavailable','timestamp_unverified','seek_unavailable',
+            'recording_unavailable','unavailable','invalid_video','bounded_export'}
+        for begin,finish in parts:
+            cursor=begin
             bounds=max((r for r in records if r['start']<=begin and r['end']>=finish),key=lambda r:r['start'])
-            result=self.export_piece(stream,begin,finish,folder,overall_deadline=deadline,file_bounds=(bounds['start'],bounds['end']))
-            if result is None:return None
-            piece=getattr(stream,'archive_piece',None) or {'first':begin,'last':finish,'partial':False}
-            if coverage and piece['first']-coverage[-1][1]>1:
-                stream.archive_partial=True;break
-            if index==0:pre_roll=result[1]
-            paths.append(result[0]);coverage.append((piece['first'],piece['last']))
-            stream.archive_actual_start=coverage[0][0];stream.archive_actual_end=coverage[-1][1]
-            stream.archive_gap_seconds=round(max(0,coverage[-1][1]-coverage[0][0]-sum(b-a for a,b in coverage)),3)
-            if piece['partial']:
-                stream.archive_partial=True;break
-            if sum(path.stat().st_size for path in paths)>MAX_ARCHIVE_BYTES:raise RuntimeError('bounded_export')
+            for attempt in range(1,MAX_CARD_ATTEMPTS+1):
+                if cursor>=finish-.05:break
+                if not self.allowed(stream,10) or time.monotonic()+10>=deadline:
+                    last_error=RuntimeError('economy_or_disabled');break
+                if attempt>1:
+                    delay=min(8,2**(attempt-2))
+                    if time.monotonic()+delay+10>=deadline or not self.allowed(stream,delay+10):break
+                    self.stopped.wait(delay)
+                self.job_update(getattr(stream,'archive_job_id',None),progress={'attempt':attempt,'max_attempts':MAX_CARD_ATTEMPTS,
+                    'received_seconds':round(sum(b-a for a,b in coverage),2),'requested_seconds':round(end-start,2)})
+                self.event(stream,'card_attempt',attempt=attempt,max_attempts=MAX_CARD_ATTEMPTS,received_seconds=round(sum(b-a for a,b in coverage),2))
+                folder=Path(directory)/f'piece-{serial:02d}';serial+=1;folder.mkdir(mode=0o700)
+                stream.archive_piece=None;result=None
+                try:
+                    result=self.export_piece(stream,cursor,finish,folder,overall_deadline=deadline,file_bounds=(bounds['start'],bounds['end']))
+                    if result is None:raise RuntimeError('invalid_video')
+                    piece=getattr(stream,'archive_piece',None) or {'first':cursor,'last':finish,'partial':False}
+                    signature=self.probe_piece(result[0],piece['last']-piece['first'])
+                    if not signature or (signatures and signature!=signatures[0]):raise RuntimeError('invalid_video')
+                    if coverage:
+                        gap=piece['first']-coverage[-1][1]
+                        if gap<-.1 or gap+getattr(stream,'archive_gap_seconds',0)>1:raise RuntimeError('timestamp_unverified')
+                    if sum(path.stat().st_size for path in paths)+result[0].stat().st_size>MAX_ARCHIVE_BYTES:raise RuntimeError('disk_space')
+                    if not coverage:pre_roll=result[1]
+                    paths.append(result[0]);signatures.append(signature);coverage.append((piece['first'],piece['last']))
+                    stream.archive_actual_start=coverage[0][0];stream.archive_actual_end=coverage[-1][1]
+                    stream.archive_gap_seconds=round(max(0,coverage[-1][1]-coverage[0][0]-sum(b-a for a,b in coverage)),3)
+                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3))
+                    cursor=min(finish,piece['last']+.001)
+                    if not piece['partial']:cursor=finish
+                except RuntimeError as error:
+                    last_error=error
+                    self.event(stream,'card_attempt_result',status=str(error),attempt=attempt,**getattr(error,'diagnostic',{}))
+                    if not paths or result is None or (paths and folder not in [path.parent for path in paths]):
+                        shutil.rmtree(folder,ignore_errors=True)
+                    if str(error) not in retryable:break
+            if cursor<finish-.05:break
+        if not paths:
+            if last_error:raise last_error
+            raise RuntimeError('unavailable')
+        stream.archive_partial=(coverage[0][0]>start+1 or coverage[-1][1]<end-1)
         if len(paths)==1:return paths[0],pre_roll
-        # Numeric private paths only. Stream copy keeps the card's native FPS;
-        # incompatible encodings are rejected rather than inventing missing frames.
-        signatures=[]
-        for path in paths:
-            probe=subprocess.run([shutil.which('ffprobe'),'-v','error','-select_streams','v:0',
-                '-show_entries','stream=codec_name,width,height','-of','json',str(path)],capture_output=True,timeout=10)
-            data=json.loads(probe.stdout) if probe.returncode==0 else {}
-            if not data.get('streams'):raise RuntimeError('invalid_video')
-            info=data['streams'][0];signatures.append((info.get('codec_name'),info.get('width'),info.get('height')))
-        if len(set(signatures))!=1:raise RuntimeError('invalid_video')
+        # Join only verified contiguous pieces, never pad a missing section.
         manifest=Path(directory)/'pieces.txt'
-        manifest.write_text(''.join(f"file 'piece-{i:02d}/archive.mp4'\n" for i in range(len(paths))))
+        manifest.write_text(''.join(f"file '{path.relative_to(Path(directory)).as_posix()}'\n" for path in paths))
         joined=Path(directory)/'archive.mp4'
         child=self.launch([shutil.which('ffmpeg'),'-v','error','-y','-f','concat','-safe','1','-i',str(manifest),
             '-map','0:v:0','-an','-c:v','copy','-movflags','+faststart',str(joined)],stdout=subprocess.DEVNULL)
         try:
             while child.poll() is None:
-                if (not self.allowed(stream) or time.monotonic()>deadline or shutil.disk_usage(directory).free<256*1024*1024
+                if (self.stopped.is_set() or time.monotonic()>deadline+10 or shutil.disk_usage(directory).free<256*1024*1024
                     or (joined.exists() and joined.stat().st_size>MAX_ARCHIVE_BYTES)):
                     raise RuntimeError('bounded_export')
                 self.stopped.wait(.2)
-            if child.returncode or not joined.exists():return None
+            if child.returncode or not joined.exists():
+                self.event(stream,'card_attempt_result',status='invalid_video',stage=6)
+                stream.archive_partial=True;stream.archive_actual_end=coverage[0][1];stream.archive_gap_seconds=0
+                return paths[0],pre_roll
             return joined,pre_roll
         finally:
             self.kill(child);child.wait(timeout=5)
@@ -259,12 +300,12 @@ class CameraArchive:
 
     def export_piece(self, stream, start, end, directory,overall_deadline=float("inf"),file_bounds=None):
         if not video.readiness()[0]:raise RuntimeError('adapter_update_required')
-        if not self.allowed(stream,end-start+40):return None
+        if not self.allowed(stream,10):return None
         account=stream.archive_account
         payload='\n'.join((account.access_id,account.access_token,stream.device_id,str(round(start*1000)),str(round(end*1000))))+'\n'
         if any(c in v for v in (account.access_id,account.access_token,stream.device_id) for c in '\r\n\0'):return None
         env=dict(os.environ,WINEDEBUG='-all',WINEDLLOVERRIDES='mscoree,mshtml=',WINEPREFIX=str(video.ROOT/'.local'/'wine-video'))
-        deadline=min(overall_deadline,time.monotonic()+end-start+60)
+        deadline=min(overall_deadline,time.monotonic()+end-start+60,getattr(stream,'monitor_until',float('inf')))
         if file_bounds is not None:payload+=''.join(str(round(value*1000))+'\n' for value in file_bounds)+str(max(1000,min(300000,round((deadline-time.monotonic()-2)*1000))))+'\n'
         process=self.launch([shutil.which('wine') or shutil.which('wine64'),str(video.NATIVE/'yoosee_snapshot.exe'),'--archive-known' if file_bounds is not None else '--archive'],
             cwd=directory,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
@@ -342,20 +383,22 @@ class CameraArchive:
             acquired=False
             try:
                 camera=(stream.report_owner,stream.device_id)
-                budget=LIST_BUDGET if action=='list' else end-start+EXPORT_OVERHEAD
+                budget=LIST_BUDGET if action=='list' else 30
                 if not self.allowed(stream,budget):raise RuntimeError('economy_or_disabled')
                 if action=='automatic' and time.monotonic()-self.failed.get(camera,-1e9)<600:raise RuntimeError('cooldown')
                 acquired=self.slots.acquire(blocking=False)
                 if not acquired:raise RuntimeError('busy')
+                self.event(stream,'card_requested',action=action,requested_seconds=round(end-start,3))
                 if record_id:self.status(record_id,'fetching')
                 self.job_update(key,status='running')
                 with tempfile.TemporaryDirectory(dir=self.store.root,prefix='sd-export-') as directory:
                     if action=='list':
                         records=self.query_records(stream,start,end,directory)
                         self.job_update(key,status='done',records=records,partial=getattr(stream,'archive_list_partial',False))
+                        self.event(stream,'card_result',status='done',action='list')
                     else:
                         result=self.export(stream,start,end,directory)
-                        if not result or not self.allowed(stream):raise RuntimeError('unavailable')
+                        if not result:raise RuntimeError('unavailable')
                         partial=getattr(stream,'archive_partial',False)
                         saved_id=record_id
                         if partial and action=='automatic':
@@ -367,18 +410,21 @@ class CameraArchive:
                             source_override='sd_partial' if partial and action=='automatic' else None)
                         if not saved:
                             if saved_id!=record_id:self.store.video_finish(saved_id,'failed',0,'invalid_video')
-                            raise RuntimeError('unavailable')
+                            raise ArchiveFailure('invalid_video',{'stage':5})
                         if saved_id!=record_id:self.status(record_id,'partial_saved')
+                        self.failed.pop(camera,None)
                         self.job_update(key,status='partial' if partial else 'done',record_id=saved_id)
+                        self.event(stream,'card_result',status='partial' if partial else 'done',record_id=saved_id,action=action)
                 self.failed={k:v for k,v in self.failed.items() if time.monotonic()-v<600}
             except Exception as error:
                 known=str(error) if isinstance(error,RuntimeError) else ''
                 status=known if known in ('adapter_update_required','no_recording','timestamp_unverified','disk_space','list_unavailable',
-                    'list_incomplete','recording_unavailable','recording_gap','archive_fragmented','seek_unavailable','playback_unavailable','list_request_rejected','list_response_unsupported','economy_or_disabled','cooldown','busy') else 'unavailable'
+                    'conversion','invalid_video','list_incomplete','recording_unavailable','recording_gap','archive_fragmented','seek_unavailable','playback_unavailable','list_request_rejected','list_response_unsupported','economy_or_disabled','cooldown','busy') else 'unavailable'
                 try:
                     if record_id:self.status(record_id,status,getattr(error,'diagnostic',{}))
                     if action=='backup' and record_id:self.store.video_finish(record_id,'failed',0,'archive_'+status)
                     self.job_update(key,status=status,diagnostic=getattr(error,'diagnostic',{}))
+                    self.event(stream,'card_result',status=status,action=action,**getattr(error,'diagnostic',{}))
                     if action=='automatic' and status not in ('economy_or_disabled','cooldown','busy'):
                         self.failed[(stream.report_owner,stream.device_id)]=time.monotonic()
                 except Exception:pass

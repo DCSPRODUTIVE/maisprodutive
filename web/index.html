@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0b1018"><title>Torre de Controle DCS</title>
-<link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+<link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script><script src="/diagnostics.js" defer></script>
 </head>
 <body>
 <header class="topbar"><div class="topbar-inner">
@@ -30,5 +30,5 @@
 <div id="empty" class="empty-state"><span class="empty-icon">▣</span><h3>Seu monitoramento começa aqui</h3><p>Conecte sua conta e consulte as câmeras para preencher esta visão.</p></div><div id="cameras" class="camera-grid"></div>
 </section>
 <details class="diagnostics"><summary>Diagnóstico de comunicação <span>⌄</span></summary><p>Verifique o acesso aos servidores Yoosee. O teste não precisa da sua senha e pode levar até 35 segundos.</p><button id="network" type="button" class="secondary" disabled>Testar comunicação com a Yoosee</button><div id="network-results" role="status" aria-live="polite"></div></details>
-<footer><span>TORRE DE CONTROLE <strong>DCS</strong></span><span>Registros locais de pessoas em Reports.</span></footer>
+<section class="diagnostics-export"><button id="copy-diagnostics" type="button" class="secondary">Copiar logs do sistema</button><p id="diagnostics-message" class="hint" role="status">Inclui câmeras, conexões, gravações e falhas recentes. Sem senhas, tokens ou imagens.</p><textarea id="diagnostics-output" aria-label="Diagnóstico do sistema para copiar" readonly hidden spellcheck="false"></textarea></section><footer><span>TORRE DE CONTROLE <strong>DCS</strong></span><span>Registros locais de pessoas em Reports.</span></footer>
 </main></body></html>

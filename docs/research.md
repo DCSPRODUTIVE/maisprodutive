@@ -883,3 +883,44 @@ linha separada, com source sd_partial, preservando o fallback local. O Reports
 mostra archive_start/archive_end, status parcial e link de download.
 Fixtures C reproduzem o caso 56,762/63,960 e rejeitam horários de outro dia; fixtures
 FFmpeg verificam que a cópia parcial é reproduzível e não substitui o original.
+
+
+## Diagnóstico estruturado e retomada por evidência — 30/10/2026
+
+O usuário confirmou uma cópia parcial de 11s em quatro tentativas manuais. Isso
+comprova obtenção de arquivo reproduzível, mas não demonstra que todas as falhas
+sejam de conectividade. A revisão repete até seis vezes por parte, com esperas de
+1/2/4/8/8 segundos, e continua do último horário confirmado mais 1 ms para evitar
+repetir o último quadro da parte anterior. Há orçamento global de tempo e a janela
+de Economia limita cada subprocesso. Partes precisam passar em ffprobe, verificação
+de intervalo/duração, codec e dimensões. Prefixos válidos são preservados quando
+as tentativas seguintes falham ou a janela termina. Nenhuma parte faltante é
+preenchida com quadros artificiais. O modo conhecido evita repetir a consulta de
+lista a cada processo de reprodução.
+
+O botão Copiar logs usa uma rota autenticada, com proteção de origem, gate e CSRF.
+A exportação é por conta e reúne dados explicitamente selecionados. Não coleta
+stdout/stderr brutos do SDK, tokens, senhas, cookies, conta de login, caminhos
+privados ou imagens. O destino é a área de transferência local; não envia nada
+a um serviço de análise. Há fallback de seleção manual quando Clipboard API falha.
+
+O histórico estruturado usa fila limitada de 512 eventos, gravação em lote e base
+privada do Reports. A escrita não bloqueia o watchdog das câmeras. Retenção de
+leitura de sete dias e limite global de 10.000 eventos; exporta até 120 da conta.
+Os contadores indicam dados descartados ou falhas de persistência. A amostra inclui
+recursos do servidor, estado/FPS/resolução, diferenças entre painel e fonte,
+Economia, detecção, quedas, tentativa do cartão, validação do arquivo e últimos
+vídeos. Detalhes aceitam somente campos numéricos e códigos de uma lista fixa.
+
+As estatísticas agrupam quedas e resultados finais por câmera. Cópias completas,
+parciais e falhas são separadas; espera por falta de vaga, cooldown ou Economia não
+entra como tentativa de cópia malsucedida. O relatório aponta FPS baixo observado,
+quedas repetidas, baixa conclusão do cartão e disco livre. Trata-se de evidência
+para comparar versões e orientar ajustes, sem retreinar modelos ou modificar
+qualidade e código automaticamente. Histórico anterior de quedas não é reconstruído.
+
+Testes verificam persistência, isolamento por conta, ausência de credenciais,
+limite de tentativas, recuperação após falha, retomada sem reiniciar o prefixo,
+pausa por Economia, Clipboard API/fallback e estatísticas. Chromium confirma a
+exportação e o progresso no Reports. A estabilidade real ainda depende de nova
+observação nas câmeras do usuário com o diagnóstico exportado.

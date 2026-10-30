@@ -241,6 +241,8 @@ class ReportMonitor:
             self.store.add(owner,stream.device_id,stream.report_name,'person',jpeg,
                            max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
             self.saved[event_key]=now
+            log=getattr(self.server,'diagnostics',None)
+            if log:log.record(owner,stream.device_id,'person_detected',people=len(matches))
             alerts=getattr(self.server,'telegram',None)
             if alerts:alerts.enqueue(owner,stream.report_name,jpeg,max(row['confidence'] for row in matches))
 
@@ -259,6 +261,8 @@ class ReportMonitor:
                     if self.stopped.is_set():break
                     try:self.process(stream,detector)
                     except Exception:
+                        log=getattr(self.server,'diagnostics',None)
+                        if log and not getattr(stream,'detection_health',{}).get('error'):log.record(stream.report_owner,stream.device_id,'detection_failed')
                         stream.detection_health={'error':True,'analyzed_at':time.monotonic()}
                 cutoff=time.monotonic()-600
                 self.last={k:v for k,v in self.last.items() if v>cutoff}

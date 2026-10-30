@@ -320,3 +320,26 @@ class StreamApiTests(unittest.TestCase):
             self.assertEqual(self.post('/api/card/start',{'device_id':'0','action':'list','start':start,'end':start+60})[0],200)
             submit.assert_called_once()
         self.assertEqual(self.post('/api/card/status',{'job_id':'not-owned'})[0],404)
+
+    def test_diagnostic_export_requires_auth_csrf_and_excludes_credentials_and_other_accounts(self):
+        log=self.server.diagnostics
+        owner=__import__('hashlib').sha256(b'123').hexdigest()
+        log.record(owner,'0','connection_lost',code='video_stale',frames=10,token='private-test-token')
+        log.record('another-owner','foreign-camera','connection_lost',code='video_native')
+        for status in ('done','partial','invalid_video','cooldown'):
+            log.record(owner,'0','card_result',status=status,action='backup')
+        for _ in range(2):log.record(owner,'0','connection_lost',code='video_stale')
+        log.pending.join()
+        code,data=self.post('/api/diagnostics',{'client':{'width':1366,'height':768,'browser':'Chrome/143','timezone':'America/Sao_Paulo'}})
+        self.assertEqual(code,200);self.assertEqual(data['version'],log.version)
+        raw=json.dumps(data)
+        self.assertNotIn('private-account-token',raw);self.assertNotIn('private-test-token',raw);self.assertNotIn('foreign-camera',raw)
+        self.assertNotIn('workbench=',raw);self.assertNotIn('csrf',raw)
+        self.assertEqual(data['browser']['width'],1366)
+        stats=next(row for row in data['learning']['statistics'] if row['camera']=='0')
+        self.assertEqual(stats['card_jobs'],3);self.assertEqual(stats['card_complete_percent'],33.3)
+        self.assertTrue(any(row['code']=='repeated_drops' for row in data['learning']['findings']))
+        self.assertTrue(any(e['event']=='connection_lost' for e in data['events']))
+        self.assertEqual(self.post('/api/diagnostics',{},csrf='wrong')[0],403)
+        cookie,csrf,_=self.new_session()
+        self.assertEqual(self.post('/api/diagnostics',{},cookie,csrf)[0],403)

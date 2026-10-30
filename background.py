@@ -27,6 +27,7 @@ class Entry:
         self.attempts = 0
         self.message = ''
         self.detection = True
+        self.logged_state = None
 
     def window(self, now):
         phase = (now-self.anchor) % PERIOD
@@ -61,8 +62,9 @@ class ManagedView:
 
 
 class BackgroundMonitor:
-    def __init__(self, factory, streams, clock=time.monotonic):
+    def __init__(self, factory, streams, clock=time.monotonic,event_sink=None):
         self.factory, self.streams, self.clock = factory, streams, clock
+        self.event_sink=event_sink
         self.lock = threading.RLock()
         self.entries = {}
         self.stopped = threading.Event()
@@ -153,11 +155,22 @@ class BackgroundMonitor:
             entry.native = None
             entry.native_sequence = -1
 
+    def observe(self,entry,now):
+        stream=entry.native;stamp=getattr(stream,'last_frame',None)
+        state=('paused' if not entry.window(now) else 'retrying' if stream is None or stream.stopped.is_set() else
+            'receiving' if stamp is not None and now-stamp<=3 else 'queued' if getattr(stream,'connect_started',None) is None else 'connecting')
+        if state!=entry.logged_state:
+            entry.logged_state=state
+            if self.event_sink:
+                measured=health.snapshot(stream) if stream else {}
+                self.event_sink(entry.owner,entry.device_id,'camera_state',state=state,frames=getattr(stream,'sequence',0),duration=round(max(0,now-getattr(stream,'started',now)),2),fps=measured.get('fps',0),definition=entry.definition)
+
     def tick(self):
         now = self.clock()
         with self.lock:
             for entry in self.entries.values():
                 self._capture(entry)
+                self.observe(entry,now)
                 if not entry.window(now):
                     self._drop(entry)
                     entry.retry_at = 0
@@ -174,6 +187,7 @@ class BackgroundMonitor:
                         entry.message='Fonte sem novos quadros; recuperando conexão.'
                 if stream is not None and stream.stopped.is_set():
                     error = getattr(stream, 'error', None)
+                    if self.event_sink:self.event_sink(entry.owner,entry.device_id,'connection_lost',code=error.kind if isinstance(error,IntegrationError) else 'video_stale')
                     entry.message = str(error) if isinstance(error, IntegrationError) else 'A câmera interrompeu a conexão.'
                     entry.native = None
                     entry.native_sequence = -1
@@ -188,6 +202,7 @@ class BackgroundMonitor:
                 if entry.native is not None or now < entry.retry_at:
                     continue
                 try:
+                    if self.event_sink:self.event_sink(entry.owner,entry.device_id,'connection_retry',attempt=entry.attempts+1)
                     entry.native = self.factory(entry)
                     entry.native.monitor_until = entry.active_until(now)
                     entry.message = ''

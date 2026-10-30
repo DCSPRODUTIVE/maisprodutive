@@ -303,7 +303,7 @@ async function status() {
     $("mosaic-limit").value=String(mosaicLimit);
     restored=true;
   }
-  if (!data.authenticated) { cancelAll(); snapshots.clear(); $("account-panel").open = true; }
+  if (!data.authenticated) { cancelAll(); snapshots.clear(); $("account-panel").open = true; const output=$("diagnostics-output");if(output){output.value="";output.hidden=true;} }
   if (data.authenticated && !wasAuthenticated) $("account-panel").open = false;
   $("session-label").textContent = data.authenticated ? "Conta conectada" : "Conta desconectada";
   $("session-dot").className = data.authenticated ? "status-dot connected" : "status-dot";
@@ -648,3 +648,5 @@ async function closeExpanded(){
 }
 document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement){if(expandedCamera)closeExpanded();if(focusUsesFullscreen)setFocus(false);}fitMosaic();});
 document.addEventListener?.('keydown',event=>{if(event.key==='Escape'){if(expandedCamera)closeExpanded();else if(focused)setFocus(false);}});
+
+if(typeof window!=='undefined')window.dcsClientDiagnostics=()=>({cameras:[...(currentStatus?.devices||[])].slice(0,14).map(camera=>({id:camera.id,state:feeds.get(camera.id)?.state||(desired.has(camera.id)?'retrying':'stopped'),mjpeg:!!feeds.get(camera.id)?.mjpeg,error:errors.has(camera.id),reconnecting:!!desired.get(camera.id)?.timer}))});

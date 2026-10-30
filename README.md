@@ -595,3 +595,49 @@ Essa revisão exige atualizar e recompilar novamente o adaptador. O diagnóstico
 real do usuário confirmou a chegada de quadros; a conclusão de um backup completo
 ainda depende do próximo teste na câmera. A mudança não inventa os segundos que
 não forem entregues pelo SDK.
+
+
+## Copiar diagnóstico e melhorar com o histórico
+
+Use **Copiar logs do sistema** no painel normal ou em Reports. O sistema reúne um
+texto para colar na conversa: versão, recursos do servidor, disco, estado por câmera,
+FPS/resolução, idade dos quadros, Economia, detecção, eventos de queda/reconexão,
+tentativas do cartão, últimos vídeos e diagnósticos de validação. Se a área de
+transferência for bloqueada, o texto é selecionado e pode ser copiado com Ctrl+C.
+A exportação só acontece quando você clica; não é enviada automaticamente a terceiros.
+
+Eventos estruturados são guardados na base privada por até sete dias, limitados a
+10.000 eventos no servidor. A exportação inclui os últimos 120 desta conta e os
+contadores do histórico disponível. O histórico de eventos começa nesta versão;
+os registros de vídeo existentes também ajudam no diagnóstico. Câmeras podem
+ser identificadas por nome e ID, mas senhas, tokens, cookies, login da conta, imagens,
+caminhos privados e mensagens brutas do fornecedor não são coletados no relatório.
+O acesso exige a conta e a proteção de sessão/CSRF normais do sistema.
+
+O resumo inclui estatísticas de quedas e sucesso completo/parcial dos trabalhos do
+cartão por câmera, com pontos de atenção sobre FPS, repetição de quedas e disco.
+Essas evidências permitem comparar versões e orientar melhorias. Não são um modelo
+que altera o código, a qualidade ou o consumo das câmeras sozinho.
+
+## Tentativas e retomada dos vídeos do cartão
+
+Backups manuais e buscas após detecção fazem até **seis tentativas por arquivo do
+cartão**, com intervalos curtos e progressivos. Quando chega um trecho válido,
+o sistema tenta continuar do último horário confirmado; não repete a parte já
+recebida nem preenche lacunas com quadros artificiais. Cada parte precisa passar
+na validação de horário, decodificação, duração, codec e dimensões antes de ser
+juntada. O Reports informa tentativa atual e segundos confirmados.
+
+O trabalho tem prazo total de aproximadamente duas vezes a duração pedida mais
+três minutos (no máximo dez minutos), além dos limites de disco e conexões. Na
+Economia, o prazo é reduzido à janela ativa e nenhuma nova tentativa pode abrir a
+câmera durante a pausa. A finalização local de partes já recebidas pode terminar
+após a pausa. Se não completar, conserva o trecho confirmado como parcial; na
+busca automática mantém o vídeo local original e a cópia parcial separada.
+
+Uma cópia parcial real confirma que a integração consegue obter vídeo desse modelo;
+não prova que todas as falhas sejam da rede. Os novos logs permitem distinguir
+conexão, relógio, formato, duração do arquivo e junção. Não há garantia de completar
+uma gravação que o SDK deixe de fornecer. Esta revisão não altera o código nativo:
+quem já está na versão d322c4e pode atualizar com git pull e reiniciar os serviços.
+Instalações anteriores ainda devem recompilar o adaptador conforme as instruções.

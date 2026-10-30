@@ -20,6 +20,7 @@ from video import readiness as video_readiness
 from live import LiveStream
 from background import BackgroundMonitor
 from camera_archive import CameraArchive
+from diagnostics import Diagnostics
 from reports import EventStore, ReportMonitor
 from access import Gate, TTL as ACCESS_TTL, origin as validate_origin
 
@@ -54,10 +55,11 @@ class Workbench(ThreadingHTTPServer):
         self.active_streams = set()
         self.stream_guard = threading.Lock()
         self.reports = ReportMonitor(self, EventStore())
-        self.archive = CameraArchive(self.reports.store,self.video_guard)
+        self.diagnostics = Diagnostics(self.reports.store)
+        self.archive = CameraArchive(self.reports.store,self.video_guard,event_sink=self.diagnostics.record)
         self.reports.recordings.archive=self.archive
         self.telegram = TelegramAlerts(self.reports.store, self.public_origin)
-        self.background = BackgroundMonitor(self.open_background, self.stream_snapshot)
+        self.background = BackgroundMonitor(self.open_background, self.stream_snapshot,event_sink=self.diagnostics.record)
         super().__init__(address, Handler)
         self.reports.start()
         self.background.start()
@@ -74,6 +76,7 @@ class Workbench(ThreadingHTTPServer):
             with self.stream_guard:
                 self.active_streams.discard(stream)
             self.video_guard.release()
+            if stream is not None:self.diagnostics.record(entry.owner,entry.device_id,'source_closed',code=getattr(getattr(stream,'error',None),'kind','stopped'),frames=getattr(stream,'sequence',0),definition=getattr(stream,'definition',0),duration=round(max(0,time.monotonic()-getattr(stream,'started',time.monotonic())),2))
         try:
             stream = LiveStream(entry.account, entry.device_id, float("inf"), release, preview_width=entry.width, definition=entry.definition,**({'local_device':True} if entry.device_id.startswith('webcam:') else {}))
             if not entry.device_id.startswith('webcam:'):stream.archive_account=entry.account
@@ -83,6 +86,7 @@ class Workbench(ThreadingHTTPServer):
             with self.stream_guard:
                 self.active_streams.add(stream)
             stream.start()
+            self.diagnostics.record(entry.owner,entry.device_id,'source_started',definition=entry.definition)
             return stream
         except Exception:
             if stream is not None and stream.worker.ident is not None:
@@ -137,6 +141,7 @@ class Workbench(ThreadingHTTPServer):
             stream.stop(wait=False)
         for stream in streams:
             stream.stop()
+        self.diagnostics.close()
         super().server_close()
 
 
@@ -343,6 +348,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/reports": ("reports.html", "text/html; charset=utf-8"),
                   "/reports.js": ("reports.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  "/diagnostics.js": ("diagnostics.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/icon.svg": ("icon.svg", "image/svg+xml")}
         if self.path in assets:
@@ -435,6 +441,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,data)
             except IntegrationError as error:return self.send(422,{'error':error.kind,'message':str(error)})
             except Exception:return self.send(500,{'message':'Falha na leitura da imagem; tente novamente.'})
+        if self.path == '/api/diagnostics':
+            with state['lock']:
+                if not isinstance(state['client'],DesktopClient):return self.send(403,{'message':'Entre na conta para copiar o diagnóstico.'})
+                owner=self.report_owner(state);devices=list(state['devices'])
+            try:return self.send(200,self.server.diagnostics.build(self.server,owner,devices,body.get('client',{})))
+            except Exception:return self.send(503,{'message':'Não foi possível reunir o diagnóstico agora. Tente novamente.'})
         with state["lock"]:
             try:
                 if self.path in ('/api/card/start','/api/card/status'):
@@ -525,7 +537,9 @@ class Handler(BaseHTTPRequestHandler):
                                            "detection_ready": self.server.reports.ready,
                                            "message": self.server.reports.message})
                 if self.path == "/api/logout":
-                    if isinstance(state["client"],DesktopClient):self.server.archive.cancel(self.report_owner(state))
+                    if isinstance(state["client"],DesktopClient):
+                        self.server.diagnostics.record(self.report_owner(state),'system','account_disconnected')
+                        self.server.archive.cancel(self.report_owner(state))
                     if isinstance(state["client"], DesktopClient):
                         self.server.background.remove(self.report_owner(state))
                     self.server.stop_streams(state)
@@ -551,6 +565,7 @@ class Handler(BaseHTTPRequestHandler):
                     if "@" not in identity:
                         identity = str(body.get("country_code", "55")) + ":" + identity
                     state["report_owner"] = hashlib.sha256(identity.encode()).hexdigest()
+                    self.server.diagnostics.record(state["report_owner"],'system','account_connected')
                     return self.send(200, {"message": "Login aceito pelo serviço. Consulte as câmeras para capturar uma imagem ou iniciar a transmissão experimental."})
                 if self.path == "/api/video/stop":
                     device_id = body.get("device_id")
@@ -596,6 +611,10 @@ class Handler(BaseHTTPRequestHandler):
                         with self.server.stream_guard:
                             self.server.active_streams.discard(stream)
                         self.server.video_guard.release()
+                        if stream is not None:
+                            code=getattr(getattr(stream,'error',None),'kind','stopped')
+                            self.server.diagnostics.record(owner,device_id,'source_closed',code=code,frames=getattr(stream,'sequence',0),definition=getattr(stream,'definition',0),duration=round(max(0,time.monotonic()-getattr(stream,'started',time.monotonic())),2))
+                            if code in ('video_stale','video_timeout','video_native','video_decode','video_resources'):self.server.diagnostics.record(owner,device_id,'connection_lost',code=code)
                     try:
                         mosaic = body.get("mosaic", False)
                         if not isinstance(mosaic, bool):
@@ -612,6 +631,7 @@ class Handler(BaseHTTPRequestHandler):
                         stream.report_detect = device_id in self.server.reports.store.preferences(stream.report_owner).get("detection_ids",[])
                         stream.report_name = next((item["name"] for item in state["devices"] if item["id"] == device_id), device_id)
                         stream.start()
+                        self.server.diagnostics.record(owner,device_id,'source_started',definition=stream.definition)
                         self.server.reports.start()
                     except Exception:
                         state["streams"].pop(device_id, None)

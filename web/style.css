@@ -809,3 +809,7 @@ body:has(#dashboard.focus-mode) #tv-exit:hover,body:has(#dashboard.focus-mode) #
 .camera-media .camera-placeholder,.camera-media .camera-overlay,.camera-media .camera-quality,.camera-media .camera-expand{z-index:2;}
 #dashboard.focus-mode .camera-card{height:100%;min-height:0;}
 #dashboard.focus-mode .camera-media{min-height:0;flex:1;}
+
+.diagnostics-export{margin:16px 0;}
+#diagnostics-output{width:100%;height:220px;box-sizing:border-box;padding:12px;border:1px solid var(--line);border-radius:8px;background:#080e16;color:var(--text);font:12px/1.5 ui-monospace,monospace;resize:vertical;}
+.focus-mode .diagnostics-export{display:none;}
