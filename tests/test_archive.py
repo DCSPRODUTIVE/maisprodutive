@@ -137,3 +137,18 @@ class ManualArchiveTests(unittest.TestCase):
                 self.assertEqual(len(records),512)
                 self.assertEqual(records[-1]['end'],start+512)
             finally:archive.close()
+
+    def test_listing_failures_distinguish_rejection_timeout_and_callback_format(self):
+        import io
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'),device_id='camera',
+                archive_account=SimpleNamespace(access_id='user',access_token='test-token'))
+            try:
+                for code,reason in ((34,'list_unavailable'),(37,'list_request_rejected'),(38,'list_response_unsupported')):
+                    child=MagicMock();child.stdin=io.BytesIO();child.returncode=code;child.poll.return_value=code
+                    with self.subTest(code=code),patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=child):
+                        with self.assertRaisesRegex(RuntimeError,'^'+reason+'$'):
+                            archive.list_records(stream,1800000000,1800000060,directory)
+            finally:archive.close()

@@ -108,6 +108,8 @@ class CameraArchive:
                 if not self.allowed(stream) or time.monotonic()>deadline:raise RuntimeError('list_unavailable')
                 self.stopped.wait(.2)
             output.seek(0);data=output.read(65536)
+            if child.returncode==37:raise RuntimeError('list_request_rejected')
+            if child.returncode==38:raise RuntimeError('list_response_unsupported')
             if child.returncode or not data.startswith(b'SDLIST\n'):raise RuntimeError('list_unavailable')
             records=[]
             for line in data.splitlines()[1:513]:
@@ -161,6 +163,8 @@ class CameraArchive:
             if process.returncode==34:raise RuntimeError('list_unavailable')
             if process.returncode==35:raise RuntimeError('seek_unavailable')
             if process.returncode==36:raise RuntimeError('playback_unavailable')
+            if process.returncode==37:raise RuntimeError('list_request_rejected')
+            if process.returncode==38:raise RuntimeError('list_response_unsupported')
             if process.returncode or not output.is_file() or output.stat().st_size>MAX_ARCHIVE_BYTES:return None
             if not match:raise RuntimeError('timestamp_unverified')
             first,last=(int(value)/1000 for value in match.groups())
@@ -238,7 +242,7 @@ class CameraArchive:
             except Exception as error:
                 known=str(error) if isinstance(error,RuntimeError) else ''
                 status=known if known in ('adapter_update_required','no_recording','timestamp_unverified','disk_space','list_unavailable',
-                    'seek_unavailable','playback_unavailable','economy_or_disabled','cooldown','busy') else 'unavailable'
+                    'seek_unavailable','playback_unavailable','list_request_rejected','list_response_unsupported','economy_or_disabled','cooldown','busy') else 'unavailable'
                 try:
                     if record_id:self.status(record_id,status)
                     if action=='backup' and record_id:self.store.video_finish(record_id,'failed',0,'archive_'+status)

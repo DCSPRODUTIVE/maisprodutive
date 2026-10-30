@@ -780,3 +780,22 @@ posicionamento, ausência de quadros e horário não confirmado.
 O cadastro facial foi removido da aplicação. A webcam é uma fonte V4L2 local,
 explicitamente habilitada, com o mesmo monitor de economia e detecção de pessoas.
 Não usa getUserMedia do visitante e não é exposta como fonte de cartão.
+
+
+### Correção do retorno da consulta — 30/10/2026
+
+O teste real mostrou `list_unavailable` apesar de gravações acessíveis no Yoosee.
+A revisão da DLL encontrou uma falha no nosso tratamento do retorno: diferentemente
+de Register e seek, `getPlaybackList` retorna o identificador assíncrono da solicitação,
+não um código de sucesso zero. Em 0x180032190, o resultado de 0x180037760 é registrado
+quando não zero (0x180032271..0x1800322a9). O envio em 0x1800607d0 gera um identificador
+aleatório de 31 bits, armazenado no pacote em +0x1dc e devolvido ao chamador.
+O adaptador anterior encerrava com 34 para esses identificadores positivos, antes
+de esperar a lista. Agora aguarda a resposta quando o identificador é positivo.
+Zero/negativo viram `list_request_rejected` (37); callback recebido com estrutura
+não reconhecida vira `list_response_unsupported` (38); ausência de callback após
+18 segundos continua `list_unavailable` (34). Nenhum resultado presume cartão vazio.
+A correção é aplicada à consulta manual e à busca automática para backup.
+A regressão exercita o contrato C compilado com uma consulta falsa, incluindo IDs
+positivos, rejeições e parâmetros de intervalo. Hardware real continua necessário
+para confirmar a próxima etapa da listagem/reprodução.

@@ -122,7 +122,7 @@ static void make_time_callback(unsigned char *storage) {
 typedef struct { unsigned long long begin,end; } RecordRange;
 static RecordRange record_ranges[512];
 static unsigned record_count;
-static volatile LONG list_received;
+static volatile LONG list_received, list_callback_seen;
 static ULONGLONG list_last;
 static CRITICAL_SECTION list_lock;
 static char query_device[128];
@@ -130,6 +130,8 @@ static void *list_vtable[6];
 static void *list_copy(void *self,void *destination) { (void)self;*(void ***)destination=list_vtable;return destination; }
 static void list_invoke(void *self,const int *kind,const unsigned char **message) {
     (void)self;(void)kind;
+    InterlockedExchange(&list_callback_seen,1);
+    if (!message) return;
     const unsigned char *m=*message;if (!m) return;
     size_t length,capacity;memcpy(&length,m+16,8);memcpy(&capacity,m+24,8);
     if (length!=strlen(query_device) || length>127) return;
@@ -148,6 +150,16 @@ static void list_invoke(void *self,const int *kind,const unsigned char **message
     list_last=GetTickCount64();InterlockedExchange(&list_received,1);
     LeaveCriticalSection(&list_lock);
 }
+/* BEGIN portable playback request contract
+ * Unlike Register/seek, getPlaybackList returns a positive asynchronous request
+ * identifier. SDK 0x32190 registers this identifier after send (0x32271); send
+ * 0x607d0 returns a generated 31-bit ID. Zero/negative cannot track a request. */
+static int playback_list_request(void *sdk,const char *device,unsigned long long begin,unsigned long long end,
+    int (*query)(void *,const char *,unsigned long long,unsigned long long)) {
+    int request=query(sdk,device,begin>3600000ULL?begin-3600000ULL:begin,end+60000ULL);
+    return request>0 ? 0 : 37;
+}
+/* END portable playback request contract */
 static void make_list_callback(unsigned char *storage) {
     memset(storage,0,64);list_vtable[0]=(void *)list_copy;list_vtable[1]=(void *)list_copy;
     list_vtable[2]=(void *)list_invoke;list_vtable[3]=(void *)time_type;
@@ -243,13 +255,14 @@ int main(int argc, char **argv) {
         void (*listen_list)(void *,void *)=symbol(dll,"?addPlaybackListListerner@IoTVideoSdk@@QEAAXV?$function@$$A6AXHPEAUPLaybackMessage@@@Z@std@@@Z");
         int (*query_list)(void *,const char *,unsigned long long,unsigned long long)=symbol(dll,"?getPlaybackList@IoTVideoSdk@@QEAAHPEBD_K1@Z");
         listen_list(sdk,list_callback);
-        if (query_list(sdk,device,begin>3600000?begin-3600000:begin,end+60000)!=0) ExitProcess(34);
+        int query_status=playback_list_request(sdk,device,begin,end,query_list);
+        if (query_status) ExitProcess(query_status);
         ULONGLONG queried=GetTickCount64();
-        while (GetTickCount64()-queried<12000) {
+        while (GetTickCount64()-queried<18000) {
             if (list_received && GetTickCount64()-list_last>1000) break;
             Sleep(50);
         }
-        if (!list_received) ExitProcess(34);
+        if (!list_received) ExitProcess(list_callback_seen?38:34);
         if (list_mode) {
             emit("SDLIST\n",7);
             EnterCriticalSection(&list_lock);
