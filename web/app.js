@@ -4,6 +4,7 @@ let bulk = false;
 let batchToken = 0;
 let currentStatus = null;
 let focused = false;
+let focusUsesFullscreen = false;
 let expandedCamera = null;
 let expandedPrevious = null;
 let mosaicLimit = 8;
@@ -77,7 +78,7 @@ async function economyCycle(id) {
   schedule.pauseTimer = setTimeout(async () => {
     if (economy.get(id) !== schedule) return;
     const feed = feeds.get(id);
-    if (feed?.image) snapshots.set(id, feed.image);
+    const still=freezeFeed(id);if(still?.startsWith('data:image/jpeg;base64,'))snapshots.set(id,still);
     schedule.paused = true;
     await stopOne(id, true);
     paint(id); buttons();
@@ -161,16 +162,18 @@ function paint(id) {
   const feed = feeds.get(id);
   const saving = economy.get(id);
   const snapshot = snapshots.get(id);
-  const image = feed ? feed.image : snapshot;
+  const image = feed?.image || snapshot;
+  if(view.still){view.still.hidden=!snapshot||(feed?.state==='receiving'&&feed.sequence>0&&view.img.naturalWidth>0);if(snapshot&&view.still.src!==snapshot)view.still.src=snapshot;}
   const fresh = feed && feed.image && !["paused","retrying","queued","connecting"].includes(feed.state) && frameAge(feed) <= 3;
   view.card.className = "camera-card" + (id===expandedCamera ? " camera-expanded" : "") + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
-  view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : ["retrying","connecting"].includes(feed.state) ? "RECONECTANDO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
+  view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : ["retrying","connecting"].includes(feed.state) ? "RECONECTANDO" : feed.state === "queued" ? "NA FILA" : feed.image ? "AGUARDANDO" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image || (!!feed?.mjpeg && !feed.sequence);
   view.placeholder.hidden = !!image;
   if(feed?.mjpeg&&feed.onTransportError)view.img.onerror=feed.onTransportError;
   if (image && (view.img.getAttribute?.('src')||view.img.src) !== image) view.img.src = image;
   view.img.onload = () => {
     if(feed?.mjpeg)feed.transportFailures=0;
+    if(view.still&&feed?.state==='receiving')view.still.hidden=true;
     if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
   };
   view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
@@ -209,6 +212,8 @@ function render() {
     img.alt = `Câmera ${camera.name}`;
     img.title = "Quadro recebido inteiro, sem zoom. Se faltar uma área, compare os perfis SD original, HD e FHD com o aplicativo Yoosee.";
     img.hidden = true;
+    const still=oldViews.get(camera.id)?.still || element("img","camera-still");
+    still.alt=`Último quadro de ${camera.name}`;still.hidden=true;
     const overlay = element("span", "camera-overlay");
     const expand = element("button", "camera-expand", "⛶");
     expand.title = "Ampliar câmera";
@@ -222,7 +227,7 @@ function render() {
       if(!feeds.has(camera.id))await startOne(camera.id);else render();
     });
     if(expandedCamera===camera.id){expand.textContent="✕";expand.title="Voltar ao mosaico";}
-    media.append(placeholder, img, overlay, expand);
+    media.append(placeholder, img, still, overlay, expand);
     const caption = element("p", "camera-caption");
     const controls = element("div", "camera-controls");
     const quality = element("select", "camera-quality");
@@ -254,14 +259,14 @@ function render() {
     controls.append(group, saver, detector);
     media.append(quality);
     card.append(header, media, caption, controls);
-    views.set(camera.id, { card, img, placeholder, badge, caption, overlay });
+    views.set(camera.id, { card, img, still, placeholder, badge, caption, overlay });
     cameraControls.push({ id: camera.id, capture, watch, stop, quality, saver, detector });
     paint(camera.id);
     $("cameras").append(card);
   }
   if (devices.length && !selected.length) $("cameras").append(element("p", "hint", "Nenhuma câmera encontrada para esta busca."));
   for(const [id,old] of oldViews)if(!views.has(id)&&feeds.get(id)?.mjpeg)old.img.removeAttribute?.('src');
-  buttons();
+  buttons();fitMosaic();
 }
 async function readResponse(response) {
   try {
@@ -348,7 +353,9 @@ function continuousSource(feed){
   const img=views.get(feed.id)?.img;
   feed.onTransportError=()=>{
     if(feeds.get(feed.id)!==feed||!feed.mjpeg||!feed.transportOpen||!views.has(feed.id))return;
+    const still=freezeFeed(feed.id);if(still)snapshots.set(feed.id,still);
     feed.transportOpen=false;
+    if(feed.state==='paused'){if(still)feed.image=still;paint(feed.id);return;}
     feed.transportFailures=(feed.transportFailures||0)+1;
     if(feed.transportFailures>=5){feed.mjpeg=false;feed.image=null;paint(feed.id);return;}
     feed.transportTimer=setTimeout(()=>{if(feeds.get(feed.id)===feed&&feed.state!=='paused'&&!feed.transportOpen){continuousSource(feed);paint(feed.id);}},1500);
@@ -357,7 +364,8 @@ function continuousSource(feed){
 }
 function cancelOne(id) {
   const feed = feeds.get(id);
-  if(feed?.mjpeg){const still=freezeFeed(id);if(still)snapshots.set(id,still);else snapshots.delete(id);feed.transportOpen=false;clearTimeout(feed.transportTimer);views.get(id)?.img.removeAttribute?.('src');}
+  if(feed&&!feed.mjpeg&&feed.image?.startsWith('data:image/jpeg;base64,'))snapshots.set(id,feed.image);
+  if(feed?.mjpeg){const still=freezeFeed(id);if(still)snapshots.set(id,still);feed.transportOpen=false;clearTimeout(feed.transportTimer);views.get(id)?.img.removeAttribute?.('src');}
   if (feed?.timer !== null && feed?.timer !== undefined) clearTimeout(feed.timer);
   feeds.delete(id);
   return feed;
@@ -432,11 +440,11 @@ async function startOne(id, mosaic = false, retry = false) {
     }
   }
 }
-async function startAll() {
+async function startAll(event) {
   if (busy || bulk) return;
   const token = ++batchToken;
   bulk = true;
-  setFocus(true);
+  setFocus(true,!!event?.isTrusted);
   buttons();
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
   for (const camera of [...(currentStatus?.devices||[]).filter(c=>!c.local).slice(0,mosaicLimit),...(currentStatus?.devices||[]).filter(c=>c.local&&webcamEnabled.has(c.id))]) {
@@ -462,8 +470,22 @@ async function pollFeed(feed) {
     }
     if(feed.mjpeg){
       feed.sequence=data.sequence;
+      if(data.state!=='receiving'&&data.sequence>0&&feed.cachedSequence!==data.sequence){
+        feed.cachedSequence=data.sequence;
+        // Read only the server's existing frame; this never starts a camera.
+        try{
+          const cached=await post('/api/video/frame',{device_id:feed.id,stream_id:feed.handle,after:0});
+          if(feeds.get(feed.id)!==feed)return;
+          if(cached.state!=='receiving'&&typeof cached.image==='string'&&cached.image.startsWith('data:image/jpeg;base64,')){
+            snapshots.set(feed.id,cached.image);feed.image=cached.image;feed.transportOpen=false;clearTimeout(feed.transportTimer);
+          }
+        }catch{/* Keep the prior valid picture if the cache is unavailable. */}
+      }
+      if(data.state==='receiving'&&Date.now()-(feed.lastRemembered||0)>3000){
+        const still=freezeFeed(feed.id);if(still){snapshots.set(feed.id,still);feed.lastRemembered=Date.now();}
+      }
       if(data.state==='receiving'&&data.age_seconds!=null&&data.age_seconds<=3&&desired.has(feed.id))desired.get(feed.id).attempts=0;
-      if(data.state==='paused'&&feed.transportOpen){const still=freezeFeed(feed.id);feed.transportOpen=false;feed.image=still;clearTimeout(feed.transportTimer);}
+      if(data.state==='paused'&&feed.transportOpen){const still=freezeFeed(feed.id);clearTimeout(feed.transportTimer);if(still){feed.transportOpen=false;feed.image=still;}}
       else if(data.state==='receiving'&&!feed.transportOpen){continuousSource(feed);}
     }
     feed.health = data.health;
@@ -502,7 +524,7 @@ async function action(path, body) {
   try {
     if (["/api/login", "/api/logout", "/api/devices"].includes(path)) {
       const hadFeeds = feeds.size > 0 || desired.size > 0 || bulk;
-      cancelAll(); snapshots.clear(); errors.clear();
+      cancelAll(); if(path!=="/api/devices")snapshots.clear(); errors.clear();
       if (hadFeeds) try { await post("/api/video/stop", {}); } catch { /* Session operation also closes streams. */ }
     }
     // Snapshot can take up to one minute; no new login or automatic retries.
@@ -567,12 +589,35 @@ $("login").addEventListener("submit", (event) => {
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));
 $("logout").addEventListener("click", () => { $("login").reset(); action("/api/logout", {}); });
-function setFocus(value) {
+function fitMosaic(){
+  if(!focused)return;
+  const count=views.size;if(!count)return;
+  const width=typeof window!=='undefined'?window.innerWidth:1920;
+  const height=typeof window!=='undefined'?window.innerHeight:1080;
+  let best={score:-1,columns:1,rows:count};
+  for(let columns=1;columns<=count;columns++){
+    const rows=Math.ceil(count/columns);
+    const cellWidth=Math.max(1,(width-(columns-1)*4-8)/columns);
+    const cellHeight=Math.max(1,(height-(rows-1)*4-8)/rows-26);
+    const imageWidth=Math.min(cellWidth,cellHeight*16/9);
+    const score=imageWidth*imageWidth*9/16*count;
+    if(score>best.score)best={score,columns,rows};
+  }
+  $('cameras').style?.setProperty('--tv-cols',String(best.columns));
+  $('cameras').style?.setProperty('--tv-rows',String(best.rows));
+}
+function setFocus(value,fullscreen=false) {
   focused = value;
+  focusUsesFullscreen=value&&fullscreen;
   $("dashboard").className = focused ? "focus-mode" : "";
   $("focus-mode").textContent = focused ? "⛶ Sair da visão completa" : "⛶ Visão completa";
+  $("focus-mode").title='Somente imagens, nomes e estado das câmeras. Esc para sair.';
+  if(value&&fullscreen)document.documentElement?.requestFullscreen?.().catch(()=>{});
+  if(!value&&!expandedCamera&&document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
+  fitMosaic();
 }
-$("focus-mode").addEventListener("click", () => setFocus(!focused));
+$("focus-mode").addEventListener("click", () => setFocus(!focused,true));
+if(typeof window!=='undefined')window.addEventListener('resize',fitMosaic);
 $("tv-exit").addEventListener("click", () => setFocus(false));
 $("mosaic-limit").value="8";
 $("mosaic-limit").addEventListener("change", async () => {
@@ -601,5 +646,5 @@ async function closeExpanded(){
   if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
   render();
 }
-document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement&&expandedCamera)closeExpanded();});
-document.addEventListener?.('keydown',event=>{if(event.key==='Escape'&&expandedCamera)closeExpanded();});
+document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement){if(expandedCamera)closeExpanded();if(focusUsesFullscreen)setFocus(false);}fitMosaic();});
+document.addEventListener?.('keydown',event=>{if(event.key==='Escape'){if(expandedCamera)closeExpanded();else if(focused)setFocus(false);}});

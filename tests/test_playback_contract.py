@@ -22,7 +22,7 @@ static int result;
 static int query(void *sdk,const char *device,unsigned long long begin,unsigned long long end) {
     assert(sdk==(void *)123);
     assert(strcmp(device,"owned-camera")==0);
-    assert(begin==1799996400000ULL);
+    assert(begin==1799999880000ULL);
     assert(end==1800000120000ULL);
     return result;
 }
@@ -51,6 +51,10 @@ int main(void) {
         start=source.index('static unsigned long long playback_clock_ms(')
         end=source.index('/* END portable playback clock contract */',start)
         fixture='#include <assert.h>\n'+source[start:end]+r'''
+static void open_at(void *player,char *device,unsigned long long request,unsigned long long presentation) {
+    assert(player==(void *)123);assert(device[0]=='c');
+    assert(request==1800000000123ULL);assert(presentation==request);
+}
 static int seek(void *player,unsigned long long request,unsigned long long presentation,void *callback) {
     assert(player==(void *)123);assert(callback==(void *)456);
     assert(request==1800000000123ULL);assert(presentation==request);
@@ -61,6 +65,7 @@ int main(void) {
     assert(playback_clock_ms(1800000000123ULL)==1800000000123ULL);
     assert(playback_clock_ms(1800000000ULL)==0);
     assert(playback_clock_ms(0)==0);
+    playback_open_at((void *)123,"camera",1800000000123ULL,open_at);
     assert(playback_seek_start((void *)123,1800000000123ULL,(void *)456,seek)==0);
     return 0;
 }

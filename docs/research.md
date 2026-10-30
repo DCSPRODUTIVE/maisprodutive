@@ -829,3 +829,34 @@ o arredondamento indevido ao selecionar uma linha com início no meio do minuto.
 Testes C compilados verificam o contrato de unidades e posicionamento; testes
 FFmpeg verificam concatenação real a 25 FPS; teste de navegador simulado confirma
 a seleção exata no fuso America/Sao_Paulo. Não há alteração por tentativa de fuso.
+
+
+### Reprodução inicial, callbacks parciais e diagnóstico — 30/10/2026
+
+Os novos testes do usuário mostraram falhas intermitentes de lista, ausência de
+quadros e relógio não confirmado. A revisão dos chamadores de
+setPlaybackDataResource no PC (0x1401233cb..0x1401233e0) mostrou que ele usa os mesmos
+campos 0x170/0x178 do seek. No caminho inicial, ambos recebem o mesmo instante
+selecionado. Portanto, o segundo argumento de horário também não é o fim do arquivo
+na abertura inicial. O adaptador agora abre no início desejado nos dois campos e
+só tenta seek adicional se a primeira abertura não confirmar o relógio.
+
+O callback de lista com tipo 1 é montado pelo processamento de timeout/retorno
+parcial do SDK: 0x180037f30 compara o tempo do pedido mais oito segundos e despacha
+0x180034dd0 usando o que recebeu. Não é, por si só, formato desconhecido. O protocolo
+privado passa a sinalizar SDList completo/parcial; há uma única repetição em caso
+de expiração/parcial, sem presumir cartão vazio. O modo --archive-known recebe
+limites numéricos já validados pela consulta e não consulta de novo a cada parte.
+A abertura e o posicionamento continuam sujeitos à validação de horário e quadros.
+
+O planejamento anterior rejeitava até 25 ms entre o último quadro de um arquivo e
+o primeiro do seguinte. A revisão permite no máximo 250 ms por limite e 1s total,
+registrando sd_gap_seconds no Reports; não cria quadros para preencher intervalos.
+Uma lacuna maior ou cobertura apenas parcial continua preservando o vídeo local.
+
+SDFAIL1 contém somente código/etapa, tipo de callback, quantidade de registros,
+contagem/unidade do relógio, diferença em ms do início pedido, contagem de quadros
+e motivo numérico de rejeição do quadro. O backend aceita apenas esse formato fixo,
+nunca stderr do fornecedor, e expõe o diagnóstico somente ao proprietário do job
+ou vídeo. Exemplos C compilados e fixtures de vídeo verificam os contratos, mas a
+reprodução real ainda requer teste com as câmeras do usuário.

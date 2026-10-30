@@ -525,3 +525,50 @@ A listagem foi confirmada pelo usuário. Posicionamento e cópia da nova revisã
 precisam ser repetidos nas câmeras reais; testes de horários e concatenação não
 substituem a validação do firmware. Consulte um período confirmado no app e use
 Selecionar trecho para manter os limites exatos do arquivo retornado.
+
+
+### Revisão de reprodução e diagnóstico do cartão — 30/10/2026
+
+A abertura inicial agora passa o instante desejado nos dois campos de posição,
+como o cliente Windows; o fim do arquivo não é posição de apresentação. Só há
+uma nova tentativa de seek se a primeira abertura não confirmar o relógio pedido.
+O backup reaproveita a lista já obtida e valida os limites de cada arquivo antes
+de abrir suas partes, evitando consultas repetidas durante a cópia.
+
+A consulta usa uma janela menor ao redor do trecho. Respostas parciais/expiradas
+são diferenciadas de estruturas incompatíveis e podem ser repetidas uma vez,
+respeitando o prazo e Economia. Uma resposta parcial não comprova ausência de
+arquivos. Pequenos intervalos entre arquivos (até 250 ms por limite e um segundo
+somado por trecho) deixam de causar uma falsa lacuna; o Reports informa o total
+omitido. Não são inventados quadros para preencher esse tempo. Lacunas maiores
+continuam impedindo substituição do vídeo local.
+
+Falhas novas mostram diagnóstico numérico da etapa, quadros e retornos de horário,
+além do desvio do relógio quando disponível. Não incluem tokens, IDs de sessão,
+conteúdo bruto de mensagens do fornecedor ou imagens adicionais. Um backup manual
+sem vídeo deixa de afirmar que preservou um vídeo local inexistente. Os vídeos
+locais de detecção continuam preservados até a cópia do cartão ser validada.
+
+Execute novamente a atualização/recompilação descrita acima. A cópia real do cartão
+continua dependendo da confirmação na câmera; a listagem, já confirmada, não basta
+para comprovar suporte à reprodução/gravação nessa versão do SDK.
+
+
+### Visão completa para TV e último quadro
+
+**Visão completa** passa a mostrar somente imagem, nome e estado de cada câmera.
+O mosaico calcula colunas e linhas para aproveitar a tela com 8 ou 12 câmeras,
+sem cortar ou esticar a imagem. A câmera ampliada também oculta os controles.
+Use **Esc** para sair; o botão de saída aparece ao passar o ponteiro no canto
+superior direito. Um clique explícito em Visão completa ou Assistir todas pode
+ativar a tela cheia do navegador. A abertura automática respeita as restrições do
+navegador e pode precisar de F11 ou desse clique para esconder a barra do Chrome.
+
+O painel mantém a última imagem válida durante Economia, espera, falha e
+reconexão. Ao abrir a página durante uma pausa, ele pode recuperar a imagem já
+guardada no servidor, sem abrir uma nova conexão com a câmera. O selo Ao vivo
+exige quadros recentes; a imagem preservada continua marcada como pausada,
+aguardando ou reconectando. Se não houve nenhum quadro válido desde que o servidor
+iniciou, não há imagem anterior para mostrar. Logout e término da sessão removem
+as imagens da conta do painel. Esses ajustes não elevam a qualidade nem o consumo
+de dados da fonte ao entrar em tela cheia.

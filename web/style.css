@@ -782,3 +782,30 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 #card-form>div {grid-column:1/-1;}
 .card-result {border-top:1px solid #294455;padding:12px 0;}
 @media(max-width:650px){#card-form{grid-template-columns:1fr;}}
+
+/* Camera wall: use the entire viewport and keep only names, state and frames. */
+#dashboard.focus-mode{position:fixed;inset:0;z-index:900;max-width:none!important;width:100%;height:100dvh;margin:0;padding:4px;background:#030609;overflow:hidden;}
+#dashboard.focus-mode .monitor-section{height:100%;padding:0;}
+#dashboard.focus-mode .monitor-section>:not(.camera-grid){display:none!important;}
+#dashboard.focus-mode .camera-grid{display:grid;width:100%;height:100%;margin:0;gap:4px;grid-template-columns:repeat(var(--tv-cols,3),minmax(0,1fr));grid-template-rows:repeat(var(--tv-rows,3),minmax(0,1fr));align-content:stretch;}
+.focus-mode .camera-card{display:flex;flex-direction:column;min-height:0;border-radius:4px;box-shadow:none;background:#000;}
+.focus-mode .camera-head,.camera-expanded .camera-head{flex:0 0 auto;min-height:26px;padding:3px 8px;background:#0b1219;}
+.focus-mode .camera-title h3,.camera-expanded .camera-title h3{font-size:12px;line-height:18px;margin:0;}
+.focus-mode .camera-title{min-width:0;}
+.focus-mode .camera-title h3{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.focus-mode .camera-badge,.camera-expanded .camera-badge{font-size:9px;padding:2px 6px;white-space:nowrap;}
+.focus-mode .camera-media{flex:1;min-height:0;aspect-ratio:auto;width:100%;background:#000;}
+.focus-mode .camera-media img{width:100%;height:100%;object-fit:contain;}
+.focus-mode .camera-title small,.focus-mode .camera-glyph,.focus-mode .camera-controls,.focus-mode .camera-caption,.focus-mode .camera-quality,.focus-mode .camera-overlay,.focus-mode .camera-expand,.focus-mode .camera-placeholder,
+.camera-expanded .camera-title small,.camera-expanded .camera-glyph,.camera-expanded .camera-controls,.camera-expanded .camera-caption,.camera-expanded .camera-quality,.camera-expanded .camera-overlay,.camera-expanded .camera-placeholder{display:none!important;}
+.camera-expanded .camera-media{background:#000;}
+.camera-expanded .camera-expand{opacity:0;transition:opacity .15s;}
+.camera-expanded .camera-expand:hover,.camera-expanded .camera-expand:focus-visible{opacity:1;}
+body:has(#dashboard.focus-mode) #tv-exit{display:block;position:fixed;top:4px;right:4px;z-index:1100;opacity:0;transition:opacity .15s;}
+body:has(#dashboard.focus-mode) #tv-exit:hover,body:has(#dashboard.focus-mode) #tv-exit:focus-visible{opacity:1;}
+
+.camera-media .camera-still{z-index:0;pointer-events:none;}
+.camera-media>img:not(.camera-still){z-index:1;}
+.camera-media .camera-placeholder,.camera-media .camera-overlay,.camera-media .camera-quality,.camera-media .camera-expand{z-index:2;}
+#dashboard.focus-mode .camera-card{height:100%;min-height:0;}
+#dashboard.focus-mode .camera-media{min-height:0;flex:1;}

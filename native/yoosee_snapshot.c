@@ -16,7 +16,9 @@ static volatile LONG writing;
 static volatile LONG frame_count;
 static int streaming;
 static int archive_mode;
-static int list_mode;
+static int list_mode, known_archive;
+static volatile LONG clock_callbacks, clock_unit;
+static unsigned long long requested_begin;
 static unsigned char *chroma;
 static size_t chroma_capacity;
 static ULONGLONG last_frame, last_sent;
@@ -106,6 +108,10 @@ static unsigned long long playback_clock_ms(unsigned long long stamp) {
     if (stamp>1000000000000ULL && stamp<5000000000000ULL) return stamp;
     return 0;
 }
+static void playback_open_at(void *player,char *device,unsigned long long target,
+    void (*open)(void *,char *,unsigned long long,unsigned long long)) {
+    open(player,device,target,target);
+}
 static int playback_seek_start(void *player,unsigned long long target,void *callback,
     int (*seek)(void *,unsigned long long,unsigned long long,void *)) {
     /* Seek parameters are request position and presentation position, not end.
@@ -115,7 +121,9 @@ static int playback_seek_start(void *player,unsigned long long target,void *call
 /* END portable playback clock contract */
 static void time_invoke(void *self, const unsigned long long *stamp) {
     (void)self;
+    InterlockedIncrement(&clock_callbacks);
     unsigned long long milliseconds=playback_clock_ms(*stamp);
+    InterlockedExchange(&clock_unit,milliseconds?(*stamp>1000000000000000ULL?2:1):0);
     if (milliseconds) {
         InterlockedCompareExchange64(&archive_first_time,(LONG64)milliseconds,0);
         InterlockedExchange64(&archive_last_time,(LONG64)milliseconds);
@@ -138,14 +146,15 @@ static void make_time_callback(unsigned char *storage) {
 typedef struct { unsigned long long begin,end; } RecordRange;
 static RecordRange record_ranges[512];
 static unsigned record_count;
-static volatile LONG list_received, list_callback_seen;
+static volatile LONG list_received, list_callback_seen, list_kind=-1;
 static ULONGLONG list_last;
 static CRITICAL_SECTION list_lock;
 static char query_device[128];
 static void *list_vtable[6];
 static void *list_copy(void *self,void *destination) { (void)self;*(void ***)destination=list_vtable;return destination; }
 static void list_invoke(void *self,const int *kind,const unsigned char **message) {
-    (void)self;(void)kind;
+    (void)self;
+    if (kind) InterlockedExchange(&list_kind,*kind);
     InterlockedExchange(&list_callback_seen,1);
     if (!message) return;
     const unsigned char *m=*message;if (!m) return;
@@ -172,7 +181,7 @@ static void list_invoke(void *self,const int *kind,const unsigned char **message
  * 0x607d0 returns a generated 31-bit ID. Zero/negative cannot track a request. */
 static int playback_list_request(void *sdk,const char *device,unsigned long long begin,unsigned long long end,
     int (*query)(void *,const char *,unsigned long long,unsigned long long)) {
-    int request=query(sdk,device,begin>3600000ULL?begin-3600000ULL:begin,end+60000ULL);
+    int request=query(sdk,device,begin>120000ULL?begin-120000ULL:begin,end+60000ULL);
     return request>0 ? 0 : 37;
 }
 /* END portable playback request contract */
@@ -181,6 +190,14 @@ static void make_list_callback(unsigned char *storage) {
     list_vtable[2]=(void *)list_invoke;list_vtable[3]=(void *)time_type;
     list_vtable[4]=(void *)time_delete;list_vtable[5]=(void *)time_target;
     *(void ***)storage=list_vtable;*(void **)(storage+56)=storage;
+}
+
+static void archive_failure(unsigned code,unsigned stage) {
+    char data[240];
+    long long delta=archive_last_time?(long long)archive_last_time-(long long)requested_begin:0;
+    int n=snprintf(data,sizeof(data),"SDFAIL1 %u %u %ld %u %ld %ld %lld %ld %d\n",
+        code,stage,(long)list_kind,record_count,(long)clock_callbacks,(long)clock_unit,delta,(long)frame_count,last_reason);
+    emit(data,(DWORD)n);ExitProcess(code);
 }
 
 typedef struct { union { char small[16]; void *ptr; } data; size_t size, capacity; } MsvcString;
@@ -243,7 +260,8 @@ int main(int argc, char **argv) {
     streaming = argc==2 && (strcmp(argv[1],"--stream")==0 || strcmp(argv[1],"--stream-hd")==0 || strcmp(argv[1],"--stream-fhd")==0);
     if (streaming && strcmp(argv[1],"--stream-hd")==0) definition=1;
     if (streaming && strcmp(argv[1],"--stream-fhd")==0) definition=2;
-    archive_mode = argc==2 && strcmp(argv[1],"--archive")==0;
+    known_archive = argc==2 && strcmp(argv[1],"--archive-known")==0;
+    archive_mode = argc==2 && (strcmp(argv[1],"--archive")==0 || known_archive);
     list_mode = argc==2 && strcmp(argv[1],"--list")==0;
     char id[128],token[8192],device[128];
     if (!line(id,sizeof(id)) || !line(token,sizeof(token)) || !line(device,sizeof(device))) return 12;
@@ -266,28 +284,36 @@ int main(int argc, char **argv) {
         if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
         unsigned long long begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
         unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:125000ULL)) ExitProcess(30);
+        requested_begin=begin;
+        unsigned long long file_begin=0,file_end=0;
+        if (known_archive) {
+            if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
+            file_begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
+            file_end=strtoull(end_text,&tail,10);
+            if (*tail || file_begin>begin || file_end<end || file_end<=file_begin || file_end-file_begin>172800000ULL) ExitProcess(30);
+        } else {
         InitializeCriticalSection(&list_lock);strcpy(query_device,device);
         _Alignas(16) unsigned char list_callback[64];make_list_callback(list_callback);
         void (*listen_list)(void *,void *)=symbol(dll,"?addPlaybackListListerner@IoTVideoSdk@@QEAAXV?$function@$$A6AXHPEAUPLaybackMessage@@@Z@std@@@Z");
         int (*query_list)(void *,const char *,unsigned long long,unsigned long long)=symbol(dll,"?getPlaybackList@IoTVideoSdk@@QEAAHPEBD_K1@Z");
         listen_list(sdk,list_callback);
         int query_status=playback_list_request(sdk,device,begin,end,query_list);
-        if (query_status) ExitProcess(query_status);
+        if (query_status) archive_failure((unsigned)query_status,1);
         ULONGLONG queried=GetTickCount64();
         while (GetTickCount64()-queried<18000) {
             if (list_received && GetTickCount64()-list_last>1000) break;
             Sleep(50);
         }
-        if (!list_received) ExitProcess(list_callback_seen?38:34);
+        if (!list_received) archive_failure(list_kind==1?39:list_callback_seen?38:34,1);
         if (list_mode) {
-            emit("SDLIST\n",7);
+            const char *header=list_kind==1?"SDLIST 1\n":"SDLIST 0\n";
+            emit(header,9);
             EnterCriticalSection(&list_lock);
             for (unsigned i=0;i<record_count;i++) if (record_ranges[i].end>begin && record_ranges[i].begin<end) {
                 char row[80];int bytes=snprintf(row,sizeof(row),"%llu %llu\n",record_ranges[i].begin,record_ranges[i].end);emit(row,bytes);
             }
             LeaveCriticalSection(&list_lock);ExitProcess(0);
         }
-        unsigned long long file_begin=0,file_end=0;
         EnterCriticalSection(&list_lock);
         for (unsigned i=0;i<record_count;i++) {
             RecordRange r=record_ranges[i];
@@ -297,7 +323,8 @@ int main(int argc, char **argv) {
             RecordRange r=record_ranges[i];if (r.begin>=begin && r.begin<=begin+5000 && (!file_begin || r.begin<file_begin)) {file_begin=r.begin;file_end=r.end;}
         }
         LeaveCriticalSection(&list_lock);
-        if (!file_begin) ExitProcess(31);
+        if (!file_begin) archive_failure(31,1);
+        }
         void (*set_playback)(void *,char *,unsigned long long,unsigned long long)=symbol(dll,"?setPlaybackDataResource@IoTVideoPlayer@@QEAAXPEAD_K1@Z");
         unsigned char (*start_record)(void *,MsvcString *,void *,void *,void *)=symbol(dll,"?startRecord@IoTVideoPlayer@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$function@$$A6AXXZ@3@V?$function@$$A6AX_K0@Z@3@V?$function@$$A6AXHV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z@3@@Z");
         void (*stop_record)(void *)=symbol(dll,"?stopRecord@IoTVideoPlayer@@QEAAXXZ");
@@ -305,19 +332,22 @@ int main(int argc, char **argv) {
         _Alignas(16) unsigned char time_callback[64];make_time_callback(time_callback);
         void (*set_time)(void *,void *)=symbol(dll,"?setTimeListener@IoTVideoPlayer@@QEAAXV?$function@$$A6AX_K@Z@std@@@Z");
         set_time(player,time_callback);
-        set_playback(player,device,file_begin,file_end);play(player);
+        /* PC opens playback with request/presentation positions, not file end. */
+        playback_open_at(player,device,begin,set_playback);play(player);
         ULONGLONG waiting=GetTickCount64();
         while (!frame_count && GetTickCount64()-waiting<25000) Sleep(50);
-        if (!frame_count) ExitProcess(36);
+        if (!frame_count) archive_failure(36,2);
         int (*seek)(void *,unsigned long long,unsigned long long,void *)=symbol(dll,"?seekPlaybackPosition@IoTVideoPlayer@@QEAAH_K0V?$function@$$A6AXE@Z@std@@@Z");
+        if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) {
         InterlockedExchange64(&archive_last_time,0);
-        if (playback_seek_start(player,begin,callback1,seek)!=0) ExitProcess(35);
+        if (playback_seek_start(player,begin,callback1,seek)!=0) archive_failure(35,3);
         ULONGLONG seeking=GetTickCount64();
         while (GetTickCount64()-seeking<10000 && ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000)) Sleep(50);
-        if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) ExitProcess(33);
+        if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) archive_failure(33,3);
+        }
         MsvcString filename=make_string("archive.mp4",alloc);
         InterlockedExchange64(&archive_first_time,0);
-        if (!start_record(player,&filename,callback1,callback2,callback3)) ExitProcess(32);
+        if (!start_record(player,&filename,callback1,callback2,callback3)) archive_failure(32,4);
         ULONGLONG started_record=GetTickCount64();
         while (GetTickCount64()-started_record<end-begin+8000) {
             if ((unsigned long long)archive_last_time>=end || GetTickCount64()-last_frame>8000) break;
@@ -328,7 +358,7 @@ int main(int argc, char **argv) {
         while (is_recording(player) && GetTickCount64()-finishing<5000) Sleep(50);
         Sleep(500);
         unsigned long long first=(unsigned long long)archive_first_time,last=(unsigned long long)archive_last_time;
-        if (first<begin || first>begin+5000 || last+3000<end || last>end+5000) ExitProcess(33);
+        if (first<begin || first>begin+5000 || last+3000<end || last>end+5000) archive_failure(33,4);
         char metadata[128];int count=snprintf(metadata,sizeof(metadata),"SDTIME %llu %llu\n",first,last);
         emit(metadata,count);ExitProcess(0);
     }

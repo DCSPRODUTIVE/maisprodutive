@@ -9,16 +9,17 @@ class Element {
   replaceChildren(){this.children=[];}
   addEventListener(name,handler){this.handlers[name]=handler;}
 }
-async function setup(records){
+async function setup(records,cardStatus=null,videos=[]){
   const elements=new Map(),calls=[];
   const get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const fetch=async(path,options)=>{
     const body=options?.body?JSON.parse(options.body):{};calls.push({path,body});let data={};
     if(path==='/api/status')data={csrf:'test',authenticated:true,devices:[{id:'owned',name:'Portão'}]};
     if(path==='/api/reports')data={message:'Fotos',events:[]};
+    if(path==='/api/reports/videos')data={message:'Vídeos',events:videos};
     if(path==='/api/telegram/status')data={enabled:false,configured:false,chat_id:'',message:'Sem envio.'};
     if(path==='/api/card/start')data={job_id:'job'};
-    if(path==='/api/card/status')data={status:'done',records};
+    if(path==='/api/card/status')data=cardStatus||{status:'done',records};
     return {ok:true,json:async()=>data};
   };
   const context={fetch,Date,location:{hash:''},document:{getElementById:get,createElement:()=>new Element()},setTimeout:()=>{},window:{location:{replace:()=>{}}}};
@@ -45,4 +46,16 @@ test('choosing a long file limits backup to two minutes without rounding its sta
   await context.cardRequest('list');get('card-results').children[0].children[1].handlers.click();
   assert.equal(new Date(get('card-to').value)-new Date(get('card-from').value),120000);
   assert.equal(new Date(get('card-from').value).getTime()/1000,start);
+});
+
+test('failed manual backup shows a useful diagnostic without claiming a local video exists',async()=>{
+  const diagnostic={stage:3,frames:12,clock_callbacks:0,clock_unit:0,clock_delta_ms:0};
+  const {context,get}=await setup([],{status:'timestamp_unverified',diagnostic},[{id:1,name:'Portão',source:'sd_requested',status:'failed',archive_status:'timestamp_unverified',archive_diagnostic:diagnostic,created:1,duration:0}]);
+  get('card-from').value='2026-10-29T15:36:15';get('card-to').value='2026-10-29T15:37:19';
+  await context.cardRequest('backup');
+  assert.match(get('card-status').textContent,/posicionamento · 12 quadros · 0 retornos/);
+  get('videos-tab').handlers.click();await new Promise(setImmediate);
+  const texts=el=>[el.textContent||'',...el.children.flatMap(texts)];
+  const rendered=texts(get('report-list')).join(' ');
+  assert.match(rendered,/Nenhum backup foi salvo/);assert.doesNotMatch(rendered,/Vídeo local preservado/);
 });

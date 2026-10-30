@@ -47,7 +47,7 @@ class EventStore:
         conn.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, kind TEXT NOT NULL, confidence REAL, plate TEXT, boxes TEXT NOT NULL, image BLOB)')
         conn.execute('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, filename TEXT NOT NULL, status TEXT NOT NULL, duration REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT "")')
         columns={row[1] for row in conn.execute('PRAGMA table_info(videos)')}
-        for column,definition in [('source',"TEXT NOT NULL DEFAULT 'live'"),('pre_roll','REAL NOT NULL DEFAULT 0'),('archive_status',"TEXT NOT NULL DEFAULT ''"),('frame_count','INTEGER NOT NULL DEFAULT 0'),('capture_fps','REAL NOT NULL DEFAULT 0'),('max_gap','REAL NOT NULL DEFAULT 0')]:
+        for column,definition in [('source',"TEXT NOT NULL DEFAULT 'live'"),('pre_roll','REAL NOT NULL DEFAULT 0'),('archive_status',"TEXT NOT NULL DEFAULT ''"),('frame_count','INTEGER NOT NULL DEFAULT 0'),('capture_fps','REAL NOT NULL DEFAULT 0'),('max_gap','REAL NOT NULL DEFAULT 0'),('archive_diagnostic',"TEXT NOT NULL DEFAULT '{}'"),('sd_gap_seconds','REAL NOT NULL DEFAULT 0')]:
             if column not in columns:
                 try:conn.execute('ALTER TABLE videos ADD COLUMN '+column+' '+definition)
                 except sqlite3.OperationalError:
@@ -123,9 +123,15 @@ class EventStore:
 
     def videos(self, owner, before=None):
         with self.guard,self.connect() as db:
-            rows=db.execute('SELECT id,camera,name,created,status,duration,reason,source,pre_roll,archive_status,frame_count,capture_fps,max_gap FROM videos WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
+            rows=db.execute('SELECT id,camera,name,created,status,duration,reason,source,pre_roll,archive_status,frame_count,capture_fps,max_gap,archive_diagnostic,sd_gap_seconds FROM videos WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
                             (owner,before or 9223372036854775807)).fetchall()
-            return [dict(row) for row in rows]
+            result=[]
+            for row in rows:
+                item=dict(row)
+                try:item['archive_diagnostic']=json.loads(item['archive_diagnostic'])
+                except (TypeError,ValueError):item['archive_diagnostic']={}
+                result.append(item)
+            return result
 
     def video(self, owner, record_id):
         with self.guard,self.connect() as db:

@@ -183,7 +183,7 @@ class SegmentedExportTests(unittest.TestCase):
             archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1));start=1800000063.;end=start+2
             stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'))
             intervals=[]
-            def export_piece(stream,begin,finish,folder,overall_deadline):
+            def export_piece(stream,begin,finish,folder,overall_deadline,file_bounds):
                 intervals.append((begin,finish))
                 path=folder/'archive.mp4'
                 color='red' if len(intervals)==1 else 'blue'
@@ -200,4 +200,94 @@ class SegmentedExportTests(unittest.TestCase):
                 self.assertAlmostEqual(float(info['format']['duration']),2,delta=.1)
                 raw=subprocess.run(['ffmpeg','-v','error','-ss','1.5','-i',str(path),'-frames:v','1','-threads','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],check=True,capture_output=True,timeout=5).stdout
                 self.assertGreater(raw[2],200);self.assertLess(raw[0],20)
+            finally:archive.close()
+
+
+class ArchiveRevisionTests(unittest.TestCase):
+    def test_natural_millisecond_file_boundary_is_not_a_missing_recording(self):
+        from camera_archive import playback_segments
+        base=1800000000.
+        parts=playback_segments([{'start':base,'end':base+64.518},{'start':base+64.543,'end':base+128}],base+60,base+125)
+        self.assertEqual(parts,[(base+60,base+64.518),(base+64.543,base+125)])
+        self.assertAlmostEqual(65-sum(b-a for a,b in parts),.025,places=3)
+        with self.assertRaisesRegex(RuntimeError,'recording_gap'):
+            playback_segments([{'start':base,'end':base+64},{'start':base+64.251,'end':base+128}],base+60,base+125)
+
+    def test_timeout_retry_is_bounded_and_economy_can_cancel_it(self):
+        from camera_archive import ArchiveFailure
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'))
+            try:
+                result=[{'start':1800000000,'end':1800000064}]
+                with patch.object(archive,'list_records',side_effect=[ArchiveFailure('list_incomplete'),result]) as query,patch.object(archive.stopped,'wait',return_value=False):
+                    self.assertEqual(archive.query_records(stream,1800000000,1800000064,directory),result)
+                    self.assertEqual(query.call_count,2)
+                stream.monitor_until=time.monotonic()
+                with patch.object(archive,'list_records',side_effect=ArchiveFailure('list_incomplete')) as query:
+                    with self.assertRaisesRegex(RuntimeError,'economy_or_disabled'):archive.query_records(stream,1800000000,1800000064,directory)
+                    self.assertEqual(query.call_count,1)
+            finally:archive.close()
+
+    def test_sanitized_diagnostic_persists_for_owner_without_vendor_output(self):
+        from camera_archive import native_failure
+        failure=native_failure(33,b'SDFAIL1 33 3 -1 0 0 0 0 12 0\n')
+        self.assertEqual(failure.diagnostic['stage'],3);self.assertEqual(failure.diagnostic['frames'],12)
+        self.assertEqual(native_failure(33,b'private-token vendor-output').diagnostic,{})
+        with tempfile.TemporaryDirectory() as directory:
+            store=EventStore(directory);archive=CameraArchive(store,threading.BoundedSemaphore(1))
+            try:
+                record=store.video_add('owner','id','Camera','a'*32+'.mp4')
+                archive.status(record,'timestamp_unverified',failure.diagnostic)
+                self.assertEqual(store.videos('owner')[0]['archive_diagnostic']['frames'],12)
+                self.assertEqual(store.videos('other'),[])
+            finally:archive.close()
+
+    def test_known_file_export_reuses_bounds_without_another_lookup(self):
+        import io
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            store=EventStore(directory);archive=CameraArchive(store,threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'),device_id='camera',
+                archive_account=SimpleNamespace(access_id='user',access_token='private-test-token'))
+            (Path(directory)/'archive.mp4').write_bytes(b'export')
+            child=MagicMock();child.poll.return_value=0;child.returncode=0
+            child.stdin=io.BytesIO();child.stdout=io.BytesIO(b'SDTIME 1800000000000 1800000064000\n')
+            try:
+                with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=child) as launch,patch.object(archive,'list_records') as lookup:
+                    result=archive.export_piece(stream,1800000000,1800000064,directory,file_bounds=(1800000000,1800000064))
+                    self.assertIsNotNone(result);lookup.assert_not_called()
+                    self.assertEqual(launch.call_args.args[0][-1],'--archive-known')
+                    self.assertNotIn('private-test-token',repr(launch.call_args))
+            finally:archive.close()
+
+    def test_partial_response_is_retried_once_and_complete_list_replaces_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'))
+            records=[{'start':1800000000,'end':1800000064}]
+            count=[0]
+            def query(*args):
+                count[0]+=1;stream.archive_list_partial=count[0]==1
+                return records if stream.archive_list_partial else records+[{'start':1800000064,'end':1800000128}]
+            try:
+                with patch.object(archive,'list_records',side_effect=query),patch.object(archive.stopped,'wait',return_value=False):
+                    result=archive.query_records(stream,1800000000,1800000128,directory)
+                self.assertEqual(count[0],2);self.assertEqual(len(result),2);self.assertFalse(stream.archive_list_partial)
+            finally:archive.close()
+
+    def test_automatic_failure_keeps_local_video_and_stores_diagnostic(self):
+        from camera_archive import ArchiveFailure
+        with tempfile.TemporaryDirectory() as directory:
+            store=EventStore(directory);filename='a'*32+'.mp4';record=store.video_add('owner','camera','Camera',filename)
+            path=Path(directory)/'videos'/filename;path.parent.mkdir();path.write_bytes(b'original-local')
+            store.video_finish(record,'ready',120)
+            archive=CameraArchive(store,threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_owner='owner',device_id='camera',report_detect=True,archive_account=object(),monitor_until=float('inf'))
+            try:
+                with patch.object(archive,'export',side_effect=ArchiveFailure('timestamp_unverified',{'stage':3,'frames':12})):
+                    archive.enqueue(record,stream,1800000000,1800000120);archive.queue.join()
+                self.assertEqual(store.video('owner',record).read_bytes(),b'original-local')
+                row=store.videos('owner')[0];self.assertEqual(row['archive_status'],'timestamp_unverified')
+                self.assertEqual(row['archive_diagnostic']['frames'],12)
             finally:archive.close()

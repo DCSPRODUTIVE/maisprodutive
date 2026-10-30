@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 class Element {
-  constructor(tag = "div") { this.tagName = tag; this.children = []; this.handlers = {}; this.disabled = true; this.hidden = false; this._text = ""; }
+  constructor(tag = "div") { this.tagName = tag; this.children = []; this.handlers = {}; this.disabled = true; this.hidden = false; this._text = ""; this.styles={}; this.style={setProperty:(key,value)=>{this.styles[key]=value;}}; }
   set textContent(text) { this._text = text; this.children = []; }
   get textContent() { return this._text; }
   replaceChildren() { this.children = []; this._text = ""; }
@@ -454,4 +454,32 @@ test('server webcam starts disabled and explicit activation persists its enable 
   await cardButton(get,0,'Desativar webcam').handlers.click();
   const saves=calls.filter(c=>c.url==='/api/preferences');
   assert.deepEqual(JSON.parse(saves.at(-1).options.body).webcam_enabled_ids,[]);
+});
+
+test('camera wall fits eight and twelve sources into the available viewport',async()=>{
+  for(const count of [8,12]){
+    const devices=Array.from({length:count},(_,i)=>({id:String(i),name:'Camera '+i}));
+    const preferences={mosaic_limit:count,economy_ids:[],detection_ids:[],webcam_enabled_ids:[]};
+    const {get}=await setup(null,{...liveStatus,devices,preferences_key:'owner',preferences},null,null,liveResponses());
+    await new Promise(setImmediate);
+    assert.equal(get('dashboard').className,'focus-mode');
+    assert.equal(get('cameras').styles['--tv-cols'],count===8?'3':'4');
+    assert.equal(get('cameras').styles['--tv-rows'],'3');
+  }
+});
+test('economy cache stays visible through a transport error and a reconnect',async()=>{
+  let fail=false;
+  const responses=liveResponses();
+  responses['/api/video/frame']=options=>{
+    const body=JSON.parse(options.body);
+    return fail?{ok:false,status:503,json:async()=>({message:'Sem conexão'})}:{ok:true,json:async()=>({device_id:body.device_id,sequence:5,age_seconds:90,state:'paused',image:body.metadata_only?null:'data:image/jpeg;base64,last-frame',next_open_seconds:1200})};
+  };
+  const {get,runTimer,runDelay,calls}=await setup(null,{...liveStatus,mjpeg_available:true},null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  assert.equal(descendants(get('cameras').children[0]).find(e=>e.tagName==='img').src,'data:image/jpeg;base64,last-frame');
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,1);
+  fail=true;await runDelay(1500);await runDelay(2000);
+  const still=descendants(get('cameras').children[0]).find(e=>e.className==='camera-still');
+  assert.equal(still.src,'data:image/jpeg;base64,last-frame');assert.equal(still.hidden,false);
+  assert.notEqual(get('live-count').textContent,'1');
 });
