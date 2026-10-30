@@ -19,6 +19,7 @@ static int archive_mode;
 static int list_mode, known_archive;
 static volatile LONG clock_callbacks, clock_unit;
 static unsigned long long requested_begin;
+static ULONGLONG process_started;
 static unsigned char *chroma;
 static size_t chroma_capacity;
 static ULONGLONG last_frame, last_sent;
@@ -118,6 +119,11 @@ static int playback_seek_start(void *player,unsigned long long target,void *call
      * The PC's initial seek assigns the same epoch-ms value to both. */
     return seek(player,target,target,callback);
 }
+/* 0 complete, 1 confirmed partial, 2 wrong/unverified interval. */
+static int playback_coverage(unsigned long long first,unsigned long long last,unsigned long long begin,unsigned long long end) {
+    if (first<begin || first>begin+5000 || last<=first || last>end+5000) return 2;
+    return first>begin+1000 || last+1000<end ? 1 : 0;
+}
 /* END portable playback clock contract */
 static void time_invoke(void *self, const unsigned long long *stamp) {
     (void)self;
@@ -216,6 +222,7 @@ static int line(char *dest, size_t size) {
 }
 int main(int argc, char **argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+    process_started=GetTickCount64();
     if (sizeof(void *)!=8) return 10;
     /* Keep a private output handle; suppress all vendor stdout/stderr. */
     if (!DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_OUTPUT_HANDLE),GetCurrentProcess(),&output,0,FALSE,DUPLICATE_SAME_ACCESS)) return 10;
@@ -286,11 +293,16 @@ int main(int argc, char **argv) {
         unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:125000ULL)) ExitProcess(30);
         requested_begin=begin;
         unsigned long long file_begin=0,file_end=0;
+        ULONGLONG process_deadline=process_started+end-begin+60000;
         if (known_archive) {
             if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
             file_begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
             file_end=strtoull(end_text,&tail,10);
             if (*tail || file_begin>begin || file_end<end || file_end<=file_begin || file_end-file_begin>172800000ULL) ExitProcess(30);
+            if (!line(begin_text,sizeof(begin_text))) ExitProcess(30);
+            unsigned long long budget=strtoull(begin_text,&tail,10);
+            if (*tail || budget<1000 || budget>300000) ExitProcess(30);
+            process_deadline=process_started+budget;
         } else {
         InitializeCriticalSection(&list_lock);strcpy(query_device,device);
         _Alignas(16) unsigned char list_callback[64];make_list_callback(list_callback);
@@ -348,18 +360,28 @@ int main(int argc, char **argv) {
         MsvcString filename=make_string("archive.mp4",alloc);
         InterlockedExchange64(&archive_first_time,0);
         if (!start_record(player,&filename,callback1,callback2,callback3)) archive_failure(32,4);
-        ULONGLONG started_record=GetTickCount64();
-        while (GetTickCount64()-started_record<end-begin+8000) {
-            if ((unsigned long long)archive_last_time>=end || GetTickCount64()-last_frame>8000) break;
+        ULONGLONG progress_at=GetTickCount64();
+        unsigned long long progress_time=(unsigned long long)archive_last_time;
+        unsigned ending_reason=2;
+        while (GetTickCount64()+7000<process_deadline) {
+            unsigned long long stamp=(unsigned long long)archive_last_time;
+            if (stamp>=end) {ending_reason=0;break;}
+            if (stamp>progress_time) {progress_time=stamp;progress_at=GetTickCount64();}
+            if (GetTickCount64()-last_frame>15000 || GetTickCount64()-progress_at>15000) {ending_reason=1;break;}
             Sleep(100);
         }
+        /* Playback can keep advancing while stopRecord finalizes: freeze the
+         * confirmed range now, not after closing the file. */
+        unsigned long long first=(unsigned long long)archive_first_time,last=(unsigned long long)archive_last_time;
         stop_record(player);
         ULONGLONG finishing=GetTickCount64();
         while (is_recording(player) && GetTickCount64()-finishing<5000) Sleep(50);
         Sleep(500);
-        unsigned long long first=(unsigned long long)archive_first_time,last=(unsigned long long)archive_last_time;
-        if (first<begin || first>begin+5000 || last+3000<end || last>end+5000) archive_failure(33,4);
-        char metadata[128];int count=snprintf(metadata,sizeof(metadata),"SDTIME %llu %llu\n",first,last);
+        int coverage=playback_coverage(first,last,begin,end);
+        if (coverage==2) archive_failure(33,4);
+        char metadata[128];int count;
+        if (coverage==1) count=snprintf(metadata,sizeof(metadata),"SDPART %llu %llu %u\n",first,last,ending_reason?ending_reason:3);
+        else count=snprintf(metadata,sizeof(metadata),"SDTIME %llu %llu\n",first,last);
         emit(metadata,count);ExitProcess(0);
     }
     set_source(player,device,1,definition,0);play(player);

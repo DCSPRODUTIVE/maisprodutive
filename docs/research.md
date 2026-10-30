@@ -860,3 +860,26 @@ e motivo numérico de rejeição do quadro. O backend aceita apenas esse formato
 nunca stderr do fornecedor, e expõe o diagnóstico somente ao proprietário do job
 ou vídeo. Exemplos C compilados e fixtures de vídeo verificam os contratos, mas a
 reprodução real ainda requer teste com as câmeras do usuário.
+
+
+### Quadros confirmados e finalização parcial — 30/10/2026
+
+O teste real de Portão Fundo retornou etapa gravação, 853 quadros e 853 callbacks,
+com último horário 56,762s após o início. A janela selecionada tinha 63,960s;
+portanto faltavam cerca de 7,198s no fim e a regra anterior descartava a cópia.
+Isso confirma entrega de quadros e relógio, mas não permite afirmar se a causa é
+fim do arquivo, pausa P2P ou reprodução abaixo da cadência em tempo real.
+
+A captura agora segue progresso do relógio, com até 15s sem avanço e prazo global
+fornecido pelo backend no modo conhecido. Reserva tempo para finalizar o arquivo
+antes do limite externo. O primeiro/último horário são capturados antes de chamar
+stopRecord, evitando contabilizar quadros exibidos depois do fim da gravação.
+
+SDPART informa um intervalo parcial confirmado e a razão numérica de término;
+SDTIME continua reservado à cobertura completa. O backend verifica intervalo,
+duração e decodificação. Uma parte confirmada não vira um clipe completo por
+relaxamento silencioso da verificação. Na detecção automática é armazenada em uma
+linha separada, com source sd_partial, preservando o fallback local. O Reports
+mostra archive_start/archive_end, status parcial e link de download.
+Fixtures C reproduzem o caso 56,762/63,960 e rejeitam horários de outro dia; fixtures
+FFmpeg verificam que a cópia parcial é reproduzível e não substitui o original.

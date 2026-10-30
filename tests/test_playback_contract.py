@@ -65,6 +65,9 @@ int main(void) {
     assert(playback_clock_ms(1800000000123ULL)==1800000000123ULL);
     assert(playback_clock_ms(1800000000ULL)==0);
     assert(playback_clock_ms(0)==0);
+    assert(playback_coverage(1800000000000ULL,1800000056762ULL,1800000000000ULL,1800000063960ULL)==1);
+    assert(playback_coverage(1800000000000ULL,1800000063900ULL,1800000000000ULL,1800000063960ULL)==0);
+    assert(playback_coverage(1700000000000ULL,1700000063960ULL,1800000000000ULL,1800000063960ULL)==2);
     playback_open_at((void *)123,"camera",1800000000123ULL,open_at);
     assert(playback_seek_start((void *)123,1800000000123ULL,(void *)456,seek)==0);
     return 0;

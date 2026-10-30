@@ -572,3 +572,26 @@ aguardando ou reconectando. Se não houve nenhum quadro válido desde que o serv
 iniciou, não há imagem anterior para mostrar. Logout e término da sessão removem
 as imagens da conta do painel. Esses ajustes não elevam a qualidade nem o consumo
 de dados da fonte ao entrar em tela cheia.
+
+
+### Finalização de gravações e trechos parciais do cartão
+
+O adaptador passa a esperar o avanço do relógio de reprodução com limite total
+controlado pelo servidor; uma entrega mais lenta não é encerrada apenas pela
+duração nominal do trecho mais oito segundos. A espera sem progresso passa a
+até 15 segundos, sempre dentro do prazo do trabalho e da janela permitida pela
+Economia. O intervalo confirmado é congelado antes de fechar o gravador, pois a
+reprodução pode continuar avançando enquanto o arquivo é finalizado.
+
+Se a câmera entregar somente parte do intervalo, mas com horário válido e MP4
+compatível com a duração confirmada, a parte pode ser baixada como **parcial**.
+Um backup manual não é apresentado como completo. Na busca automática da detecção,
+a cópia parcial aparece separadamente como **Trecho parcial do cartão**; o vídeo
+local original permanece. O Reports mostra início e fim confirmados da cópia.
+Vídeos parciais também expiram em 15 dias. Horários de outro intervalo, arquivos
+inválidos e durações incompatíveis continuam sendo rejeitados.
+
+Essa revisão exige atualizar e recompilar novamente o adaptador. O diagnóstico
+real do usuário confirmou a chegada de quadros; a conclusão de um backup completo
+ainda depende do próximo teste na câmera. A mudança não inventa os segundos que
+não forem entregues pelo SDK.

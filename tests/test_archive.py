@@ -291,3 +291,58 @@ class ArchiveRevisionTests(unittest.TestCase):
                 row=store.videos('owner')[0];self.assertEqual(row['archive_status'],'timestamp_unverified')
                 self.assertEqual(row['archive_diagnostic']['frames'],12)
             finally:archive.close()
+
+class PartialProtocolTests(unittest.TestCase):
+    def test_confirmed_partial_is_accepted_but_short_complete_and_wrong_dates_are_rejected(self):
+        import io
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'),device_id='camera',
+                archive_account=SimpleNamespace(access_id='user',access_token='private-test-token'))
+            (Path(directory)/'archive.mp4').write_bytes(b'export')
+            try:
+                for metadata,accepted in ((b'SDPART 1800000000000 1800000056762 1\n',True),
+                    (b'SDTIME 1800000000000 1800000056762\n',False),
+                    (b'SDPART 1700000000000 1700000056762 1\n',False)):
+                    child=MagicMock();child.poll.return_value=0;child.returncode=0
+                    child.stdin=io.BytesIO();child.stdout=io.BytesIO(metadata)
+                    with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=child):
+                        if accepted:
+                            self.assertIsNotNone(archive.export_piece(stream,1800000000,1800000063.960,directory))
+                            self.assertTrue(stream.archive_piece['partial'])
+                        else:
+                            with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):
+                                archive.export_piece(stream,1800000000,1800000063.960,directory)
+            finally:archive.close()
+
+
+@unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'),'FFmpeg required')
+class PartialStorageTests(unittest.TestCase):
+    def test_automatic_partial_is_downloadable_separately_and_does_not_replace_local(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store=EventStore(directory);filename='a'*32+'.mp4';record=store.video_add('owner','camera','Camera',filename)
+            original=Path(directory)/'videos'/filename;original.parent.mkdir();original.write_bytes(b'original-local')
+            store.video_finish(record,'ready',64)
+            partial=Path(directory)/'partial.mp4'
+            subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=blue:s=160x120:r=25',
+                '-t','2','-c:v','libx264','-threads','1',str(partial)],check=True,timeout=10)
+            archive=CameraArchive(store,threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_owner='owner',report_name='Camera',device_id='camera',report_detect=True,
+                archive_account=object(),monitor_until=float('inf'))
+            def export(*args):
+                stream.archive_partial=True;stream.archive_actual_start=1800000000;stream.archive_actual_end=1800000002
+                stream.archive_gap_seconds=0
+                return partial,5
+            try:
+                with patch.object(archive,'export',side_effect=export):
+                    archive.enqueue(record,stream,1800000000,1800000064);archive.queue.join()
+                self.assertEqual(store.video('owner',record).read_bytes(),b'original-local')
+                rows=store.videos('owner');self.assertEqual(len(rows),2)
+                saved=next(r for r in rows if r['source']=='sd_partial')
+                self.assertEqual(saved['status'],'partial');self.assertAlmostEqual(saved['duration'],2,delta=.1)
+                self.assertEqual(saved['pre_roll'],5)
+                self.assertEqual(saved['archive_start'],1800000000);self.assertEqual(saved['archive_end'],1800000002)
+                self.assertIsNotNone(store.video('owner',saved['id']))
+                self.assertEqual(next(r for r in rows if r['id']==record)['archive_status'],'partial_saved')
+            finally:archive.close()

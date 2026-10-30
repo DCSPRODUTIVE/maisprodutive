@@ -59,3 +59,15 @@ test('failed manual backup shows a useful diagnostic without claiming a local vi
   const rendered=texts(get('report-list')).join(' ');
   assert.match(rendered,/Nenhum backup foi salvo/);assert.doesNotMatch(rendered,/Vídeo local preservado/);
 });
+
+test('confirmed SD partial has a download and is never labeled complete',async()=>{
+  const {context,get}=await setup([],{status:'partial',record_id:2},[{id:2,name:'Portão',source:'sd_partial',status:'partial',archive_status:'ready',duration:56.762,archive_start:1800000000,archive_end:1800000056.762,created:1}]);
+  get('card-from').value='2026-10-29T18:02:20.421';get('card-to').value='2026-10-29T18:03:24.381';
+  await context.cardRequest('backup');
+  assert.match(get('card-status').textContent,/vídeo parcial/);
+  assert.equal(get('card-results').children[0].href,'/api/reports/download/2');
+  get('videos-tab').handlers.click();await new Promise(setImmediate);
+  const texts=el=>[el.textContent||'',...el.children.flatMap(texts)];const rendered=texts(get('report-list')).join(' ');
+  assert.match(rendered,/Trecho parcial do cartão/);assert.match(rendered,/vídeo local original mantido/);
+  assert.match(rendered,/Horário confirmado/);assert.doesNotMatch(rendered,/concluído/);
+});
