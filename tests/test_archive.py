@@ -94,11 +94,11 @@ class ArchiveTimestampTests(unittest.TestCase):
                 child.stdin=io.BytesIO();child.stdout=io.BytesIO(metadata);return child
             try:
                 with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=process(b'SDTIME 1800000001000 1800000125000\n')) as launch:
-                    path,pre_roll=archive.export(stream,start,end,directory)
+                    path,pre_roll=archive.export_piece(stream,start,end,directory)
                     self.assertEqual(path.name,'archive.mp4');self.assertEqual(pre_roll,4)
                     self.assertNotIn('private-test-token',repr(launch.call_args))
                 with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=process(b'SDTIME 1700000000000 1700000125000\n')):
-                    with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):archive.export(stream,start,end,directory)
+                    with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):archive.export_piece(stream,start,end,directory)
             finally:archive.close()
 
 class ManualArchiveTests(unittest.TestCase):
@@ -151,4 +151,53 @@ class ManualArchiveTests(unittest.TestCase):
                     with self.subTest(code=code),patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=child):
                         with self.assertRaisesRegex(RuntimeError,'^'+reason+'$'):
                             archive.list_records(stream,1800000000,1800000060,directory)
+            finally:archive.close()
+
+class SegmentPlannerTests(unittest.TestCase):
+    def test_detection_window_crosses_two_file_boundaries_without_losing_pre_roll(self):
+        from camera_archive import playback_segments
+        base=1800000000
+        records=[{'start':base+i,'end':base+i+64} for i in (0,64,128)]
+        self.assertEqual(playback_segments(records,base+60.125,base+185.125),
+            [(base+60.125,base+64),(base+64,base+128),(base+128,base+185.125)])
+
+    def test_gap_is_not_silently_joined_or_filled_with_old_frames(self):
+        from camera_archive import playback_segments
+        with self.assertRaisesRegex(RuntimeError,'recording_gap'):
+            playback_segments([{'start':0,'end':64},{'start':65,'end':128}],60,100)
+
+    def test_overlapping_files_use_the_same_latest_start_rule_as_native(self):
+        from camera_archive import playback_segments
+        self.assertEqual(playback_segments([{'start':0,'end':120},{'start':50,'end':70}],60,100),[(60,70),(70,100)])
+
+    def test_fragment_limit_is_not_reported_as_a_gap(self):
+        from camera_archive import playback_segments
+        with self.assertRaisesRegex(RuntimeError,'archive_fragmented'):
+            playback_segments([{'start':i,'end':i+1} for i in range(10)],0,10)
+
+
+@unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'),'FFmpeg required')
+class SegmentedExportTests(unittest.TestCase):
+    def test_two_card_files_are_joined_preserving_real_fps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1));start=1800000063.;end=start+2
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'))
+            intervals=[]
+            def export_piece(stream,begin,finish,folder,overall_deadline):
+                intervals.append((begin,finish))
+                path=folder/'archive.mp4'
+                color='red' if len(intervals)==1 else 'blue'
+                subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',f'color={color}:s=160x120:r=25',
+                    '-t',str(finish-begin),'-c:v','libx264','-threads','1',str(path)],check=True,timeout=10)
+                return path,4.5
+            try:
+                records=[{'start':1800000000.,'end':1800000064.},{'start':1800000064.,'end':1800000128.}]
+                with patch.object(archive,'list_records',return_value=records),patch.object(archive,'export_piece',side_effect=export_piece):
+                    path,pre_roll=archive.export(stream,start,end,directory)
+                self.assertEqual(intervals,[(start,start+1),(start+1,end)]);self.assertEqual(pre_roll,4.5)
+                info=json.loads(subprocess.run(['ffprobe','-v','error','-show_entries','stream=avg_frame_rate:format=duration','-of','json',str(path)],check=True,capture_output=True,timeout=5).stdout)
+                self.assertEqual(info['streams'][0]['avg_frame_rate'],'25/1')
+                self.assertAlmostEqual(float(info['format']['duration']),2,delta=.1)
+                raw=subprocess.run(['ffmpeg','-v','error','-ss','1.5','-i',str(path),'-frames:v','1','-threads','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],check=True,capture_output=True,timeout=5).stdout
+                self.assertGreater(raw[2],200);self.assertLess(raw[0],20)
             finally:archive.close()

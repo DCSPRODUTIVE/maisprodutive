@@ -45,3 +45,27 @@ int main(void) {
             exe=directory/'contract'
             subprocess.run([shutil.which('cc'),'-std=c11','-Wall','-Wextra','-Werror',str(file),'-o',str(exe)],check=True,timeout=15,capture_output=True)
             subprocess.run([str(exe)],check=True,timeout=5,capture_output=True)
+
+    def test_sdk_microseconds_and_seek_target_use_correct_units_and_position(self):
+        source=(Path(__file__).resolve().parents[1]/'native/yoosee_snapshot.c').read_text()
+        start=source.index('static unsigned long long playback_clock_ms(')
+        end=source.index('/* END portable playback clock contract */',start)
+        fixture='#include <assert.h>\n'+source[start:end]+r'''
+static int seek(void *player,unsigned long long request,unsigned long long presentation,void *callback) {
+    assert(player==(void *)123);assert(callback==(void *)456);
+    assert(request==1800000000123ULL);assert(presentation==request);
+    return 0;
+}
+int main(void) {
+    assert(playback_clock_ms(1800000000123456ULL)==1800000000123ULL);
+    assert(playback_clock_ms(1800000000123ULL)==1800000000123ULL);
+    assert(playback_clock_ms(1800000000ULL)==0);
+    assert(playback_clock_ms(0)==0);
+    assert(playback_seek_start((void *)123,1800000000123ULL,(void *)456,seek)==0);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            file=Path(directory)/'clock.c';file.write_text(fixture);exe=Path(directory)/'clock'
+            subprocess.run([shutil.which('cc'),'-std=c11','-Wall','-Wextra','-Werror',str(file),'-o',str(exe)],check=True,timeout=15,capture_output=True)
+            subprocess.run([str(exe)],check=True,timeout=5,capture_output=True)

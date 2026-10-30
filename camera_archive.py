@@ -16,6 +16,20 @@ import time
 import video
 
 MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
+EXPORT_OVERHEAD = 90
+
+
+def playback_segments(records,start,end):
+    """Cover the exact requested interval using listed files; never hide a gap."""
+    cursor=round(start*1000);finish=round(end*1000);parts=[]
+    rows=[(round(r["start"]*1000),round(r["end"]*1000)) for r in records]
+    while cursor<finish:
+        covering=[(a,b) for a,b in rows if a<=cursor<b]
+        if not covering:raise RuntimeError("recording_gap")
+        _,stop=max(covering,key=lambda row:(row[0],row[1]))
+        stop=min(stop,finish);parts.append((cursor/1000,stop/1000));cursor=stop
+        if len(parts)>8:raise RuntimeError("archive_fragmented")
+    return parts
 
 
 class CameraArchive:
@@ -138,7 +152,50 @@ class CameraArchive:
             self.process=subprocess.Popen(args,start_new_session=True,stderr=subprocess.DEVNULL,**kwargs)
             return self.process
 
-    def export(self, stream, start, end, directory):
+    def export(self,stream,start,end,directory):
+        if not self.allowed(stream,end-start+EXPORT_OVERHEAD):return None
+        deadline=time.monotonic()+end-start+EXPORT_OVERHEAD
+        records=self.list_records(stream,start,end,directory)
+        if not records:raise RuntimeError('no_recording')
+        parts=playback_segments(records,start,end)
+        paths=[];pre_roll=0
+        for index,(begin,finish) in enumerate(parts):
+            if not self.allowed(stream) or time.monotonic()>=deadline:raise RuntimeError('bounded_export')
+            folder=Path(directory)/f'piece-{index:02d}';folder.mkdir(mode=0o700)
+            result=self.export_piece(stream,begin,finish,folder,overall_deadline=deadline)
+            if result is None:return None
+            if index==0:pre_roll=result[1]
+            paths.append(result[0])
+            if sum(path.stat().st_size for path in paths)>MAX_ARCHIVE_BYTES:raise RuntimeError('bounded_export')
+        if len(paths)==1:return paths[0],pre_roll
+        # Numeric private paths only. Stream copy keeps the card's native FPS;
+        # incompatible encodings are rejected rather than inventing missing frames.
+        signatures=[]
+        for path in paths:
+            probe=subprocess.run([shutil.which('ffprobe'),'-v','error','-select_streams','v:0',
+                '-show_entries','stream=codec_name,width,height','-of','json',str(path)],capture_output=True,timeout=10)
+            data=json.loads(probe.stdout) if probe.returncode==0 else {}
+            if not data.get('streams'):raise RuntimeError('invalid_video')
+            info=data['streams'][0];signatures.append((info.get('codec_name'),info.get('width'),info.get('height')))
+        if len(set(signatures))!=1:raise RuntimeError('invalid_video')
+        manifest=Path(directory)/'pieces.txt'
+        manifest.write_text(''.join(f"file 'piece-{i:02d}/archive.mp4'\n" for i in range(len(paths))))
+        joined=Path(directory)/'archive.mp4'
+        child=self.launch([shutil.which('ffmpeg'),'-v','error','-y','-f','concat','-safe','1','-i',str(manifest),
+            '-map','0:v:0','-an','-c:v','copy','-movflags','+faststart',str(joined)],stdout=subprocess.DEVNULL)
+        try:
+            while child.poll() is None:
+                if (not self.allowed(stream) or time.monotonic()>deadline or shutil.disk_usage(directory).free<256*1024*1024
+                    or (joined.exists() and joined.stat().st_size>MAX_ARCHIVE_BYTES)):
+                    raise RuntimeError('bounded_export')
+                self.stopped.wait(.2)
+            if child.returncode or not joined.exists():return None
+            return joined,pre_roll
+        finally:
+            self.kill(child);child.wait(timeout=5)
+            with self.lock:self.process=None
+
+    def export_piece(self, stream, start, end, directory,overall_deadline=float("inf")):
         if not video.readiness()[0]:raise RuntimeError('adapter_update_required')
         if not self.allowed(stream,end-start+40):return None
         account=stream.archive_account
@@ -149,7 +206,7 @@ class CameraArchive:
             cwd=directory,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
         try:
             process.stdin.write(payload.encode());process.stdin.close()
-            deadline=time.monotonic()+end-start+40
+            deadline=min(overall_deadline,time.monotonic()+end-start+60)
             output=Path(directory)/'archive.mp4'
             while process.poll() is None:
                 if (not self.allowed(stream) or time.monotonic()>deadline or shutil.disk_usage(directory).free<256*1024*1024
@@ -222,7 +279,7 @@ class CameraArchive:
             acquired=False
             try:
                 camera=(stream.report_owner,stream.device_id)
-                budget=35 if action=='list' else end-start+40
+                budget=35 if action=='list' else end-start+EXPORT_OVERHEAD
                 if not self.allowed(stream,budget):raise RuntimeError('economy_or_disabled')
                 if action=='automatic' and time.monotonic()-self.failed.get(camera,-1e9)<600:raise RuntimeError('cooldown')
                 acquired=self.slots.acquire(blocking=False)
@@ -242,7 +299,7 @@ class CameraArchive:
             except Exception as error:
                 known=str(error) if isinstance(error,RuntimeError) else ''
                 status=known if known in ('adapter_update_required','no_recording','timestamp_unverified','disk_space','list_unavailable',
-                    'seek_unavailable','playback_unavailable','list_request_rejected','list_response_unsupported','economy_or_disabled','cooldown','busy') else 'unavailable'
+                    'recording_gap','archive_fragmented','seek_unavailable','playback_unavailable','list_request_rejected','list_response_unsupported','economy_or_disabled','cooldown','busy') else 'unavailable'
                 try:
                     if record_id:self.status(record_id,status)
                     if action=='backup' and record_id:self.store.video_finish(record_id,'failed',0,'archive_'+status)

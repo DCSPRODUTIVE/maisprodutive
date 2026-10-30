@@ -799,3 +799,33 @@ A correção é aplicada à consulta manual e à busca automática para backup.
 A regressão exercita o contrato C compilado com uma consulta falsa, incluindo IDs
 positivos, rejeições e parâmetros de intervalo. Hardware real continua necessário
 para confirmar a próxima etapa da listagem/reprodução.
+
+
+### Unidades do relógio e posição de apresentação — 30/10/2026
+
+O usuário confirmou listagem real de arquivos contíguos de cerca de 64 segundos,
+mas o backup falhou com horário não confirmado. A investigação do callback do
+cliente Windows encontrou o vtable instalado em 0x140121a67 (0x1405b1af8), invoke
+0x14011c150 e lambda 0x14011a8c0. Em 0x14011a8f5..0x14011a90a, o valor recebido é
+dividido por 1.000.000 antes de chamar QDateTime::setTime_t. Logo, o PTS entregue
+ao listener está em microssegundos Unix. O filtro antigo aceitava apenas a faixa
+de milissegundos e descartava o relógio válido. A normalização agora aceita o PTS
+em microssegundos e mantém milissegundos plausíveis, rejeitando relógios relativos.
+
+Outra diferença é seekPlaybackPosition: o segundo horário define a posição da
+apresentação. O SDK o multiplica por 1.000 em 0x180028dcc antes de atualizar o
+relógio interno em microssegundos. No primeiro seek do PC, 0x14012315d/164 gravam
+o mesmo horário ms em ambos os campos usados em 0x1401232ab/b2. A revisão passa
+o início desejado em ambos, e não o fim do clipe como segundo argumento.
+A gravação encerra pelo relógio normalizado da reprodução, com limite de espera.
+
+O backend planeja a cobertura do intervalo nos arquivos listados, exporta cada
+parte e concatena com cópia de vídeo quando codec e dimensões são compatíveis.
+Rejeita lacunas, formatos divergentes e excesso de partes. Limites de tempo,
+espaço e Economia continuam aplicados. A mesma função é usada no backup manual
+e automático; o vídeo local permanece até validar o resultado completo.
+No formulário, datetime-local agora conserva segundos e milissegundos, corrigindo
+o arredondamento indevido ao selecionar uma linha com início no meio do minuto.
+Testes C compilados verificam o contrato de unidades e posicionamento; testes
+FFmpeg verificam concatenação real a 25 FPS; teste de navegador simulado confirma
+a seleção exata no fuso America/Sao_Paulo. Não há alteração por tentativa de fuso.

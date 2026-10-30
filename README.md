@@ -501,3 +501,27 @@ um grupo `video` controlando o dispositivo, ajuste a participação do usuário 
 grupo e reinicie a sessão/serviço. Se `/dev/video*` não existir no Linux, o servidor
 não consegue capturar essa câmera; o painel informa a indisponibilidade.
 A câmera também pode falhar se já estiver ocupada por outro aplicativo.
+
+
+### Correção dos horários do cartão — 30/10/2026
+
+Atualize o código e recompile o adaptador com `configure_video.py --update` conforme
+os comandos acima. O relógio da reprodução do SDK usa microssegundos; a lista e a
+interface usam milissegundos Unix. A revisão normaliza essas unidades e posiciona
+a reprodução no início escolhido, sem usar o fim como posição de apresentação.
+Nenhuma compensação arbitrária de fuso horário é aplicada.
+
+A seleção de um resultado do cartão preserva segundos e milissegundos. Um trecho
+que cruza arquivos de aproximadamente um minuto é dividido nos limites listados,
+exportado por partes e juntado sem reduzir FPS. Esse caminho é compartilhado pelo
+backup manual e pela busca após detecções, incluindo a janela de pré-evento.
+São aceitas até oito partes por trecho; lacunas ou mudança incompatível do formato
+impedem a substituição, preservando o vídeo local da detecção. Não há montagem de
+imagens para simular o movimento ausente. O trabalho tem tempo e espaço limitados
+e continua respeitando Economia; pode ser necessário aguardar o cartão finalizar
+um arquivo recente antes de ele aparecer na lista.
+
+A listagem foi confirmada pelo usuário. Posicionamento e cópia da nova revisão
+precisam ser repetidos nas câmeras reais; testes de horários e concatenação não
+substituem a validação do firmware. Consulte um período confirmado no app e use
+Selecionar trecho para manter os limites exatos do arquivo retornado.

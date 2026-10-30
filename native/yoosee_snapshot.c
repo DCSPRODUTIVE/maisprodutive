@@ -98,11 +98,27 @@ static void frame(void *self, const unsigned char *av) {
 static volatile LONG64 archive_first_time, archive_last_time;
 static void *time_vtable[6];
 static void *time_copy(void *self, void *destination) { (void)self; *(void ***)destination=time_vtable; return destination; }
+/* BEGIN portable playback clock contract
+ * Windows client's time listener divides the decoded PTS by 1,000,000 before
+ * QDateTime::setTime_t (0x14011a8f5). List/seek use epoch milliseconds. */
+static unsigned long long playback_clock_ms(unsigned long long stamp) {
+    if (stamp>1000000000000000ULL && stamp<5000000000000000ULL) return stamp/1000ULL;
+    if (stamp>1000000000000ULL && stamp<5000000000000ULL) return stamp;
+    return 0;
+}
+static int playback_seek_start(void *player,unsigned long long target,void *callback,
+    int (*seek)(void *,unsigned long long,unsigned long long,void *)) {
+    /* Seek parameters are request position and presentation position, not end.
+     * The PC's initial seek assigns the same epoch-ms value to both. */
+    return seek(player,target,target,callback);
+}
+/* END portable playback clock contract */
 static void time_invoke(void *self, const unsigned long long *stamp) {
     (void)self;
-    if (*stamp>1000000000000ULL && *stamp<5000000000000ULL) {
-        InterlockedCompareExchange64(&archive_first_time,(LONG64)*stamp,0);
-        InterlockedExchange64(&archive_last_time,(LONG64)*stamp);
+    unsigned long long milliseconds=playback_clock_ms(*stamp);
+    if (milliseconds) {
+        InterlockedCompareExchange64(&archive_first_time,(LONG64)milliseconds,0);
+        InterlockedExchange64(&archive_last_time,(LONG64)milliseconds);
     }
 }
 static const void *time_type(void *self) { (void)self; return NULL; }
@@ -295,16 +311,16 @@ int main(int argc, char **argv) {
         if (!frame_count) ExitProcess(36);
         int (*seek)(void *,unsigned long long,unsigned long long,void *)=symbol(dll,"?seekPlaybackPosition@IoTVideoPlayer@@QEAAH_K0V?$function@$$A6AXE@Z@std@@@Z");
         InterlockedExchange64(&archive_last_time,0);
-        if (seek(player,begin,end,callback1)!=0) ExitProcess(35);
+        if (playback_seek_start(player,begin,callback1,seek)!=0) ExitProcess(35);
         ULONGLONG seeking=GetTickCount64();
         while (GetTickCount64()-seeking<10000 && ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000)) Sleep(50);
         if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) ExitProcess(33);
         MsvcString filename=make_string("archive.mp4",alloc);
-        if (!start_record(player,&filename,callback1,callback2,callback3)) ExitProcess(32);
         InterlockedExchange64(&archive_first_time,0);
+        if (!start_record(player,&filename,callback1,callback2,callback3)) ExitProcess(32);
         ULONGLONG started_record=GetTickCount64();
-        while (GetTickCount64()-started_record<end-begin) {
-            if (GetTickCount64()-last_frame>8000) break;
+        while (GetTickCount64()-started_record<end-begin+8000) {
+            if ((unsigned long long)archive_last_time>=end || GetTickCount64()-last_frame>8000) break;
             Sleep(100);
         }
         stop_record(player);
