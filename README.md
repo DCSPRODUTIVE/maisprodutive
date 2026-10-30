@@ -9,7 +9,7 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
   captura de imagens reais na maioria delas.
 - **Nesta versão:** layout responsivo, mosaico com seleção de 8 ou 12 transmissões
   independentes, busca por nome, tela cheia, modo foco, captura e parada individual
-  ou de todas as câmeras. Transmissão experimental de até cinco imagens/s por
+  ou de todas as câmeras. Transmissão experimental de até dez imagens/s por
   câmera, sem áudio, com conexão P2P mantida aberta.
 - **Formato 5:** o adaptador aceita tanto três planos YUV420 entregues pelo
   decodificador H.265 quanto NV12 de dois planos, com validação dos buffers.
@@ -20,7 +20,7 @@ locais, sem VPN. O repositório continua em `DCSPRODUTIVE/maisprodutive`.
   A correção dos buffers e os novos modos HD/FHD ainda precisam ser testados nas
   câmeras que falhavam; testes sintéticos não substituem essa confirmação.
 - **Reports:** fotos de detecção local de pessoas, sem registros de abertura de câmera.
-  Requer instalar o modelo e OpenCV conforme abaixo. Alertas externos não estão ativos.
+  Requer instalar o modelo e OpenCV conforme abaixo. Telegram é opcional e exige configuração.
 - **Economia de dados:** por câmera, 5 minutos conectada e 25 pausada, preservando
   o último quadro. As demais câmeras continuam independentes. Acesso remoto protegido por túnel HTTPS disponível. Áudio, PTZ e gravação contínua não estão implementados.
 
@@ -397,146 +397,107 @@ fila cheia, servidor reiniciado ou indisponibilidade podem impedir alertas, enqu
 os registros locais permanecem independentes. Itens da fila expiram em cinco minutos.
 
 
-## Atualização de qualidade e rostos — 22/10/2026
+## Atualização de estabilidade, cartões e webcam — 30/10/2026
 
-Execute no Linux do Chromebook, na pasta do projeto, antes de reiniciar os serviços:
+No Linux do servidor, atualize e recompile o adaptador antes de reiniciar:
 
 ```sh
+cd ~/maisprodutive
 git pull origin main
 python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
-python3 configure_faces.py
 sudo systemctl restart dcs-control.service dcs-tunnel.service
 ```
 
-O primeiro comando de preparação recompila o adaptador de vídeo com alvo de 10
-quadros/s (anteriormente 5). O segundo baixa os modelos públicos YuNet e SFace do
-OpenCV e confere SHA-256 fixado antes de instalá-los em `.local/faces`. Nenhuma foto
-é enviada para preparar modelos. Requer OpenCV 4.8 ou superior com YuNet/SFace;
-no Debian 13, `sudo apt install python3-opencv` fornece essas APIs. Se o adaptador
-não for atualizado, o diagnóstico pede recompilação e não executa binário incompatível.
+Abra o painel, atualize com Ctrl+Shift+R e entre na conta novamente. Nenhuma alteração
+no DNS ou no túnel é necessária. A atualização não pode ser aplicada ao Chromebook
+por este ambiente sem acesso administrativo remoto a ele.
 
-O painel mostra a resolução **recebida após conversão**, FPS medido e a idade da
-última análise de pessoas. Isso não mede a resolução do sensor nem o atraso desde
-a captura física. O alvo é até 10 fps; câmera, 4G, navegador e CPU podem entregar
-menos. A maior qualidade não cria detalhes ausentes no fluxo enviado pela câmera.
+### Transmissão e recuperação
 
-Câmeras monitoradas sem Economia começam em HD com prévia de até 960px, melhorando
-a fonte das fotos e gravações. Em Economia, mantêm definição SD e prévia de 640px.
-Ampliar uma câmera solicita FHD sem redução da prévia, com retorno ao perfil anterior
-ao sair. Em Economia, ampliar mantém a definição escolhida, sem elevar o perfil
-automaticamente. Abrir uma qualidade diferente requer reconectar e pode finalizar
-um clipe em andamento como parcial. Após falhas repetidas sem quadros, o monitor
-reduz a definição para recuperar disponibilidade. FPS pode variar conforme o fluxo;
-a gravação amostra a 10fps e pode repetir quadros quando a câmera entrega menos.
-MP4 mantém duração de tempo real, sem acelerar movimentos para simular fluidez.
+O navegador recebe JPEGs por uma conexão MJPEG contínua, sem esperar uma requisição
+JSON para cada quadro. Os diagnósticos usam consultas leves separadas. Várias abas
+compartilham a fonte da câmera; fechar o painel mantém o monitoramento habilitado.
+Há até 12 fontes e 16 visualizações contínuas. A conexão do navegador pode ser
+reaberta sem reiniciar a conexão P2P da câmera.
 
-A recuperação começa após 8 segundos sem quadros, com nova tentativa inicial em
-2 segundos e recuo progressivo até 60. A negociação P2P ainda pode demorar e usa
-fila limitada a duas inicializações simultâneas para preservar o computador. As
-pausas de Economia continuam impedindo capturas, análise e reconexões fora da janela.
+O monitor verifica fontes sem quadros independentemente do navegador. Após oito
+segundos sem quadros, encerra a fonte parada e tenta reabrir com espera progressiva
+entre dois e 60 segundos. A primeira imagem tem prazo de 30 segundos depois de
+iniciar a conexão; a negociação usa uma fila limitada. Imagens antigas permanecem
+visíveis como último quadro, sem serem consideradas transmissão ao vivo.
 
-A detecção de pessoas usa limiar 0,55, análise de quadros novos a cada segundo e
-uma segunda escala para cenas largas sem detecção inicial. O ciclo pode demorar
-mais em computadores sobrecarregados. Falha de análise em uma câmera não encerra
-as demais; o painel informa falhas locais separadamente do status de envio no Telegram.
-Movimento rápido, oclusão e baixa resolução ainda podem causar detecções ausentes.
+O padrão de abertura é SD/640px para reduzir carga e tráfego. Selecione HD/FHD na
+câmera desejada quando houver capacidade. Ampliar a câmera preserva a qualidade
+selecionada e a conexão. O painel mostra resolução recebida, FPS medido e idade da
+análise. Esses valores não medem a resolução do sensor ou o atraso físico.
+O alvo de captura é até 10 FPS; rede, firmware e computador podem entregar menos.
+A apresentação usa `object-fit: contain`, sem corte ou esticamento. Se o SDK fornece
+um campo menor que o app, mudar o CSS não recupera a área ausente; compare os
+perfis de qualidade da própria câmera.
 
-### Aprendizado supervisionado de rostos
+### Gravações e pessoas
 
-No **Reports → Rostos**, ative a captura/comparação e salve. Só câmeras com
-**Detectar pessoas** produzem recortes; Economia continua sendo respeitada.
-É necessário o rosto estar frontal o suficiente para o detector, ter pelo menos
-40px, nitidez e luminosidade adequadas. Sem rosto utilizável, o evento continua
-como Pessoa detectada e sem identificação; não é cadastrado um recorte ruim.
+O reconhecimento/cadastro de rostos foi removido. A detecção de pessoas continua
+por câmera, com análise de quadros recentes e registros no Reports. As bases antigas
+de rostos não são carregadas nem expostas por rotas do sistema; arquivos privados
+legados não são apagados automaticamente por esta atualização.
 
-Digite um nome numa foto e clique **Salvar nome**. Cada foto nomeada vira um
-exemplo SFace normalizado de 128 dimensões, usado imediatamente nas próximas
-comparações desta conta. Use o mesmo nome para vários exemplos da mesma pessoa
-em iluminação e ângulos diferentes. Há três estados na galeria: exemplo nomeado,
-possível conhecido e não reconhecido. Sugestões automáticas não se tornam exemplos
-sem sua confirmação. Não há retreinamento dos pesos do modelo nem identificação
-infalível. A comparação usa cosseno mínimo 0,55 e margem mínima 0,08 entre nomes;
-valores de semelhança não são probabilidades de identidade. Não reconhecido não
-significa necessariamente desconhecido, e o recurso não é controle de acesso.
+A captura local e a codificação agora são etapas separadas. O servidor guarda os
+JPEGs recebidos e seus horários e depois produz o MP4 com cadência variável. Não
+repete imagens para anunciar 10 FPS. O vídeo preserva pausas reais da fonte; não é
+possível reconstruir movimento que a câmera não entregou. O Reports mostra FPS de
+quadros distintos e maior intervalo entre eles. A codificação usa no máximo dois
+processos simultâneos, arquivos temporários limitados e reserva de disco livre.
 
-Corrija um nome para corrigir o cadastro. Salvar o campo vazio remove aquele
-exemplo do aprendizado. **Excluir foto** remove recorte e descritor. **Apagar todos
-os rostos e nomes** elimina a base desta conta e desativa novas capturas. Ao
-remover um exemplo, ele deixa de participar das comparações seguintes. Contas
-não compartilham nomes, imagens ou descritores. Os recortes não são enviados ao
-Telegram; alertas continuam usando as fotos de pessoas do Reports.
+O clipe inclui até cinco segundos anteriores disponíveis e até 120 segundos após a
+detecção. Histórico é limitado a 12 MiB por câmera; quedas, início recente ou Economia
+podem reduzir o pré-evento ou interromper o clipe. Vídeos expiram em **15 dias**;
+fotos em **30 dias**. A retenção não recupera arquivos excluídos anteriormente.
 
-Rostos sem nome expiram em 30 dias, com limite de 500 por conta. Exemplos nomeados
-ficam até exclusão manual, com limite de 1.000 por conta. Recortes semelhantes da
-mesma câmera em 30 segundos são agrupados. Fotos, nomes e descritores faciais são
-dados biométricos privados, armazenados no mesmo SQLite protegido dos Reports;
-limite o acesso e o cadastro às pessoas e finalidades autorizadas. Pesos dos modelos
-e imagens não entram no Git. Fontes: [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
-e [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface),
-com licenças indicadas pelos respectivos projetos.
+### Cartões de memória e backup
 
+Em **Reports → Cartões de memória e backup**, escolha uma câmera e um intervalo
+passado de até uma hora para consultar as gravações. Selecione um resultado ou um
+intervalo de até dois minutos e clique em fazer backup. O trabalho continua no
+servidor se a página fechar. O MP4 pronto aparece em Vídeos e pode ser baixado por
+**Baixar MP4**. Os backups seguem a retenção de 15 dias; baixe uma cópia para guardar
+por mais tempo. A operação não apaga nem formata o cartão. Não é backup integral
+ou contínuo do cartão.
 
-## Gravação do cartão, pré-evento e diagnóstico — 28/10/2026
+Depois de um clipe de detecção completo, o servidor também tenta obter a mesma
+janela no cartão. Consulta primeiro os arquivos, abre o arquivo que cobre o início
+e solicita posicionamento no horário desejado. Só substitui o vídeo local após
+confirmar horário, duração e decodificação. Falhas preservam o vídeo local e geram
+um diagnóstico específico; tentativas automáticas malsucedidas têm espera de dez
+minutos por câmera. Em H.264, a cópia é remultiplexada sem reduzir FPS; outros codecs
+podem precisar de conversão.
 
-Esta atualização exige recompilar o adaptador (`python3 configure_video.py
-~/Yoosee-1.0.0.8.exe --update`) e reiniciar o serviço. A biblioteca original do
-instalador continua privada; o Git contém apenas o código do adaptador.
+**A compatibilidade do cartão é experimental e precisa ser validada nas câmeras
+reais.** A interface nativa foi analisada e compilada, mas este ambiente não tem
+acesso ao hardware. Listagem indisponível não significa que o cartão está vazio.
+O cartão precisa gravar no app e o relógio da câmera deve estar correto.
+Consultas e downloads usam dados adicionais, uma conexão livre e uma única fila.
+Câmeras em Economia só permitem esse trabalho dentro da janela ativa e se houver
+tempo para concluir; nenhuma busca deve contornar a pausa.
 
-Cada câmera habilitada para detecção mantém até cinco segundos de JPEGs recentes
-em memória (limite de 12 MiB por câmera). Ao detectar, a gravação local inclui o
-histórico disponível e até 120 segundos seguintes. Não é possível recuperar os
-cinco segundos completos se a câmera acabou de abrir, não entregou quadros ou o
-limite de memória reduziu o buffer. A pausa de Economia continua fechando a fonte
-e finalizando clipes parciais. Não há gravação ou coleta contínua fora da janela.
+### Webcam do servidor
 
-Após finalizar um clipe local não interrompido, o servidor tenta buscar a mesma
-janela no cartão pelo SDK, **experimentalmente**, com apenas uma busca por vez.
-A tentativa requer uma das 12 conexões livre, autorização ainda ativa e tempo
-suficiente na janela de Economia para terminar; caso contrário mantém o vídeo
-local. Falhas têm espera de dez minutos por câmera para reduzir tráfego. O SDK
-precisa disponibilizar o intervalo, não bastando haver um cartão inserido.
-Confira se a gravação está ativa e se o relógio da câmera está correto no Yoosee.
+Uma webcam integrada ou USB exposta ao Linux como `/dev/videoN` aparece no painel
+como **Webcam do servidor**. Começa desligada. Clique em **Ativar webcam** para
+permitir captura e **Desativar webcam** para fechar o dispositivo, inclusive o
+monitoramento em segundo plano. Essa preferência é salva por conta. O painel
+não solicita a câmera do celular ou computador usado para visitar o site.
 
-O caminho usa `setPlaybackDataResource`, `startRecord`, `stopRecord` e
-`setTimeListener` do DLL inspecionado. Os horários são Unix em milissegundos,
-conforme as chamadas do cliente Windows analisado. Nenhum comando de exclusão ou
-formatação do cartão é usado. O processo fica isolado, com limites de tempo,
-espaço e tamanho de arquivo; credenciais passam exclusivamente pela entrada padrão.
+Depois de ativada, pode usar **Detectar pessoas** e **Economia de dados**, com as
+mesmas regras de foto, vídeo, Telegram configurado e retenção. Economia abre por
+cinco minutos a cada 30 minutos e mantém o último quadro durante a pausa; fora da
+janela não há detecção. A webcam usa captura de 640×480 a até 10 FPS e não possui
+cartão consultável pelo sistema. A detecção permanece opcional.
 
-O original só substitui o local após confirmar timestamps no intervalo solicitado,
-duração e decodificação inicial do vídeo. Se o SDK não confirmar o horário, o
-local permanece. Em H.264 o servidor remultiplexa sem reduzir FPS nem recodificar;
-outros codecs são convertidos para H.264 preservando a cadência recebida, sem
-forçar 10fps. O original do cartão nunca é apagado. O Reports identifica a origem,
-pré-evento confirmado e situação da busca. Buscar o cartão pode levar alguns
-minutos e usa dados adicionais durante a janela permitida. Até ser validado,
-o vídeo local fica disponível normalmente.
-
-O caminho do cartão foi compilado e testado com fixtures, incluindo preservação
-de 25fps num original H.264 sintético. **A consulta real ao cartão não foi validada
-neste ambiente sem acesso às suas câmeras**, e firmwares podem exigir adaptação.
-Não é promessa de compatibilidade com todos os modelos. Consulte o status do
-clipe no Reports para distinguir busca em andamento, falta de gravação, falta
-de conexão livre ou horário não confirmado.
-
-Vídeos do servidor passam a expirar após **15 dias**; fotos continuam em 30 dias.
-Arquivos já removidos pela regra antiga não são recuperados. O limite de disco
-livre continua impedindo novas gravações quando necessário; quinze dias podem
-exigir mais armazenamento. A duração máxima local passa a até 125 segundos com
-pré-evento; falhas e Economia podem gerar trechos menores.
-
-Em **Reports → Rostos**, os diagnósticos mostram a última tentativa por câmera,
-modelos ausentes, detecção desativada, imagem pequena, falta de nitidez ou luz.
-O detector agora verifica rostos mesmo se o detector de corpos não encontrar a
-pessoa no mesmo quadro, a cada dois segundos conforme a capacidade do servidor.
-O recorte inclui margem ao redor da caixa da pessoa; o mínimo passa de 64 para
-40px, com filtro de nitidez revisado. Os critérios de comparação de identidades
-continuam conservadores e apenas nomes confirmados treinam os exemplos. Fotos de
-pessoas de costas ou com rosto virado para baixo ainda podem não gerar cadastro.
-
-A visualização, as fotos e vídeos usam `object-fit: contain`, sem zoom, corte ou
-esticamento. Uma imagem 4:3 ou vertical pode deixar faixas. Não há filtro de crop
-na conversão. Isso não recupera áreas ausentes do fluxo fornecido pela câmera.
-Se SD mostra um campo diferente do app, compare os perfis SD original, HD e FHD;
-use imagens da mesma câmera e posição para confirmar se o SDK fornece outro fluxo.
-O tamanho da data sozinho não comprova um corte feito pelo painel.
+No Chromebook, a câmera integrada pode não estar disponível ao Linux. O ChromeOS
+precisa permitir compartilhar uma webcam USB compatível com o Linux, e o usuário
+do serviço precisa ter acesso de leitura e escrita ao dispositivo. Quando houver
+um grupo `video` controlando o dispositivo, ajuste a participação do usuário nesse
+grupo e reinicie a sessão/serviço. Se `/dev/video*` não existir no Linux, o servidor
+não consegue capturar essa câmera; o painel informa a indisponibilidade.
+A câmera também pode falhar se já estiver ocupada por outro aplicativo.

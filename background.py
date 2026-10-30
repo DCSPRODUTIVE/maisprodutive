@@ -26,6 +26,7 @@ class Entry:
         self.retry_at = 0
         self.attempts = 0
         self.message = ''
+        self.detection = True
 
     def window(self, now):
         phase = (now-self.anchor) % PERIOD
@@ -49,6 +50,10 @@ class ManagedView:
     def stop(self, wait=True):
         self.stopped.set()
 
+    def jpeg_frame(self, after):
+        if self.stopped.is_set():raise IntegrationError('video_stopped','Visualização encerrada.')
+        return self.manager.jpeg_frame(self.owner,self.device_id,after)
+
     def frame(self, after, wait=True):
         if self.stopped.is_set():
             raise IntegrationError('video_stopped', 'Visualização encerrada.')
@@ -69,7 +74,9 @@ class BackgroundMonitor:
 
     def configure(self, owner, account, devices, preferences):
         names = {item['id']: item['name'] for item in devices}
-        wanted = set(preferences.get('detection_ids', [])) & names.keys()
+        detection=set(preferences.get('detection_ids',[]))
+        local_enabled=set(preferences.get('webcam_enabled_ids',[]))
+        wanted={i for i in names if (i in local_enabled if i.startswith('webcam:') else i in detection)}
         economy = set(preferences.get('economy_ids', []))
         now = self.clock()
         with self.lock:
@@ -87,10 +94,10 @@ class BackgroundMonitor:
                     existing = next((stream for stream in candidates if getattr(stream, 'report_owner', None) == owner
                                      and stream.device_id == device_id and not stream.stopped.is_set()), None)
                     if not entry.economy:
-                        entry.width, entry.definition = 960, 1
+                        entry.width, entry.definition = 640, 0
                     if existing:
                         existing.background = True
-                        existing.report_detect = True
+                        existing.report_detect = device_id in detection
                         entry.native = existing
                         entry.width = getattr(existing, 'preview_width', 640)
                         entry.definition = getattr(existing, 'definition', 0)
@@ -99,11 +106,13 @@ class BackgroundMonitor:
                     entry.account = account
                     entry.retry_at = now
                 entry.name = names[device_id]
+                entry.detection=device_id in detection
+                if entry.native is not None:entry.native.report_detect=entry.detection
                 if entry.economy != (device_id in economy):
                     entry.economy = device_id in economy
                     entry.anchor = now
                     self._drop(entry)
-                    entry.width, entry.definition = (640,0) if entry.economy else (960,1)
+                    entry.width, entry.definition = (640,0)
                     entry.retry_at = now
                 if entry.native is not None:
                     entry.native.monitor_until = entry.active_until(now)
@@ -117,8 +126,6 @@ class BackgroundMonitor:
             entry = self.entries.get((owner, device_id))
             if entry is None:
                 raise IntegrationError('video_stopped', 'Monitoramento desativado nesta câmera.')
-            if not entry.economy and definition == 0 and width != 0:
-                width, definition = 960, 1
             if (entry.width, entry.definition) != (width, definition):
                 self._drop(entry)
                 entry.width, entry.definition = width, definition
@@ -156,6 +163,15 @@ class BackgroundMonitor:
                     entry.retry_at = 0
                     continue
                 stream = entry.native
+                if stream is not None and not stream.stopped.is_set() and getattr(stream,'managed_watchdog',False):
+                    stamp=getattr(stream,'last_frame',None)
+                    connect=getattr(stream,'connect_started',None)
+                    started=getattr(stream,'started',now)
+                    if ((stamp is not None and now-stamp>8) or
+                        (stamp is None and connect is not None and now-connect>30) or
+                        (stamp is None and connect is None and now-started>45)):
+                        stream.stop(wait=False)
+                        entry.message='Fonte sem novos quadros; recuperando conexão.'
                 if stream is not None and stream.stopped.is_set():
                     error = getattr(stream, 'error', None)
                     entry.message = str(error) if isinstance(error, IntegrationError) else 'A câmera interrompeu a conexão.'
@@ -194,8 +210,9 @@ class BackgroundMonitor:
             has_native = stream is not None and not stream.stopped.is_set()
             age = now-entry.last_frame if entry.last_frame is not None else None
             image = entry.image if entry.sequence > after else None
+            native_stamp=getattr(stream,'last_frame',None) if has_native else None
             state = ('paused' if paused else 'retrying' if not has_native and entry.message else
-                     'receiving' if has_native and age is not None and age <= 3 else
+                     'receiving' if native_stamp is not None and now-native_stamp<=3 else
                      'queued' if has_native and getattr(stream, 'connect_started', None) is None else 'connecting')
             return {'device_id': device_id, 'sequence': entry.sequence,
                     'image': 'data:image/jpeg;base64,'+base64.b64encode(image).decode() if image else None,
@@ -203,6 +220,18 @@ class BackgroundMonitor:
                     'next_open_seconds': round(entry.next_open(now)),
                     'retry_seconds': max(0, round(entry.retry_at-now)), 'message': entry.message,
                     'background': True, 'health': health.snapshot(stream) if has_native else None}
+
+    def jpeg_frame(self, owner, device_id, after):
+        with self.lock:
+            entry=self.entries.get((owner,device_id))
+            if entry is None:raise IntegrationError('video_stopped','Monitoramento encerrado.')
+            self._capture(entry)
+            return entry.image if entry.sequence>after else None,entry.sequence
+
+    def deadline(self,owner,device_id):
+        with self.lock:
+            entry=self.entries.get((owner,device_id));now=self.clock()
+            return entry.active_until(now) if entry and entry.window(now) else now
 
     def status(self, owner):
         with self.lock:

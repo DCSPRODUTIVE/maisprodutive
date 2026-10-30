@@ -11,6 +11,7 @@ let preferenceKey = null;
 let preferenceSave = Promise.resolve();
 const preferredEconomy = new Set();
 const detectionIds = new Set();
+const webcamEnabled = new Set();
 const detectionPending = new Set();
 const economy = new Map();
 const desired = new Map();
@@ -22,13 +23,14 @@ let views = new Map();
 let cameraControls = [];
 const $ = (id) => document.getElementById(id);
 
-function serverManaged(id) { return !!currentStatus?.server_monitoring && detectionIds.has(id); }
+function serverManaged(id) { return !!currentStatus?.server_monitoring && (detectionIds.has(id)||webcamEnabled.has(id)); }
 function frameAge(feed) {
+  if(feed.age===null||feed.age===undefined)return Infinity;
   return feed.updatedAt ? (feed.age || 0) + (Date.now() - feed.updatedAt) / 1000 : Infinity;
 }
 function updateMetrics() {
   $("camera-count").textContent = String(currentStatus?.devices.length || 0);
-  $("live-count").textContent = String([...feeds.values()].filter((f) => f.image && f.state !== "paused" && frameAge(f) <= 3).length);
+  $("live-count").textContent = String([...feeds.values()].filter((f) => f.image && !["paused","retrying","queued","connecting"].includes(f.state) && frameAge(f) <= 3).length);
   $("capture-count").textContent = String(snapshots.size);
 }
 function buttons() {
@@ -43,12 +45,14 @@ function buttons() {
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
   $("stop-all").disabled = busy || (!feeds.size && !desired.size && !economy.size && !bulk);
   for (const { id, capture, watch, stop, quality, saver, detector } of cameraControls) {
-    quality.disabled = busy || bulk || !ready;
-    detector.disabled = busy || bulk || !ready || detectionPending.has(id);
-    saver.disabled = busy || bulk || !ready;
-    capture.disabled = busy || bulk || !ready || (!!economy.get(id)?.paused || feeds.get(id)?.state === "paused") || (feeds.has(id) && !feeds.get(id).image);
-    watch.disabled = busy || bulk || !ready || feeds.has(id);
-    stop.disabled = busy || (!feeds.has(id) && !desired.has(id) && !economy.has(id));
+    const local=id.startsWith('webcam:');
+    const cameraReady=auth&&(local?currentStatus?.webcam_available:currentStatus?.snapshot_ready);
+    quality.disabled = busy || bulk || !cameraReady || local;
+    detector.disabled = busy || bulk || !cameraReady || detectionPending.has(id) || (local&&!webcamEnabled.has(id));
+    saver.disabled = busy || bulk || !cameraReady;
+    capture.disabled = busy || bulk || !cameraReady || (local&&!webcamEnabled.has(id)) || (!!economy.get(id)?.paused || feeds.get(id)?.state === "paused") || (feeds.has(id) && !feeds.get(id).image);
+    watch.disabled = busy || bulk || !cameraReady || feeds.has(id);
+    stop.disabled = busy || (local?!webcamEnabled.has(id):(!feeds.has(id) && !desired.has(id) && !economy.has(id)));
   }
   updateMetrics();
 }
@@ -86,7 +90,7 @@ async function economyCycle(id) {
 }
 function savePreferences() {
   const ids = [...preferredEconomy].filter(id => currentStatus?.devices.some(camera => camera.id === id));
-  const payload = {economy_ids: ids, detection_ids:[...detectionIds].filter(id=>currentStatus?.devices.some(camera=>camera.id===id)), mosaic_limit: mosaicLimit};
+  const payload = {economy_ids: ids, detection_ids:[...detectionIds].filter(id=>currentStatus?.devices.some(camera=>camera.id===id)), mosaic_limit: mosaicLimit,webcam_enabled_ids:[...webcamEnabled].filter(id=>currentStatus?.devices.some(c=>c.id===id))};
   const owner=currentStatus?.preferences_key;
   preferenceSave = preferenceSave.then(() => {
     if(owner!==currentStatus?.preferences_key)throw new Error("A conta mudou. Salve novamente.");
@@ -102,6 +106,14 @@ function savePreferences() {
   });
   return preferenceSave;
 }
+async function toggleWebcam(id){
+  const was=webcamEnabled.has(id);
+  if(was)webcamEnabled.delete(id);else webcamEnabled.add(id);
+  const saved=await savePreferences();
+  if(!saved){if(was)webcamEnabled.add(id);else webcamEnabled.delete(id);render();return;}
+  if(was)await stopOne(id,true);else await startOne(id,true);
+  render();
+}
 async function toggleDetection(id) {
   if(detectionPending.has(id))return;
   const wasEnabled=detectionIds.has(id);
@@ -116,6 +128,7 @@ async function toggleDetection(id) {
   detectionPending.delete(id);render();
 }
 async function watchCamera(id) {
+  if(id.startsWith('webcam:')&&!webcamEnabled.has(id))return toggleWebcam(id);
   if(serverManaged(id))return startOne(id,true);
   if (preferredEconomy.has(id)) {
     if (!economy.has(id)) economy.set(id, {paused:false});
@@ -149,16 +162,21 @@ function paint(id) {
   const saving = economy.get(id);
   const snapshot = snapshots.get(id);
   const image = feed ? feed.image : snapshot;
-  const fresh = feed && feed.image && feed.state !== "paused" && frameAge(feed) <= 3;
+  const fresh = feed && feed.image && !["paused","retrying","queued","connecting"].includes(feed.state) && frameAge(feed) <= 3;
   view.card.className = "camera-card" + (id===expandedCamera ? " camera-expanded" : "") + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
-  view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
-  view.img.hidden = !image;
+  view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : ["retrying","connecting"].includes(feed.state) ? "RECONECTANDO" : feed.image ? "AGUARDANDO" : feed.state === "queued" ? "NA FILA" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
+  view.img.hidden = !image || (!!feed?.mjpeg && !feed.sequence);
   view.placeholder.hidden = !!image;
-  if (image && view.img.src !== image) view.img.src = image;
+  if(feed?.mjpeg&&feed.onTransportError)view.img.onerror=feed.onTransportError;
+  if (image && (view.img.getAttribute?.('src')||view.img.src) !== image) view.img.src = image;
   view.img.onload = () => {
+    if(feed?.mjpeg)feed.transportFailures=0;
     if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
   };
   view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
+  if(id.startsWith('webcam:')&&!webcamEnabled.has(id)){
+    view.badge.textContent='DESLIGADA';view.caption.textContent='Webcam do servidor desativada. Clique em Ativar webcam para iniciar.';
+  }
   if (saving?.paused) {
     view.badge.textContent = "ECONOMIA · PAUSADA";
     view.caption.textContent = `Último quadro · câmera desconectada. Próxima abertura: ${new Date(saving.nextAt).toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"})}.`;
@@ -166,13 +184,14 @@ function paint(id) {
   view.overlay.textContent = (saving?.paused || feed?.state === "paused") ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
+  const oldViews=views;
   $("cameras").className = "camera-grid" + (mosaicLimit === 12 ? " mosaic-12" : "");
   $("cameras").replaceChildren();
   views = new Map();
   cameraControls = [];
   const devices = currentStatus?.devices || [];
   const search = ($("camera-search").value || "").trim().toLocaleLowerCase("pt-BR");
-  const selected = devices.slice(0, mosaicLimit).filter((camera) => camera.name.toLocaleLowerCase("pt-BR").includes(search));
+  const selected = [...devices.filter(c=>!c.local).slice(0,mosaicLimit),...devices.filter(c=>c.local)].filter((camera) => camera.name.toLocaleLowerCase("pt-BR").includes(search));
   $("empty").hidden = devices.length > 0;
   for (const camera of selected) {
     const card = element("article", "camera-card");
@@ -186,7 +205,7 @@ function render() {
     const media = element("div", "camera-media");
     const placeholder = element("div", "camera-placeholder");
     placeholder.append(element("strong", "", "▣"), element("p", "", "Aguardando visualização"));
-    const img = element("img");
+    const img = oldViews.get(camera.id)?.img || element("img");
     img.alt = `Câmera ${camera.name}`;
     img.title = "Quadro recebido inteiro, sem zoom. Se faltar uma área, compare os perfis SD original, HD e FHD com o aplicativo Yoosee.";
     img.hidden = true;
@@ -198,9 +217,9 @@ function render() {
       expandedCamera=camera.id;
       expandedPrevious=qualities.get(camera.id)||"balanced";
       // Keep the 4G source selection: enlarging must not silently increase its data use.
-      qualities.set(camera.id,preferredEconomy.has(camera.id)?expandedPrevious:"fhd");
+      qualities.set(camera.id,expandedPrevious);
       document.documentElement?.requestFullscreen?.().catch(()=>{});
-      await stopOne(camera.id,true);await startOne(camera.id);render();
+      if(!feeds.has(camera.id))await startOne(camera.id);else render();
     });
     if(expandedCamera===camera.id){expand.textContent="✕";expand.title="Voltar ao mosaico";}
     media.append(placeholder, img, overlay, expand);
@@ -219,10 +238,10 @@ function render() {
     const group = element("div", "control-group");
     const capture = element("button", "secondary", "Capturar");
     capture.addEventListener("click", () => action("/api/video/snapshot", { device_id: camera.id }));
-    const watch = element("button", "play", "Assistir");
+    const watch = element("button", "play", camera.local?"Ativar webcam":"Assistir");
     watch.addEventListener("click", () => watchCamera(camera.id));
-    const stop = element("button", "quiet stop", "Parar");
-    stop.addEventListener("click", () => stopOne(camera.id));
+    const stop = element("button", "quiet stop", camera.local?"Desativar webcam":"Parar");
+    stop.addEventListener("click", () => camera.local?toggleWebcam(camera.id):stopOne(camera.id));
     group.append(watch, stop, capture);
     const saver = element("button", "data-saver" + (preferredEconomy.has(camera.id) ? " selected" : ""), "Economia de dados");
     saver.setAttribute?.("aria-pressed", String(preferredEconomy.has(camera.id)));
@@ -241,6 +260,7 @@ function render() {
     $("cameras").append(card);
   }
   if (devices.length && !selected.length) $("cameras").append(element("p", "hint", "Nenhuma câmera encontrada para esta busca."));
+  for(const [id,old] of oldViews)if(!views.has(id)&&feeds.get(id)?.mjpeg)old.img.removeAttribute?.('src');
   buttons();
 }
 async function readResponse(response) {
@@ -267,10 +287,11 @@ async function status() {
   const wasAuthenticated = currentStatus?.authenticated;
   currentStatus = data;
   let restored = false;
-  if (!data.authenticated) { preferenceKey=null; preferredEconomy.clear(); detectionIds.clear(); }
+  if (!data.authenticated) { preferenceKey=null; preferredEconomy.clear(); detectionIds.clear();webcamEnabled.clear(); }
   if (data.authenticated && data.preferences_key && data.preferences_key !== preferenceKey) {
     preferenceKey=data.preferences_key;
-    preferredEconomy.clear(); detectionIds.clear();
+    preferredEconomy.clear(); detectionIds.clear();webcamEnabled.clear();
+    for(const id of data.preferences?.webcam_enabled_ids||[])webcamEnabled.add(id);
     for (const id of data.preferences?.detection_ids || []) detectionIds.add(id);
     for (const id of data.preferences?.economy_ids || []) preferredEconomy.add(id);
     mosaicLimit=data.preferences?.mosaic_limit === 12 ? 12 : 8;
@@ -292,6 +313,7 @@ async function status() {
   if (data.detection_message) $("snapshot-status").textContent += " " + data.detection_message;
   $("mosaic-label").textContent = `MOSAICO · ATÉ ${mosaicLimit} CÂMERAS`;
   render();
+  $('webcam-status').textContent=data.authenticated?(data.webcam_message||''):'';
   const monitoring=data.background_status;
   $("background-status").textContent=data.authenticated && data.server_monitoring
     ? `Monitoramento em segundo plano: ${monitoring?.configured || 0} câmera(s) habilitada(s), ${monitoring?.paused || 0} em pausa. Fechar a página não interrompe os registros.` : "";
@@ -312,8 +334,30 @@ async function post(path, body, keepalive = false) {
     throw error;
   }
 }
+function freezeFeed(id){
+  const feed=feeds.get(id),img=views.get(id)?.img;
+  if(!feed?.mjpeg)return feed?.image||null;
+  try{
+    if(!img?.naturalWidth)return null;
+    const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+    canvas.getContext('2d').drawImage(img,0,0);return canvas.toDataURL('image/jpeg',.85);
+  }catch{return null;}
+}
+function continuousSource(feed){
+  feed.transportOpen=true;feed.image=`/api/video/mjpeg?device_id=${encodeURIComponent(feed.id)}&stream_id=${encodeURIComponent(feed.handle)}&t=${Date.now()}`;
+  const img=views.get(feed.id)?.img;
+  feed.onTransportError=()=>{
+    if(feeds.get(feed.id)!==feed||!feed.mjpeg||!feed.transportOpen||!views.has(feed.id))return;
+    feed.transportOpen=false;
+    feed.transportFailures=(feed.transportFailures||0)+1;
+    if(feed.transportFailures>=5){feed.mjpeg=false;feed.image=null;paint(feed.id);return;}
+    feed.transportTimer=setTimeout(()=>{if(feeds.get(feed.id)===feed&&feed.state!=='paused'&&!feed.transportOpen){continuousSource(feed);paint(feed.id);}},1500);
+  };
+  if(img)img.onerror=feed.onTransportError;
+}
 function cancelOne(id) {
   const feed = feeds.get(id);
+  if(feed?.mjpeg){const still=freezeFeed(id);if(still)snapshots.set(id,still);else snapshots.delete(id);feed.transportOpen=false;clearTimeout(feed.transportTimer);views.get(id)?.img.removeAttribute?.('src');}
   if (feed?.timer !== null && feed?.timer !== undefined) clearTimeout(feed.timer);
   feeds.delete(id);
   return feed;
@@ -372,6 +416,9 @@ async function startOne(id, mosaic = false, retry = false) {
     const effective=attempts>=4?'balanced':attempts>=2&&chosen==='fhd'?'hd':chosen;
     const data = await post("/api/video/start", { device_id: id, mosaic, quality: effective });
     feed.handle = data.stream_id;
+    feed.mjpeg=!!currentStatus?.mjpeg_available;
+    if(feed.mjpeg)continuousSource(feed);
+    paint(id);
     if (feeds.get(id) !== feed) {
       await post("/api/video/stop", { device_id: id, stream_id: feed.handle });
       return;
@@ -392,7 +439,7 @@ async function startAll() {
   setFocus(true);
   buttons();
   $("message").textContent = "Abrindo o mosaico. As câmeras conectam de forma independente…";
-  for (const camera of (currentStatus?.devices || []).slice(0, mosaicLimit)) {
+  for (const camera of [...(currentStatus?.devices||[]).filter(c=>!c.local).slice(0,mosaicLimit),...(currentStatus?.devices||[]).filter(c=>c.local&&webcamEnabled.has(c.id))]) {
     if (token !== batchToken) break;
     if (serverManaged(camera.id)) { await startOne(camera.id,true); continue; }
     if (preferredEconomy.has(camera.id)) {
@@ -406,12 +453,18 @@ async function startAll() {
 async function pollFeed(feed) {
   if (feeds.get(feed.id) !== feed) return;
   try {
-    const data = await post("/api/video/frame", { device_id: feed.id, stream_id: feed.handle, after: feed.sequence });
+    const data = await post("/api/video/frame", { device_id: feed.id, stream_id: feed.handle, after: feed.sequence, ...(feed.mjpeg?{metadata_only:true}:{}) });
     if (feeds.get(feed.id) !== feed) return;
     if (data.device_id !== feed.id) throw new Error("A câmera da transmissão mudou. Inicie novamente.");
-    if (typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) {
+    if (!feed.mjpeg && typeof data.image === "string" && data.image.startsWith("data:image/jpeg;base64,")) {
       feed.image = data.image; feed.sequence = data.sequence;
       if (desired.has(feed.id)) desired.get(feed.id).attempts = 0;
+    }
+    if(feed.mjpeg){
+      feed.sequence=data.sequence;
+      if(data.state==='receiving'&&data.age_seconds!=null&&data.age_seconds<=3&&desired.has(feed.id))desired.get(feed.id).attempts=0;
+      if(data.state==='paused'&&feed.transportOpen){const still=freezeFeed(feed.id);feed.transportOpen=false;feed.image=still;clearTimeout(feed.transportTimer);}
+      else if(data.state==='receiving'&&!feed.transportOpen){continuousSource(feed);}
     }
     feed.health = data.health;
     feed.state = data.state;
@@ -419,10 +472,12 @@ async function pollFeed(feed) {
     feed.updatedAt = Date.now();
     feed.caption = data.state === "paused" ? `${feed.image ? "Último quadro · conexão fechada" : "Câmera pausada para economizar dados"}. Nova janela em ${Math.ceil((data.next_open_seconds || 0)/60)} min. Agendamento mantido pelo servidor.`
       : data.state === "retrying" ? `${data.message || "Reconectando a câmera."} Nova tentativa em ${data.retry_seconds || 0}s pelo servidor.`
+      : data.state === "queued" ? "Na fila de conexão. A abertura é limitada para proteger o servidor."
+      : data.state === "connecting" ? "Reconectando a fonte. O último quadro não é ao vivo."
       : data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
       : feed.image ? `Recebendo imagens · ${data.health?.fps ?? "—"} fps · ${data.health?.resolution?.join(" × ") || "resolução em leitura"} · sem áudio.${data.health?.detection?.error ? " Falha na análise; nova tentativa automática." : data.health?.detection?.age_seconds !== undefined ? " Análise há "+data.health.detection.age_seconds+"s · "+data.health.detection.people+" pessoa(s)." : ""}` : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
     paint(feed.id); buttons();
-    feed.timer = setTimeout(() => pollFeed(feed), data.state === "paused" ? 1000 : data.image ? 70 : 100);
+    feed.timer = setTimeout(() => pollFeed(feed), feed.mjpeg ? 1500 : data.state === "paused" ? 1000 : data.image ? 100 : 200);
   } catch (error) {
     if (feeds.get(feed.id) !== feed) return;
     cancelOne(feed.id); errors.set(feed.id, error.message);
@@ -544,7 +599,7 @@ async function closeExpanded(){
   const id=expandedCamera;if(!id)return;
   expandedCamera=null;qualities.set(id,expandedPrevious||'balanced');expandedPrevious=null;
   if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
-  if(feeds.has(id)){await stopOne(id,true);await startOne(id,true);}else render();
+  render();
 }
 document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement&&expandedCamera)closeExpanded();});
 document.addEventListener?.('keydown',event=>{if(event.key==='Escape'&&expandedCamera)closeExpanded();});

@@ -13,13 +13,14 @@ import threading
 import time
 
 import video
+import webcam
 from yoosee import IntegrationError
 
 MAX_JPEG = 8 * 1024 * 1024
 IDLE_TIMEOUT = 20
-FIRST_FRAME_TIMEOUT = 45
+FIRST_FRAME_TIMEOUT = 30
 STALE_TIMEOUT = 8
-STARTUP_GATE = threading.BoundedSemaphore(2)
+STARTUP_GATE = threading.BoundedSemaphore(3)
 
 
 def jpeg_frames(pipe):
@@ -49,17 +50,20 @@ def jpeg_frames(pipe):
 
 
 class LiveStream:
-    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0):
-        ready, reason = video.readiness()
-        if not ready:
-            raise IntegrationError('video_configuration', reason)
-        values = (account.access_id, account.access_token, device_id)
-        if any(not isinstance(v, str) or not v or len(v) > 8190 or any(c in v for c in '\n\r\0') for v in values):
-            raise IntegrationError('protocol', 'Dados de sessão incompatíveis com a transmissão.')
+    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0,local_device=None):
+        self.local_device=webcam.device(device_id) if local_device is not None else None
+        values=()
+        if self.local_device is None:
+            ready,reason=video.readiness()
+            if not ready:raise IntegrationError('video_configuration',reason)
+            values=(account.access_id,account.access_token,device_id)
+            if any(not isinstance(v,str) or not v or len(v)>8190 or any(c in v for c in '\n\r\0') for v in values):
+                raise IntegrationError('protocol','Dados de sessão incompatíveis com a transmissão.')
         if preview_width not in (0, 640, 960):
             raise IntegrationError('input', 'Resolução de prévia inválida.')
         if type(definition) is not int or definition not in (0, 1, 2):
             raise IntegrationError('input', 'Definição de vídeo inválida.')
+        self.managed_watchdog = True
         self.definition = definition
         self.preview_width = preview_width
         self.startup_gate = STARTUP_GATE
@@ -113,6 +117,8 @@ class LiveStream:
                 self._fail('authentication', 'A sessão expirou. Entre novamente para continuar.')
             elif not self.background and now - last_seen > IDLE_TIMEOUT:
                 self._fail('video_idle', 'A transmissão foi encerrada por falta de visualização.')
+            elif self.connect_started is None and now-self.started>45:
+                self._fail('video_timeout','A fila de abertura expirou; preparando nova tentativa.')
             elif last_frame is None and self.connect_started is not None and now - self.connect_started > FIRST_FRAME_TIMEOUT:
                 self._fail('video_timeout', 'A câmera não entregou o primeiro quadro no tempo esperado.')
             elif last_frame is not None and now - last_frame > STALE_TIMEOUT:
@@ -172,7 +178,29 @@ class LiveStream:
             return IntegrationError('video_decode', f'O conversor de imagem encerrou com código {encoder_code}. A sessão da conta permanece conectada.')
         return IntegrationError('video_decode', 'A transmissão de imagens foi interrompida antes de concluir a leitura dos quadros.')
 
+    def _local_run(self):
+        try:
+            self.connect_started=time.monotonic()
+            ffmpeg=shutil.which('ffmpeg')
+            if not ffmpeg:raise IntegrationError('video_configuration','Instale FFmpeg no servidor.')
+            encoder=self._launch([ffmpeg,'-v','error','-threads','1','-filter_threads','1','-f','v4l2','-framerate','10',
+                '-video_size','640x480','-i',self.local_device,'-an','-vf','fps=10','-threads','1','-q:v','4','-f','image2pipe','-vcodec','mjpeg','-flush_packets','1','pipe:1'],stdout=subprocess.PIPE)
+            for image in jpeg_frames(encoder.stdout):
+                if self.stopped.is_set():break
+                with self.condition:
+                    self.image=image;self.sequence+=1;self.last_frame=time.monotonic();self.frame_times.append(self.last_frame)
+                    self.resolution=health.jpeg_size(image)
+                    if getattr(self,'report_detect',False):self.history.append(self.last_frame,image)
+                    else:self.history.clear()
+                    self.condition.notify_all()
+            if not self.stopped.is_set():self._fail('video_native','Webcam desconectada ou formato de captura não suportado.')
+        except Exception:
+            if not self.stopped.is_set():self._fail('video_native','Não foi possível abrir a webcam no Linux. Confira permissão e se outro programa está usando a câmera.')
+        finally:
+            self.stop(wait=False);self._reap();self.stopped.set();self._on_close();self.done.set()
+
     def _run(self):
+        if self.local_device is not None:return self._local_run()
         try:
             if not self._enter_startup():
                 return
@@ -273,6 +301,13 @@ class LiveStream:
                     pass
         if wait and self.worker.ident is not None and threading.current_thread() is not self.worker:
             self.done.wait(3)
+
+    def jpeg_frame(self, after):
+        with self.condition:
+            self.last_seen=time.monotonic()
+            if self.error:raise self.error
+            if self.stopped.is_set():raise IntegrationError('video_stopped','Transmissão encerrada.')
+            return self.image if self.sequence>after else None,self.sequence
 
     def frame(self, after, wait=True):
         if not isinstance(after, int) or isinstance(after, bool) or after < 0:

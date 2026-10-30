@@ -10,7 +10,6 @@ import threading
 import time
 
 from clips import RecordingService
-from faces import FaceStore, FaceEngine, readiness as face_readiness
 
 ROOT = Path(__file__).parent / '.local' / 'reports'
 MODEL_ROOT = Path(__file__).parent / '.local' / 'detection'
@@ -48,7 +47,7 @@ class EventStore:
         conn.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, kind TEXT NOT NULL, confidence REAL, plate TEXT, boxes TEXT NOT NULL, image BLOB)')
         conn.execute('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, filename TEXT NOT NULL, status TEXT NOT NULL, duration REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT "")')
         columns={row[1] for row in conn.execute('PRAGMA table_info(videos)')}
-        for column,definition in [('source',"TEXT NOT NULL DEFAULT 'live'"),('pre_roll','REAL NOT NULL DEFAULT 0'),('archive_status',"TEXT NOT NULL DEFAULT ''")]:
+        for column,definition in [('source',"TEXT NOT NULL DEFAULT 'live'"),('pre_roll','REAL NOT NULL DEFAULT 0'),('archive_status',"TEXT NOT NULL DEFAULT ''"),('frame_count','INTEGER NOT NULL DEFAULT 0'),('capture_fps','REAL NOT NULL DEFAULT 0'),('max_gap','REAL NOT NULL DEFAULT 0')]:
             if column not in columns:
                 try:conn.execute('ALTER TABLE videos ADD COLUMN '+column+' '+definition)
                 except sqlite3.OperationalError:
@@ -118,13 +117,13 @@ class EventStore:
         with self.guard,self.connect() as db:
             db.execute('UPDATE videos SET status=?,duration=?,reason=? WHERE id=?',(status,duration,reason,record_id))
 
-    def video_details(self, record_id, pre_roll=0, source='live', archive_status=''):
+    def video_details(self, record_id, pre_roll=0, source='live', archive_status='',frame_count=0,capture_fps=0,max_gap=0):
         with self.guard,self.connect() as db:
-            db.execute('UPDATE videos SET pre_roll=?,source=?,archive_status=? WHERE id=?',(pre_roll,source,archive_status,record_id))
+            db.execute('UPDATE videos SET pre_roll=?,source=?,archive_status=?,frame_count=?,capture_fps=?,max_gap=? WHERE id=?',(pre_roll,source,archive_status,frame_count,capture_fps,max_gap,record_id))
 
     def videos(self, owner, before=None):
         with self.guard,self.connect() as db:
-            rows=db.execute('SELECT id,camera,name,created,status,duration,reason,source,pre_roll,archive_status FROM videos WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
+            rows=db.execute('SELECT id,camera,name,created,status,duration,reason,source,pre_roll,archive_status,frame_count,capture_fps,max_gap FROM videos WHERE owner=? AND id<? ORDER BY id DESC LIMIT 24',
                             (owner,before or 9223372036854775807)).fetchall()
             return [dict(row) for row in rows]
 
@@ -135,6 +134,13 @@ class EventStore:
             return path if path and path.is_file() else None
 
     def recover_recordings(self):
+        # Remove only abandoned private capture directories, never user media.
+        import shutil
+        for path in (self.root/'videos').glob('capture-*'):
+            try:
+                if not path.is_symlink() and path.is_dir() and time.time()-path.stat().st_mtime>900:
+                    shutil.rmtree(path)
+            except OSError:pass
         with self.guard,self.connect() as db:
             rows=db.execute("SELECT filename FROM videos WHERE status='recording'").fetchall()
             for row in rows:
@@ -190,11 +196,6 @@ class ReportMonitor:
         self.last={}
         self.saved={}
         self.presence={}
-        self.face_last={}
-        self.faces=FaceStore(self.store)
-        self.face_ready,self.face_message=face_readiness()
-        self.face_engine=None
-        self.face_diagnostics={}
         self.ready,self.message=readiness()
         self.recordings=RecordingService(self.store)
 
@@ -224,9 +225,7 @@ class ReportMonitor:
         matches=[row for row in rows if row['kind']=='person']
         stream.detection_health={'people':len(matches),'analysis_ms':round((time.monotonic()-started)*1000),
                                  'analyzed_at':time.monotonic(),'error':False}
-        if not matches:
-            self.analyze_faces(stream,frame,[],now)
-            return
+        if not matches:return
         previous=self.presence.get(key,0)
         self.presence[key]=now
         self.recordings.trigger(stream)
@@ -238,46 +237,6 @@ class ReportMonitor:
             self.saved[event_key]=now
             alerts=getattr(self.server,'telegram',None)
             if alerts:alerts.enqueue(owner,stream.report_name,jpeg,max(row['confidence'] for row in matches))
-        self.analyze_faces(stream,frame,[row['box'] for row in matches],now)
-
-    def analyze_faces(self, stream, frame, boxes, now):
-        owner=stream.report_owner;key=(owner,stream.device_id)
-        if frame is None or now-self.face_last.get(key,0)<2:return
-        self.face_last[key]=now
-        if not self.faces.enabled(owner):reason='Captura facial desativada nesta conta.';captured=0
-        elif not self.face_ready:reason=self.face_message;captured=0
-        else:
-            captured=0
-            try:
-                if self.face_engine is None:self.face_engine=FaceEngine()
-                # Faces may be visible even when the object detector missed the body.
-                for crop,feature in self.face_engine.extract(frame,boxes or [[0,0,1,1]]):
-                    if not getattr(stream,'report_detect',False) or not self.faces.enabled(owner):break
-                    if self.faces.add(owner,stream.device_id,stream.report_name,crop,feature):captured+=1
-                self.face_message='Reconhecimento local disponível. Confira as análises por câmera abaixo.'
-                reason=(f'{captured} rosto(s) registrado(s).' if captured else getattr(self.face_engine,'last_reason','Nenhum rosto utilizável; recortes repetidos são agrupados.'))
-            except Exception:
-                reason='Falha na análise facial. Confira python3 configure_faces.py e OpenCV 4.8 ou mais recente.'
-                self.face_message=reason
-                self.face_ready=False;self.face_engine=None
-        with self.guard:
-            self.face_diagnostics[key]={'camera_id':stream.device_id,'camera_name':stream.report_name,
-                'reason':reason,'captured':captured,'checked_at':now}
-            self.face_diagnostics={k:v for k,v in self.face_diagnostics.items() if now-v['checked_at']<3600}
-
-    def face_status(self, owner, devices=(), preferences=None):
-        with self.guard:
-            rows=[dict(camera_id=v['camera_id'],camera_name=v['camera_name'],reason=v['reason'],captured=v['captured'],
-                       age_seconds=round(max(0,time.monotonic()-v['checked_at'])))
-                  for k,v in self.face_diagnostics.items() if k[0]==owner]
-        seen={row['camera_id'] for row in rows}
-        enabled=set((preferences or {}).get('detection_ids',[]))
-        for item in devices:
-            if item['id'] not in seen:
-                reason=('Detectar pessoas está desativado nesta câmera.' if item['id'] not in enabled else
-                        'Aguardando quadros para analisar. Se estiver em Economia, aguarde a próxima janela ativa.')
-                rows.append({'camera_id':item['id'],'camera_name':item['name'],'reason':reason,'captured':0,'age_seconds':0})
-        return rows
 
     def run(self):
         try:
@@ -287,7 +246,6 @@ class ReportMonitor:
             while not self.stopped.wait(.1):
                 if time.monotonic()-last_cleanup>=60:
                     self.store.cleanup();last_cleanup=time.monotonic()
-                    if not self.face_ready:self.face_ready,self.face_message=face_readiness()
                 if detector is None:continue
                 with self.server.stream_guard:streams=list(self.server.active_streams)
                 # Each camera gets one turn; a bad frame must not stop other cameras.
@@ -300,7 +258,6 @@ class ReportMonitor:
                 self.last={k:v for k,v in self.last.items() if v>cutoff}
                 self.saved={k:v for k,v in self.saved.items() if v>cutoff}
                 self.presence={k:v for k,v in self.presence.items() if v>cutoff}
-                self.face_last={k:v for k,v in self.face_last.items() if v>cutoff}
         except Exception:
             self.ready=False
             self.message='Detecção interrompida. Verifique a instalação e o espaço em disco; as câmeras continuam independentes.'

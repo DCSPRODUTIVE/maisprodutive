@@ -94,3 +94,24 @@ class BackgroundTests(unittest.TestCase):
         self.now+=100;self.manager.tick()
         self.assertTrue(self.created[-1].stopped.is_set())
         with self.assertRaises(IntegrationError):self.manager.view('owner','b',640,0)
+
+    def test_independent_watchdog_recovers_stale_source_without_resetting_economy(self):
+        self.configure();self.manager.tick()
+        first=self.created[0];first.managed_watchdog=True
+        self.now+=9;self.manager.tick()
+        self.assertTrue(first.stopped.is_set())
+        self.now+=2;self.manager.tick()
+        self.assertEqual(len(self.created),2)
+        self.now=1300;self.manager.tick()
+        self.assertTrue(self.created[-1].stopped.is_set())
+        self.assertEqual(self.manager.frame('owner','a',0)['state'],'paused')
+
+    def test_webcam_requires_explicit_enable_and_can_run_without_detection(self):
+        devices=[{'id':'webcam:video0','name':'Servidor','local':True}]
+        self.manager.configure('owner',self.account,devices,{'detection_ids':['webcam:video0']})
+        self.manager.tick();self.assertEqual(len(self.created),0)
+        self.manager.configure('owner',self.account,devices,{'webcam_enabled_ids':['webcam:video0'],'detection_ids':[]})
+        self.manager.tick();self.assertEqual(len(self.created),1)
+        self.assertFalse(self.manager.entries[('owner','webcam:video0')].detection)
+        self.manager.configure('owner',self.account,devices,{'webcam_enabled_ids':[]})
+        self.assertTrue(self.created[0].stopped.is_set())

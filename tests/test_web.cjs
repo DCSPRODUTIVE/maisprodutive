@@ -343,11 +343,11 @@ test("economy choices and mosaic size are saved for the account", async () => {
   const {get,calls}=await setup(null,liveStatus,null,null,liveResponses());
   await cardButton(get,0,'Economia de dados').handlers.click();
   let saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
-  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:8});
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:8,webcam_enabled_ids:[]});
   get('mosaic-limit').value='12';
   await get('mosaic-limit').handlers.change();
   saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
-  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:12});
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:12,webcam_enabled_ids:[]});
 });
 
 
@@ -403,19 +403,20 @@ test("server economy button does not claim a configuration that was not acknowle
   assert.match(get('message').textContent,/confirmar as preferências/);
 });
 
-test('expanding a camera requests full quality and closing restores mosaic quality',async()=>{
+test('expanding a camera preserves its source without reconnecting the mosaic',async()=>{
   const {get,calls}=await setup(null,{authenticated:true,snapshot_ready:true,devices:[{id:'a',name:'Entrada'}]},null,null,{
     '/api/video/start':{ok:true,json:async()=>({device_id:'a',stream_id:'handle'})},
     '/api/video/stop':{ok:true,json:async()=>({})}
   });
   await descendants(get('cameras')).find(e=>e.className==='camera-expand').handlers.click();
   let starts=calls.filter(c=>c.url==='/api/video/start');
-  assert.equal(JSON.parse(starts.at(-1).options.body).quality,'fhd');
+  assert.equal(JSON.parse(starts.at(-1).options.body).quality,'balanced');
   assert.ok(descendants(get('cameras')).some(e=>e.className?.includes('camera-expanded')));
   await descendants(get('cameras')).find(e=>e.className==='camera-expand').handlers.click();
   starts=calls.filter(c=>c.url==='/api/video/start');
   assert.equal(JSON.parse(starts.at(-1).options.body).quality,'balanced');
-  assert.equal(JSON.parse(starts.at(-1).options.body).mosaic,true);
+  assert.equal(starts.length,1);
+  assert.equal(calls.filter(c=>c.url==='/api/video/stop').length,0);
 });
 
 test('camera health shows measured FPS and person analysis without claiming the target rate',async()=>{
@@ -427,4 +428,30 @@ test('camera health shows measured FPS and person analysis without claiming the 
   await runTimer();
   const caption=descendants(get('cameras')).find(e=>e.className==='camera-caption').textContent;
   assert.match(caption,/7.8 fps/);assert.match(caption,/1280 × 720/);assert.match(caption,/1 pessoa/);
+});
+
+test('continuous MJPEG keeps its image element on layout changes and requests metadata only', async()=>{
+  const {get,calls,runTimer}=await setup(null,{...liveStatus,mjpeg_available:true},null,null,liveResponses());
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  const image=descendants(get('cameras').children[0]).find(el=>el.tagName==='img');
+  assert.match(image.src,/^\/api\/video\/mjpeg\?/);
+  const request=calls.find(c=>c.url==='/api/video/frame');
+  assert.equal(JSON.parse(request.options.body).metadata_only,true);
+  get('camera-search').value='Entrada';get('camera-search').handlers.input();
+  assert.equal(descendants(get('cameras').children[0]).find(el=>el.tagName==='img'),image);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,1);
+});
+
+test('server webcam starts disabled and explicit activation persists its enable flag',async()=>{
+  const status={...liveStatus,webcam_available:true,server_monitoring:true,devices:[{id:'webcam:video0',name:'Webcam',local:true}]};
+  const {get,calls}=await setup(null,status,null,null,liveResponses());
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,0);
+  assert.equal(cardButton(get,0,'Detectar pessoas').disabled,true);
+  await cardButton(get,0,'Ativar webcam').handlers.click();
+  const save=calls.find(c=>c.url==='/api/preferences');
+  assert.deepEqual(JSON.parse(save.options.body).webcam_enabled_ids,['webcam:video0']);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,1);
+  await cardButton(get,0,'Desativar webcam').handlers.click();
+  const saves=calls.filter(c=>c.url==='/api/preferences');
+  assert.deepEqual(JSON.parse(saves.at(-1).options.body).webcam_enabled_ids,[]);
 });

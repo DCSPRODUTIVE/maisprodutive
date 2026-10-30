@@ -1,26 +1,21 @@
-let csrf = "", before = null, loading = false, view = location.hash==="#faces" ? "faces" : location.hash==="#videos" ? "videos" : "photos";
+let csrf = "", before = null, loading = false, view = location.hash==="#videos" ? "videos" : "photos";
 const $ = id => document.getElementById(id);
 function node(tag, text, cls) { const el=document.createElement(tag); if(text)el.textContent=text;if(cls)el.className=cls;return el; }
 async function load(reset=false) {
-  if(loading)return;$('faces-settings').hidden=view!=='faces';loading=true;$("reload-reports").disabled=true;
+  if(loading)return;loading=true;$("reload-reports").disabled=true;
   try {
     if(reset){before=null;$("report-list").replaceChildren();}
     const sessionResponse=await fetch('/api/status',{cache:'no-store'});
     if(sessionResponse.status===401){window.location.replace('/access');return;}
     const session=await sessionResponse.json();csrf=session.csrf;
+    const select=$('card-camera');const previous=select.value;select.replaceChildren();
+    for(const camera of session.devices||[]){if(camera.local)continue;const option=node('option',camera.name);option.value=camera.id;select.append(option);}
+    if(previous)select.value=previous;
     if(!session.authenticated)throw new Error('Abra o painel e entre na sua conta para ver os registros.');
-    const response=await fetch(view==='faces'?'/api/faces/list':view==='videos'?'/api/reports/videos':'/api/reports',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({before})});
+    const response=await fetch(view==='videos'?'/api/reports/videos':'/api/reports',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({before})});
     const data=await response.json();if(!response.ok)throw new Error(data.message);
     $("report-status").textContent=data.message;
-    $("faces-settings").hidden=view!=='faces';
-    if(view==='faces'){
-      $("faces-enabled").checked=data.enabled;$("faces-status").textContent=(data.enabled?'Captura ativada. ':'Captura desativada. ')+data.message;
-      $('faces-diagnostics').replaceChildren();
-      for(const item of data.diagnostics||[])$('faces-diagnostics').append(node('p',`${item.camera_name}: ${item.reason} (há ${item.age_seconds}s)`));
-      if(!(data.diagnostics||[]).length)$('faces-diagnostics').append(node('p','Ainda sem análise facial. Ative a captura, habilite Detectar pessoas na câmera e aguarde uma janela ativa de monitoramento.'));
-    }
     for(const event of data.events){
-      if(view==='faces'){renderFace(event);before=event.id;continue;}
       const card=node('article',null,'report-card');
       if(view==='videos'){
         if(event.status==='ready'||event.status==='partial'){
@@ -37,12 +32,16 @@ async function load(reset=false) {
         card.append(media);
       }
       const info=node('div',null,'report-info');
-      info.append(node('h2',view==='videos'?'Vídeo · Pessoa detectada':'Pessoa detectada'));
+      info.append(node('h2',view==='videos'?(['sd_requested','sd_backup'].includes(event.source)?'Backup do cartão':'Vídeo registrado'):'Pessoa detectada'));
       if(view==='videos'){
         const label=event.status==='recording'?'Gravando · até 2 minutos':event.status==='failed'?'Não foi possível gravar':`${Math.round(event.duration)} segundos · ${event.status==='partial'?'trecho parcial':'concluído'} · sem áudio`;
         info.append(node('p',label));
-        info.append(node('p',event.source==='sd'?`Origem: cartão da câmera · ${event.pre_roll||0}s anteriores confirmados`:`Origem: gravação local · ${event.pre_roll||0}s anteriores disponíveis`));
-        const archiveLabels={disk_space:'Sem espaço suficiente para preparar o vídeo do cartão. Vídeo local preservado.',adapter_update_required:'Atualize o adaptador com configure_video.py --update para tentar consultar o cartão.',no_recording:'A câmera não entregou gravação nesse horário; confira cartão e gravação no app Yoosee. Vídeo local preservado.',timestamp_unverified:'Não foi possível confirmar o horário da gravação do cartão. Vídeo local preservado.',fetching:'Buscando a gravação do cartão; o vídeo local continua disponível.',unavailable:'Cartão indisponível ou exportação incompatível. Vídeo local preservado.',busy:'Sem conexão livre para consultar o cartão. Vídeo local preservado.',cooldown:'Consulta ao cartão em espera após falha anterior.',economy_or_disabled:'Consulta ao cartão não iniciada para respeitar economia ou detecção desativada.'};
+        if(event.status==='ready'||event.status==='partial'){
+          const download=node('a','Baixar MP4','reports-link');download.href='/api/reports/download/'+event.id;download.download='DCS-'+event.id+'.mp4';info.append(download);
+        }
+        if(event.source==='live'&&event.frame_count)info.append(node('p',`${event.frame_count} quadros distintos · ${event.capture_fps||0} fps recebidos · maior intervalo: ${event.max_gap||0}s`));
+        info.append(node('p',event.source==='sd_backup'?'Origem: backup do cartão da câmera':event.source==='sd_requested'?'Origem: solicitação de backup no cartão':event.source==='sd'?`Origem: cartão da câmera · ${event.pre_roll||0}s anteriores confirmados`:`Origem: gravação local · ${event.pre_roll||0}s anteriores disponíveis`));
+        const archiveLabels={queued:'Solicitação na fila.',list_unavailable:'O SDK não respondeu à consulta do cartão.',seek_unavailable:'A câmera não aceitou posicionar a reprodução no horário pedido.',playback_unavailable:'O cartão informou um arquivo, mas não entregou imagens na reprodução.',disk_space:'Sem espaço suficiente para preparar o vídeo do cartão. Vídeo local preservado.',adapter_update_required:'Atualize o adaptador com configure_video.py --update para tentar consultar o cartão.',no_recording:'A câmera não entregou gravação nesse horário; confira cartão e gravação no app Yoosee. Vídeo local preservado.',timestamp_unverified:'Não foi possível confirmar o horário da gravação do cartão. Vídeo local preservado.',fetching:'Buscando a gravação do cartão; o vídeo local continua disponível.',unavailable:'Cartão indisponível ou exportação incompatível. Vídeo local preservado.',busy:'Sem conexão livre para consultar o cartão. Vídeo local preservado.',cooldown:'Consulta ao cartão em espera após falha anterior.',economy_or_disabled:'Consulta ao cartão não iniciada para respeitar economia ou detecção desativada.'};
         if(archiveLabels[event.archive_status])info.append(node('p',archiveLabels[event.archive_status]));
         if(event.reason==='disk_space')info.append(node('p','Espaço em disco insuficiente. Libere espaço para novas gravações.'));
       }
@@ -52,30 +51,30 @@ async function load(reset=false) {
     }
     $("older-reports").hidden=data.events.length<24;
     if(reset&&!data.events.length)$("report-list").append(node('p','Ainda não há registros nesta aba. Ative Detectar pessoas nas câmeras desejadas.'));
-  }catch(error){$("report-status").textContent=error.message;if(view==='faces')$("faces-status").textContent=error.message+' Se atualizou o projeto, reinicie o serviço DCS e recarregue a página.';}
+  }catch(error){$("report-status").textContent=error.message;}
   finally{loading=false;$("reload-reports").disabled=false;}
 }
 $("reload-reports").addEventListener('click',()=>load(true));
 $("older-reports").addEventListener('click',()=>load());
 load(true);
 
-for(const [id,tab] of [['photos-tab','photos'],['videos-tab','videos'],['faces-tab','faces']]) $(id).addEventListener('click',()=>{
+for(const [id,tab] of [['photos-tab','photos'],['videos-tab','videos']]) $(id).addEventListener('click',()=>{
   if(loading)return;view=tab;
   $('photos-tab').className=view==='photos'?'selected':'secondary';
   $('videos-tab').className=view==='videos'?'selected':'secondary';
-  $('faces-tab').className=view==='faces'?'selected':'secondary';
   location.hash=view;
   load(true);
 });
 
-async function settingsRequest(action, body={}) {
-  const sessionResponse=await fetch('/api/status',{cache:'no-store'});
-  if(sessionResponse.status===401){window.location.replace('/access');throw new Error('Entre no sistema.');}
-  const session=await sessionResponse.json();
-  if(!session.authenticated)throw new Error('Abra Câmeras e entre na conta Yoosee.');
-  const response=await fetch((action.startsWith('faces/')?'/api/'+action:'/api/telegram/'+action),{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrf},body:JSON.stringify(body)});
-  const data=await response.json();if(!response.ok)throw new Error(data.message||'Não foi possível configurar Telegram.');
-  return data;
+async function settingsRequest(action,body={}){
+  if(!csrf){
+    const response=await fetch('/api/status',{cache:'no-store'});
+    if(response.status===401){window.location.replace('/access');throw new Error('Entre no sistema.');}
+    const session=await response.json();if(!session.authenticated)throw new Error('Abra Câmeras e entre na conta.');csrf=session.csrf;
+  }
+  const path=action.startsWith('card/')?'/api/'+action:'/api/telegram/'+action;
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});
+  const data=await response.json();if(!response.ok)throw new Error(data.message||'Não foi possível completar a solicitação.');return data;
 }
 async function telegramStatus() {
   try{
@@ -102,28 +101,39 @@ $('telegram-test').addEventListener('click',async()=>{
 $('telegram-refresh').addEventListener('click',telegramStatus);
 $('photos-tab').className=view==='photos'?'selected':'secondary';
 $('videos-tab').className=view==='videos'?'selected':'secondary';
-$('faces-tab').className=view==='faces'?'selected':'secondary';
 telegramStatus();
 
-function renderFace(event){
-  const card=node('article',null,'report-card face-card');
-  const img=node('img');img.src='/api/faces/image/'+event.id;img.alt='Rosto capturado';img.loading='lazy';card.append(img);
-  const info=node('div',null,'report-info');
-  const label=event.label?'Cadastrado: '+event.label:event.state==='known'?'Possível conhecido: '+event.name:'Pessoa não reconhecida';
-  info.append(node('h2',label),node('p',event.camera_name+' · '+new Date(event.created*1000).toLocaleString('pt-BR')));
-  if(event.state==='known')info.append(node('p','Sugestão por semelhança facial; confirme antes de cadastrar.'));
-  const form=node('form'),input=node('input');input.type='text';input.maxLength=80;input.value=event.label||'';
-  input.placeholder='Nome da pessoa';input.setAttribute('aria-label','Nome deste rosto');
-  const save=node('button','Salvar nome','secondary'),remove=node('button','Excluir foto','secondary');
-  save.type='submit';remove.type='button';form.append(input,save);info.append(form,remove);card.append(info);$('report-list').append(card);
-  form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await settingsRequest('faces/label',{id:event.id,name:input.value});await load(true);}catch(error){$('report-status').textContent=error.message;}finally{save.disabled=false;}});
-  remove.addEventListener('click',async()=>{remove.disabled=true;try{await settingsRequest('faces/delete',{id:event.id});await load(true);}catch(error){$('report-status').textContent=error.message;}finally{remove.disabled=false;}});
+
+let cardJob=null;
+const cardMessages={queued:'Na fila de consulta ao cartão…',running:'Acessando o cartão da câmera. Isso pode levar alguns minutos.',done:'Solicitação concluída.',busy:'Sem uma conexão livre. Tente novamente após parar outra câmera.',economy_or_disabled:'Sem tempo na janela ativa de Economia. Aguarde outra janela ou desative Economia para esta consulta.',list_unavailable:'A câmera/SDK não respondeu à lista do cartão. Confira se há gravações no aplicativo Yoosee.',no_recording:'Não foi encontrado um arquivo que cubra o início selecionado.',seek_unavailable:'A câmera não aceitou buscar o horário selecionado.',playback_unavailable:'Arquivo listado, mas a câmera não entregou a reprodução.',timestamp_unverified:'O horário da reprodução não pôde ser confirmado. Nenhum vídeo incorreto foi salvo.',adapter_update_required:'Atualize o adaptador com configure_video.py --update e reinicie o servidor.',disk_space:'Espaço insuficiente no servidor.',unavailable:'Não foi possível obter um vídeo válido. Confira o cartão no aplicativo Yoosee.'};
+function localDate(value){return new Date(value-new Date(value).getTimezoneOffset()*60000).toISOString().slice(0,16);}
+$('card-from').value=localDate(Date.now()-15*60000);$('card-to').value=localDate(Date.now()-60000);
+async function cardRequest(action){
+  if(cardJob)return;
+  const start=new Date($('card-from').value).getTime()/1000,end=new Date($('card-to').value).getTime()/1000;
+  try{
+    if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>(action==='list'?3600:125))throw new Error(action==='list'?'Selecione até 1 hora.':'Selecione um trecho de até 2 minutos para backup.');
+    $('card-list').disabled=true;$('card-backup').disabled=true;$('card-results').replaceChildren();
+    const data=await settingsRequest('card/start',{device_id:$('card-camera').value,start,end,action});
+    cardJob=data.job_id;await cardPoll(cardJob,action);
+  }catch(error){$('card-status').textContent=error.message;cardJob=null;$('card-list').disabled=false;$('card-backup').disabled=false;}
 }
-$('faces-save').addEventListener('click',async()=>{
-  try{const data=await settingsRequest('faces/settings',{enabled:$('faces-enabled').checked});$('faces-status').textContent=(data.enabled?'Captura facial ativada. ':'Captura facial desativada. ')+data.message;}
-  catch(error){$('faces-status').textContent=error.message;}
-});
-$('faces-clear').addEventListener('click',async()=>{
-  if(!window.confirm('Apagar todos os recortes e nomes desta conta e desativar a captura facial?'))return;
-  try{await settingsRequest('faces/clear');await load(true);}catch(error){$('faces-status').textContent=error.message;}
-});
+async function cardPoll(key,action){
+  if(cardJob!==key)return;
+  try{
+    const data=await settingsRequest('card/status',{job_id:key});$('card-status').textContent=cardMessages[data.status]||'Falha na solicitação.';
+    if(data.status==='queued'||data.status==='running'){setTimeout(()=>cardPoll(key,action),2000);return;}
+    if(data.status==='done'&&action==='list'){
+      if(!data.records.length)$('card-results').append(node('p','O cartão não retornou gravações nesse intervalo.'));
+      for(const record of data.records){
+        const row=node('div',null,'card-result');row.append(node('p',new Date(record.start*1000).toLocaleString('pt-BR')+' → '+new Date(record.end*1000).toLocaleString('pt-BR')));
+        const choose=node('button','Selecionar trecho de até 2 minutos','secondary');choose.type='button';
+        choose.addEventListener('click',()=>{$('card-from').value=localDate(record.start*1000);$('card-to').value=localDate(Math.min(record.end,record.start+120)*1000);$('card-status').textContent='Trecho selecionado. Clique em Fazer backup do trecho.';});row.append(choose);$('card-results').append(row);
+      }
+    }
+    if(data.status==='done'&&data.record_id){const link=node('a','Baixar backup MP4','reports-link');link.href='/api/reports/download/'+data.record_id;link.download='DCS-backup.mp4';$('card-results').append(link);if(view==='videos')await load(true);}
+  }catch(error){$('card-status').textContent=error.message;}
+  cardJob=null;$('card-list').disabled=false;$('card-backup').disabled=false;
+}
+$('card-form').addEventListener('submit',event=>{event.preventDefault();cardRequest('list');});
+$('card-backup').addEventListener('click',()=>cardRequest('backup'));

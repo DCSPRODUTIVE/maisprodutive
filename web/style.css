@@ -770,15 +770,15 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 .camera-expanded .camera-head {flex-shrink:0;}
 .camera-expanded .camera-controls {flex-shrink:0;}
 .camera-expanded .camera-expand {font-size:22px;background:#142334;}
-.face-settings {background:var(--panel,#111e2a);border:1px solid #294455;border-radius:14px;padding:20px;margin:20px 0;}
-.face-card>img {height:200px;width:100%;object-fit:contain;background:#080e15;}
-.face-card form {display:grid;gap:8px;margin-bottom:12px;}
-.face-card input {width:100%;min-width:0;}
-.face-settings label {display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.5;margin:16px 0;}
-.face-settings input[type="checkbox"] {width:18px;height:18px;flex:0 0 18px;margin-top:2px;}
-.face-settings button {margin-bottom:8px;}
-
 /* Always fit the full decoded frame, including portrait and 4:3 cameras. */
 .camera-media img,.report-image img,.report-card video {object-fit:contain;object-position:center;transform:none;clip-path:none;}
 .camera-media img {max-width:100%;max-height:100%;}
 .report-image {background:#060a0e;}
+
+.card-backup {padding:20px;border:1px solid #294455;border-radius:14px;margin:20px 0;background:#101b26;}
+.card-backup summary {cursor:pointer;font-weight:700;color:#39d9bd;}
+#card-form {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:15px;}
+#card-form input,#card-form select {width:100%;min-width:0;}
+#card-form>div {grid-column:1/-1;}
+.card-result {border-top:1px solid #294455;padding:12px 0;}
+@media(max-width:650px){#card-form{grid-template-columns:1fr;}}

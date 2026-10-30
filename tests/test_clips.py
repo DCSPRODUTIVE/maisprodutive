@@ -50,7 +50,9 @@ class EncoderTests(unittest.TestCase):
             row=store.videos('owner')[0];self.assertEqual(row['status'],'ready');self.assertGreater(row['duration'],1.5)
             path=store.video('owner',row['id']);self.assertIsNotNone(path)
             probe=subprocess.run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=codec_name,avg_frame_rate','-of','csv=p=0',str(path)],capture_output=True,check=True,timeout=5)
-            self.assertEqual(probe.stdout.strip(),b'h264,10/1')
+            self.assertTrue(probe.stdout.strip().startswith(b'h264,'))
+            self.assertEqual(row['frame_count'],1)
+            self.assertLess(row['capture_fps'],2)
             self.assertFalse(list((Path(directory)/'videos').glob('*.part.mp4')))
 
     def test_economy_pause_finishes_a_partial_clip(self):
@@ -83,6 +85,8 @@ class EncoderTests(unittest.TestCase):
                 recorder=Recorder(store,stream,lambda:None);recorder.start();recorder.thread.join(timeout=8)
             row=store.videos('owner')[0]
             self.assertGreater(row['pre_roll'],4.7);self.assertGreater(row['duration'],5.5)
+            self.assertGreater(row['max_gap'],4.7)
+            self.assertLessEqual(row['frame_count'],2)
             path=store.video('owner',row['id'])
             first=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-frames:v','1','-threads','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],capture_output=True,check=True,timeout=5).stdout
             self.assertGreater(first[0],200);self.assertLess(first[2],20)

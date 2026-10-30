@@ -742,3 +742,41 @@ pulado no Python padrão; o conjunto de 15 testes de rostos/Reports passou no
 ambiente com OpenCV. Também passaram 27 testes JavaScript, as verificações Chromium
 e a compilação Windows x64 com avisos tratados como erro. Nenhuma câmera real
 nem conta Telegram foi acessada durante os testes desta atualização.
+
+
+## Revisão de estabilidade e cartão — 30/10/2026
+
+O vídeo fornecido pelo usuário tem H.264 640×360, 453 quadros e duração de 45,3s,
+a 10 FPS nominais. Há mudanças irregulares entre imagens e no relógio sobreposto;
+a taxa nominal não comprova dez imagens novas por segundo. A cena parada também
+não permite atribuir todos os intervalos à rede. A revisão separa captura JPEG de
+codificação e usa os horários monotônicos de chegada para montar uma linha do
+tempo VFR. Isso preserva lacunas, sem reconstruir movimento perdido.
+
+O transporte do painel passa a MJPEG autenticado, compartilhando a mesma fonte
+por câmera, com consultas de saúde independentes. O monitor do servidor também
+encerra fontes estagnadas sem depender do watchdog interno ou de uma aba aberta.
+Ampliar uma imagem não eleva automaticamente a definição nem reinicia a fonte.
+
+Na DLL inspecionada, `addPlaybackListListerner` guarda uma função com argumento de
+tipo e uma mensagem contendo string MSVC e vetor de registros de 48 bytes. Os
+dois primeiros uint64 de cada registro são tratados como início/fim somente após
+validar formato, tamanho e intervalo plausível em milissegundos Unix. O adaptador
+limita a 512 registros e não devolve nomes de arquivo, tokens ou estruturas brutas.
+A lista usa spool em arquivo para não bloquear a saída do subprocesso.
+
+O cliente Windows configura a fonte com os limites do arquivo e usa
+`seekPlaybackPosition` com o par de horários desejado. O adaptador reproduz essa
+sequência e exige confirmação do relógio de reprodução antes de iniciar a cópia.
+A consulta manual tem janela máxima de uma hora; a cópia tem até dois minutos.
+Nenhum comando de exclusão ou formatação é chamado. A substituição automática
+continua preservando o clipe local em qualquer falha de validação.
+
+Esses layouts privados e o posicionamento ainda exigem validação em hardware real;
+compilar o adaptador e exercitar fixtures não confirma suporte em todos os firmwares.
+Falha da consulta não é evidência de cartão vazio. Mensagens distinguem consulta,
+posicionamento, ausência de quadros e horário não confirmado.
+
+O cadastro facial foi removido da aplicação. A webcam é uma fonte V4L2 local,
+explicitamente habilitada, com o mesmo monitor de economia e detecção de pessoas.
+Não usa getUserMedia do visitante e não é exposta como fonte de cartão.

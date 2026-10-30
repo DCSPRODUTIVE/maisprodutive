@@ -16,7 +16,7 @@ from yoosee import IntegrationError
 
 class FakeStream:
     instances = []
-    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0):
+    def __init__(self, account, device_id, expires, on_close, preview_width=960, definition=0, local_device=None):
         self.definition = definition
         self.preview_width = preview_width
         self.device_id, self.expires, self.callback = device_id, expires, on_close
@@ -30,6 +30,8 @@ class FakeStream:
         if not self.stopped.is_set():
             self.stopped.set()
             self.callback()
+    def jpeg_frame(self, after):
+        return (b"synthetic-jpeg" if after<1 else None),1
     def frame(self, after, wait=True):
         if self.stopped.is_set(): raise IntegrationError('video_stopped','stopped')
         return {'device_id':self.device_id,'sequence':1,'image':'data:image/jpeg;base64,test','age_seconds':0,'state':'receiving'}
@@ -114,29 +116,6 @@ class StreamApiTests(unittest.TestCase):
         self.post('/api/telegram/save',{'enabled':False,'token':'','chat_id':'12345'})
         self.assertFalse(self.post('/api/telegram/status',{})[1]['enabled'])
 
-    def test_faces_routes_are_account_scoped_and_support_manual_learning(self):
-        self.assertEqual(self.post('/api/faces/settings',{'enabled':True},csrf='invalid')[0],403)
-        self.assertEqual(self.post('/api/faces/settings',{'enabled':True})[0],200)
-        owner=__import__('hashlib').sha256(b'123').hexdigest()
-        self.server.reports.faces.add(owner,'0','Entrada',b'face-photo',[1.0]+[0.0]*127)
-        row=self.post('/api/faces/list',{})[1]['events'][0]
-        self.assertNotIn('embedding',row)
-        self.assertEqual(self.post('/api/faces/label',{'id':row['id'],'name':'Ana'})[0],200)
-        self.assertEqual(self.post('/api/faces/list',{})[1]['events'][0]['label'],'Ana')
-        request=urllib.request.Request(self.base+'/api/faces/image/'+str(row['id']),headers={'Cookie':self.cookie})
-        with urllib.request.urlopen(request) as response:self.assertEqual(response.read(),b'face-photo')
-        cookie,csrf,state=self.new_session()
-        state['client']=DesktopClient(DesktopProfile('a'*32,'b'*64))
-        state['client'].account=DesktopAccount('456','other-token')
-        self.assertEqual(self.post('/api/faces/list',{},cookie,csrf)[1]['events'],[])
-        self.assertEqual(self.post('/api/faces/label',{'id':row['id'],'name':'Bia'},cookie,csrf)[0],400)
-        request=urllib.request.Request(self.base+'/api/faces/image/'+str(row['id']),headers={'Cookie':cookie})
-        with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
-        self.assertEqual(error.exception.code,404)
-        self.assertEqual(self.post('/api/faces/settings',{})[0],400)
-        self.assertEqual(self.post('/api/faces/clear',{})[0],200)
-        self.assertEqual(self.post('/api/faces/list',{})[1]['events'],[])
-        self.assertFalse(self.post('/api/faces/status',{})[1]['enabled'])
 
     def test_slow_frame_does_not_block_other_cameras_in_same_account(self):
         first=self.post('/api/video/start',{'device_id':'0'})[1]['stream_id']
@@ -176,7 +155,7 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(error.exception.code,404)
 
     def test_preferences_validate_known_cameras_and_persist_per_account(self):
-        values={'economy_ids':['0','1'],'detection_ids':['1'],'mosaic_limit':12}
+        values={'economy_ids':['0','1'],'detection_ids':['1'],'mosaic_limit':12,'webcam_enabled_ids':[]}
         self.assertEqual(self.post('/api/preferences',values)[0],200)
         request=urllib.request.Request(self.base+'/api/status',headers={'Cookie':self.cookie})
         with urllib.request.urlopen(request) as response:self.assertEqual(json.load(response)['preferences'],values)
@@ -198,6 +177,10 @@ class StreamApiTests(unittest.TestCase):
         with urllib.request.urlopen(request) as response:
             self.assertEqual(response.status,206);self.assertEqual(response.read(),b'video')
             self.assertEqual(response.headers['Content-Range'],'bytes 0-4/11')
+        request=urllib.request.Request(self.base+'/api/reports/download/'+str(video_id),headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request) as response:
+            self.assertTrue(response.headers['Content-Disposition'].startswith('attachment;'))
+            self.assertEqual(response.read(),b'video-bytes')
         other_cookie,_,_=self.new_session()
         request=urllib.request.Request(self.base+'/api/reports/video/'+str(video_id),headers={'Cookie':other_cookie})
         with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
@@ -294,3 +277,46 @@ class StreamApiTests(unittest.TestCase):
         self.post('/api/video/start',{'device_id':'0'})
         self.server.server_close()
         self.assertTrue(FakeStream.instances[-1].stopped.is_set())
+
+    def test_mjpeg_uses_owned_handle_and_does_not_open_another_source(self):
+        code,data=self.post('/api/video/start',{'device_id':'0'})
+        handle=data['stream_id']
+        request=urllib.request.Request(self.base+'/api/video/mjpeg?device_id=0&stream_id='+handle,headers={'Cookie':self.cookie})
+        with urllib.request.urlopen(request,timeout=3) as response:
+            self.assertIn('multipart/x-mixed-replace',response.headers['Content-Type'])
+            self.assertEqual(response.read(12),b'--dcsframe\r\n')
+            self.assertEqual(len(FakeStream.instances),1)
+            self.post('/api/video/stop',{'device_id':'0','stream_id':handle})
+        request=urllib.request.Request(self.base+'/api/video/mjpeg?device_id=0&stream_id=wrong',headers={'Cookie':self.cookie})
+        with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(request)
+        self.assertEqual(error.exception.code,403)
+
+    def test_metadata_requests_omit_image_and_faces_routes_are_removed(self):
+        _,data=self.post('/api/video/start',{'device_id':'0'})
+        code,frame=self.post('/api/video/frame',{'device_id':'0','stream_id':data['stream_id'],'metadata_only':True})
+        self.assertEqual(code,200);self.assertIsNone(frame['image'])
+        self.assertEqual(self.post('/api/faces/status',{})[0],404)
+
+    def test_webcam_explicit_activation_is_saved_and_disable_stops_source(self):
+        camera={'id':'webcam:video0','name':'Webcam','local':True}
+        self.state['devices'].append(camera)
+        with patch('server.webcam.device',return_value='/dev/video0'):
+            self.assertEqual(self.post('/api/video/start',{'device_id':camera['id']})[0],422)
+            values={'economy_ids':[],'detection_ids':[],'webcam_enabled_ids':[camera['id']],'mosaic_limit':8}
+            self.assertEqual(self.post('/api/preferences',values)[0],200)
+            self.server.background.tick()
+            native=FakeStream.instances[-1]
+            self.assertEqual(native.device_id,camera['id'])
+            self.assertFalse(native.report_detect)
+            values['webcam_enabled_ids']=[]
+            self.assertEqual(self.post('/api/preferences',values)[0],200)
+            self.assertTrue(native.stopped.is_set())
+
+    def test_card_validation_owner_isolation_and_economy(self):
+        start=time.time()-300
+        with patch.object(self.server.archive,'submit',return_value='job') as submit:
+            self.assertEqual(self.post('/api/card/start',{'device_id':'0','action':'backup','start':start,'end':start+200})[0],422)
+            self.assertEqual(self.post('/api/card/start',{'device_id':'foreign','action':'list','start':start,'end':start+60})[0],422)
+            self.assertEqual(self.post('/api/card/start',{'device_id':'0','action':'list','start':start,'end':start+60})[0],200)
+            submit.assert_called_once()
+        self.assertEqual(self.post('/api/card/status',{'job_id':'not-owned'})[0],404)

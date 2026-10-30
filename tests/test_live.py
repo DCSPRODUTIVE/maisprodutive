@@ -234,3 +234,27 @@ class EncoderDiagnosticTests(unittest.TestCase):
         error=self.create_stream()._pipeline_error(0,1)
         self.assertIn('código 1',str(error))
         self.assertNotIn('interrompida antes',str(error))
+
+@unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
+class WebcamPipelineTests(unittest.TestCase):
+    def test_server_webcam_captures_without_sdk_and_stops_when_disabled(self):
+        closed=[]
+        with patch('live.webcam.device',return_value='/dev/video0'), patch('live.video.readiness',return_value=(False,'No SDK')):
+            stream=LiveStream(None,'webcam:video0',time.monotonic()+10,lambda:closed.append(True),local_device=True)
+        original=stream._launch
+        def launch(args,**kwargs):
+            self.assertIn('/dev/video0',args)
+            return original([shutil.which('ffmpeg'),'-v','error','-re','-f','lavfi','-i','testsrc2=s=640x480:r=10',
+                '-threads','1','-f','image2pipe','-vcodec','mjpeg','pipe:1'],**kwargs)
+        stream._launch=launch;stream.report_detect=True
+        try:
+            stream.start();limit=time.monotonic()+4
+            while stream.sequence<2 and time.monotonic()<limit:time.sleep(.05)
+            self.assertGreaterEqual(stream.sequence,2)
+            image,sequence=stream.jpeg_frame(0)
+            self.assertTrue(image.startswith(b'\xff\xd8'))
+            self.assertTrue(stream.history.snapshot(time.monotonic()))
+            self.assertEqual(stream.resolution,[640,480])
+        finally:stream.stop()
+        self.assertEqual(closed,[True]);self.assertTrue(stream.done.is_set())
+        self.assertTrue(all(p.poll() is not None for p in stream.processes))

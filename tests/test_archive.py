@@ -100,3 +100,40 @@ class ArchiveTimestampTests(unittest.TestCase):
                 with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=process(b'SDTIME 1700000000000 1700000125000\n')):
                     with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):archive.export(stream,start,end,directory)
             finally:archive.close()
+
+class ManualArchiveTests(unittest.TestCase):
+    def test_listing_job_is_private_and_cancelled_jobs_do_not_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            try:
+                with patch.object(archive,'list_records',return_value=[{'start':1800000000,'end':1800000060}]):
+                    key=archive.submit('owner',object(),{'id':'camera','name':'Camera'},1800000000,1800000060,'list')
+                    archive.queue.join()
+                self.assertIsNone(archive.job('other',key))
+                result=archive.job('owner',key)
+                self.assertEqual(result['status'],'done');self.assertEqual(len(result['records']),1)
+                self.assertNotIn('stream',result)
+                archive.cancel('owner')
+                self.assertFalse(archive.jobs[key]['stream'].report_detect)
+            finally:archive.close()
+
+    def test_bounded_listing_reads_all_records_without_a_pipe_deadlock(self):
+        import io
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            archive=CameraArchive(EventStore(directory),threading.BoundedSemaphore(1))
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'),device_id='camera',
+                archive_account=SimpleNamespace(access_id='user',access_token='private-test-token'))
+            child=MagicMock();child.stdin=io.BytesIO();child.returncode=0;child.poll.return_value=0
+            start=1800000000.
+            payload=b'SDLIST\n'+b''.join(f'{round((start+i)*1000)} {round((start+i+1)*1000)}\n'.encode() for i in range(512))
+            def launch(args,**kwargs):
+                self.assertNotIn('private-test-token',repr(args))
+                kwargs['stdout'].write(payload);kwargs['stdout'].flush()
+                return child
+            try:
+                with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',side_effect=launch):
+                    records=archive.list_records(stream,start,start+600,directory)
+                self.assertEqual(len(records),512)
+                self.assertEqual(records[-1]['end'],start+512)
+            finally:archive.close()

@@ -16,6 +16,7 @@ static volatile LONG writing;
 static volatile LONG frame_count;
 static int streaming;
 static int archive_mode;
+static int list_mode;
 static unsigned char *chroma;
 static size_t chroma_capacity;
 static ULONGLONG last_frame, last_sent;
@@ -116,6 +117,44 @@ static void make_time_callback(unsigned char *storage) {
     *(void **)(storage+56)=storage;
 }
 
+/* PLaybackMessage: MSVC string (32 bytes), vector of 48-byte records.
+ * Each record begins with uint64 start/end, followed by a 32-byte string. */
+typedef struct { unsigned long long begin,end; } RecordRange;
+static RecordRange record_ranges[512];
+static unsigned record_count;
+static volatile LONG list_received;
+static ULONGLONG list_last;
+static CRITICAL_SECTION list_lock;
+static char query_device[128];
+static void *list_vtable[6];
+static void *list_copy(void *self,void *destination) { (void)self;*(void ***)destination=list_vtable;return destination; }
+static void list_invoke(void *self,const int *kind,const unsigned char **message) {
+    (void)self;(void)kind;
+    const unsigned char *m=*message;if (!m) return;
+    size_t length,capacity;memcpy(&length,m+16,8);memcpy(&capacity,m+24,8);
+    if (length!=strlen(query_device) || length>127) return;
+    const char *device=(const char *)m;if (capacity>=16) memcpy(&device,m,8);
+    if (!device || memcmp(device,query_device,length)) return;
+    const unsigned char *first,*last;memcpy(&first,m+32,8);memcpy(&last,m+40,8);
+    uintptr_t lo=(uintptr_t)first,hi=(uintptr_t)last;
+    if (hi<lo || (hi-lo)%48 || hi-lo>48*4096) return;
+    EnterCriticalSection(&list_lock);
+    for (uintptr_t at=lo;at<hi && record_count<512;at+=48) {
+        RecordRange range;memcpy(&range,(const void *)at,16);
+        if (range.begin<1000000000000ULL || range.end<=range.begin || range.end>5000000000000ULL || range.end-range.begin>172800000ULL) continue;
+        int duplicate=0;for (unsigned n=0;n<record_count;n++) if (record_ranges[n].begin==range.begin && record_ranges[n].end==range.end) duplicate=1;
+        if (!duplicate) record_ranges[record_count++]=range;
+    }
+    list_last=GetTickCount64();InterlockedExchange(&list_received,1);
+    LeaveCriticalSection(&list_lock);
+}
+static void make_list_callback(unsigned char *storage) {
+    memset(storage,0,64);list_vtable[0]=(void *)list_copy;list_vtable[1]=(void *)list_copy;
+    list_vtable[2]=(void *)list_invoke;list_vtable[3]=(void *)time_type;
+    list_vtable[4]=(void *)time_delete;list_vtable[5]=(void *)time_target;
+    *(void ***)storage=list_vtable;*(void **)(storage+56)=storage;
+}
+
 typedef struct { union { char small[16]; void *ptr; } data; size_t size, capacity; } MsvcString;
 static MsvcString make_string(const char *value, void *(*alloc)(size_t)) {
     MsvcString s; memset(&s, 0, sizeof(s)); s.size = strlen(value); s.capacity = 15;
@@ -177,6 +216,7 @@ int main(int argc, char **argv) {
     if (streaming && strcmp(argv[1],"--stream-hd")==0) definition=1;
     if (streaming && strcmp(argv[1],"--stream-fhd")==0) definition=2;
     archive_mode = argc==2 && strcmp(argv[1],"--archive")==0;
+    list_mode = argc==2 && strcmp(argv[1],"--list")==0;
     char id[128],token[8192],device[128];
     if (!line(id,sizeof(id)) || !line(token,sizeof(token)) || !line(device,sizeof(device))) return 12;
     HMODULE crt=LoadLibraryA("ucrtbase.dll"); if (!crt) return 11;
@@ -190,14 +230,45 @@ int main(int argc, char **argv) {
     if(result!=0)ExitProcess(14);
     Sleep(2000);
     void *player=calloc(1,16);construct(player);set_render(player,&renderer);
-    if (archive_mode) {
+    if (archive_mode || list_mode) {
         /* MSVC std::function: 64-byte object; null implementation at +0x38.
          * The inspected SDK explicitly checks each empty callback before copying. */
         _Alignas(16) unsigned char callback1[64]={0},callback2[64]={0},callback3[64]={0};
         char begin_text[32],end_text[32],*tail;
         if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
         unsigned long long begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
-        unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>125000) ExitProcess(30);
+        unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:125000ULL)) ExitProcess(30);
+        InitializeCriticalSection(&list_lock);strcpy(query_device,device);
+        _Alignas(16) unsigned char list_callback[64];make_list_callback(list_callback);
+        void (*listen_list)(void *,void *)=symbol(dll,"?addPlaybackListListerner@IoTVideoSdk@@QEAAXV?$function@$$A6AXHPEAUPLaybackMessage@@@Z@std@@@Z");
+        int (*query_list)(void *,const char *,unsigned long long,unsigned long long)=symbol(dll,"?getPlaybackList@IoTVideoSdk@@QEAAHPEBD_K1@Z");
+        listen_list(sdk,list_callback);
+        if (query_list(sdk,device,begin>3600000?begin-3600000:begin,end+60000)!=0) ExitProcess(34);
+        ULONGLONG queried=GetTickCount64();
+        while (GetTickCount64()-queried<12000) {
+            if (list_received && GetTickCount64()-list_last>1000) break;
+            Sleep(50);
+        }
+        if (!list_received) ExitProcess(34);
+        if (list_mode) {
+            emit("SDLIST\n",7);
+            EnterCriticalSection(&list_lock);
+            for (unsigned i=0;i<record_count;i++) if (record_ranges[i].end>begin && record_ranges[i].begin<end) {
+                char row[80];int bytes=snprintf(row,sizeof(row),"%llu %llu\n",record_ranges[i].begin,record_ranges[i].end);emit(row,bytes);
+            }
+            LeaveCriticalSection(&list_lock);ExitProcess(0);
+        }
+        unsigned long long file_begin=0,file_end=0;
+        EnterCriticalSection(&list_lock);
+        for (unsigned i=0;i<record_count;i++) {
+            RecordRange r=record_ranges[i];
+            if (r.begin<=begin && r.end>begin && (!file_begin || r.begin>file_begin)) {file_begin=r.begin;file_end=r.end;}
+        }
+        if (!file_begin) for (unsigned i=0;i<record_count;i++) {
+            RecordRange r=record_ranges[i];if (r.begin>=begin && r.begin<=begin+5000 && (!file_begin || r.begin<file_begin)) {file_begin=r.begin;file_end=r.end;}
+        }
+        LeaveCriticalSection(&list_lock);
+        if (!file_begin) ExitProcess(31);
         void (*set_playback)(void *,char *,unsigned long long,unsigned long long)=symbol(dll,"?setPlaybackDataResource@IoTVideoPlayer@@QEAAXPEAD_K1@Z");
         unsigned char (*start_record)(void *,MsvcString *,void *,void *,void *)=symbol(dll,"?startRecord@IoTVideoPlayer@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$function@$$A6AXXZ@3@V?$function@$$A6AX_K0@Z@3@V?$function@$$A6AXHV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z@3@@Z");
         void (*stop_record)(void *)=symbol(dll,"?stopRecord@IoTVideoPlayer@@QEAAXXZ");
@@ -205,10 +276,16 @@ int main(int argc, char **argv) {
         _Alignas(16) unsigned char time_callback[64];make_time_callback(time_callback);
         void (*set_time)(void *,void *)=symbol(dll,"?setTimeListener@IoTVideoPlayer@@QEAAXV?$function@$$A6AX_K@Z@std@@@Z");
         set_time(player,time_callback);
-        set_playback(player,device,begin,end);play(player);
+        set_playback(player,device,file_begin,file_end);play(player);
         ULONGLONG waiting=GetTickCount64();
         while (!frame_count && GetTickCount64()-waiting<25000) Sleep(50);
-        if (!frame_count) ExitProcess(31);
+        if (!frame_count) ExitProcess(36);
+        int (*seek)(void *,unsigned long long,unsigned long long,void *)=symbol(dll,"?seekPlaybackPosition@IoTVideoPlayer@@QEAAH_K0V?$function@$$A6AXE@Z@std@@@Z");
+        InterlockedExchange64(&archive_last_time,0);
+        if (seek(player,begin,end,callback1)!=0) ExitProcess(35);
+        ULONGLONG seeking=GetTickCount64();
+        while (GetTickCount64()-seeking<10000 && ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000)) Sleep(50);
+        if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) ExitProcess(33);
         MsvcString filename=make_string("archive.mp4",alloc);
         if (!start_record(player,&filename,callback1,callback2,callback3)) ExitProcess(32);
         InterlockedExchange64(&archive_first_time,0);
