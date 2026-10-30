@@ -11,12 +11,13 @@ import time
 import uuid
 
 from frame_buffer import PRE_ROLL
+from runtime_policy import encoder_parallelism
 
 DURATION = 120
 FPS = 10  # compatibility: source target only; encoded frames use their actual timestamps
 MIN_FREE = 256 * 1024 * 1024
 MAX_BYTES = 96 * 1024 * 1024
-ENCODERS = threading.BoundedSemaphore(2)
+ENCODERS = threading.BoundedSemaphore(encoder_parallelism())
 
 
 class RecordingService:

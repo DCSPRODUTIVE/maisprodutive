@@ -77,3 +77,35 @@ int main(void) {
             file=Path(directory)/'clock.c';file.write_text(fixture);exe=Path(directory)/'clock'
             subprocess.run([shutil.which('cc'),'-std=c11','-Wall','-Wextra','-Werror',str(file),'-o',str(exe)],check=True,timeout=15,capture_output=True)
             subprocess.run([str(exe)],check=True,timeout=5,capture_output=True)
+
+    def test_recorded_range_excludes_clock_callbacks_during_encoder_setup(self):
+        source=(Path(__file__).resolve().parents[1]/'native/yoosee_snapshot.c').read_text()
+        clock=source[source.index('static unsigned long long playback_clock_ms('):source.index('static void playback_open_at(')]
+        callback=source[source.index('static void time_invoke('):source.index('static const void *time_type(')]
+        fixture=r'''#include <assert.h>
+typedef long long LONG64;
+static long clock_callbacks,clock_unit,record_tracking;
+static LONG64 archive_first_time,archive_last_time;
+static void InterlockedIncrement(long *value) { ++*value; }
+static void InterlockedExchange(long *value,long next) { *value=next; }
+static void InterlockedExchange64(LONG64 *value,LONG64 next) { *value=next; }
+static void InterlockedCompareExchange64(LONG64 *value,LONG64 next,LONG64 expected) { if(*value==expected)*value=next; }
+'''+clock+callback+r'''
+int main(void) {
+    unsigned long long stamp=1800000000000000ULL;
+    time_invoke(0,&stamp);
+    assert(archive_first_time==0);assert(archive_last_time==1800000000000LL);
+    stamp+=5800000ULL;time_invoke(0,&stamp);
+    assert(archive_first_time==0);
+    record_tracking=1;stamp+=100000ULL;time_invoke(0,&stamp);
+    assert(archive_first_time==1800000005900LL);
+    record_tracking=0;stamp+=200000ULL;time_invoke(0,&stamp);
+    assert(archive_first_time==1800000005900LL);
+    assert(clock_callbacks==4);assert(clock_unit==2);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            file=Path(directory)/'tracking.c';file.write_text(fixture);exe=Path(directory)/'tracking'
+            subprocess.run([shutil.which('cc'),'-std=c11','-Wall','-Wextra','-Werror',str(file),'-o',str(exe)],check=True,timeout=15,capture_output=True)
+            subprocess.run([str(exe)],check=True,timeout=5,capture_output=True)

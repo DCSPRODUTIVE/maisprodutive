@@ -29,3 +29,15 @@ class DiagnosticHistoryTests(unittest.TestCase):
                 log.pending.join();events,_=log.history('owner')
                 self.assertEqual(len(events),1);self.assertEqual(events[0]['details'],{'frames':1})
             finally:log.close()
+
+    def test_open_failures_and_recorder_setup_are_retained_without_vendor_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log=Diagnostics(EventStore(directory))
+            try:
+                log.record('owner','123','connection_failed',code='video_timeout')
+                log.record('owner','123','card_attempt_result',record_setup_ms=5800,message='private-vendor-text')
+                log.pending.join();events,counts=log.history('owner')
+                self.assertIn('connection_failed',[event['event'] for event in events])
+                self.assertTrue(any(event['details'].get('record_setup_ms')==5800 for event in events))
+                self.assertNotIn('private-vendor-text',json.dumps(events))
+            finally:log.close()

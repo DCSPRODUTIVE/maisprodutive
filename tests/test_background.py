@@ -98,7 +98,7 @@ class BackgroundTests(unittest.TestCase):
     def test_independent_watchdog_recovers_stale_source_without_resetting_economy(self):
         self.configure();self.manager.tick()
         first=self.created[0];first.managed_watchdog=True
-        self.now+=9;self.manager.tick()
+        self.now+=16;self.manager.tick()
         self.assertTrue(first.stopped.is_set())
         self.now+=2;self.manager.tick()
         self.assertEqual(len(self.created),2)
@@ -115,3 +115,24 @@ class BackgroundTests(unittest.TestCase):
         self.assertFalse(self.manager.entries[('owner','webcam:video0')].detection)
         self.manager.configure('owner',self.account,devices,{'webcam_enabled_ids':[]})
         self.assertTrue(self.created[0].stopped.is_set())
+
+    def test_retry_backoff_resets_only_after_sustained_frames(self):
+        self.configure(False);self.manager.tick()
+        entry=self.manager.entries[('owner','a')];entry.attempts=4
+        stream=self.created[0]
+        for _ in range(10):
+            self.now+=1;stream.sequence+=1;stream.last_frame=self.now;self.manager.tick()
+        self.assertEqual(entry.attempts,4)
+        for _ in range(21):
+            self.now+=1;stream.sequence+=1;stream.last_frame=self.now;self.manager.tick()
+        self.assertEqual(entry.attempts,0)
+
+    def test_open_failure_without_frames_is_not_counted_as_stream_drop(self):
+        events=[]
+        self.manager.event_sink=lambda owner,camera,event,**values:events.append(event)
+        self.configure(False);self.manager.tick()
+        stream=self.created[0];stream.sequence=0;stream.image=None;stream.last_frame=None
+        stream.error=IntegrationError('video_timeout','No first frame');stream.stop()
+        self.manager.tick()
+        self.assertIn('connection_failed',events)
+        self.assertNotIn('connection_lost',events)

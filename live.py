@@ -14,13 +14,12 @@ import time
 
 import video
 import webcam
+from runtime_policy import FIRST_FRAME_TIMEOUT, STALE_TIMEOUT, QUEUE_TIMEOUT, startup_parallelism
 from yoosee import IntegrationError
 
 MAX_JPEG = 8 * 1024 * 1024
 IDLE_TIMEOUT = 20
-FIRST_FRAME_TIMEOUT = 30
-STALE_TIMEOUT = 8
-STARTUP_GATE = threading.BoundedSemaphore(3)
+STARTUP_GATE = threading.BoundedSemaphore(startup_parallelism())
 
 
 def jpeg_frames(pipe):
@@ -117,7 +116,7 @@ class LiveStream:
                 self._fail('authentication', 'A sessão expirou. Entre novamente para continuar.')
             elif not self.background and now - last_seen > IDLE_TIMEOUT:
                 self._fail('video_idle', 'A transmissão foi encerrada por falta de visualização.')
-            elif self.connect_started is None and now-self.started>45:
+            elif self.connect_started is None and now-self.started>QUEUE_TIMEOUT:
                 self._fail('video_timeout','A fila de abertura expirou; preparando nova tentativa.')
             elif last_frame is None and self.connect_started is not None and now - self.connect_started > FIRST_FRAME_TIMEOUT:
                 self._fail('video_timeout', 'A câmera não entregou o primeiro quadro no tempo esperado.')

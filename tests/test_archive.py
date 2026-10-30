@@ -303,7 +303,9 @@ class PartialProtocolTests(unittest.TestCase):
             (Path(directory)/'archive.mp4').write_bytes(b'export')
             try:
                 for metadata,accepted in ((b'SDPART 1800000000000 1800000056762 1\n',True),
+                    (b'SDPART 1800000005800 1800000056762 1 SETUP 5800\n',True),
                     (b'SDTIME 1800000000000 1800000056762\n',False),
+                    (b'SDTIME 1800000005800 1800000063960 SETUP 5800\n',False),
                     (b'SDPART 1700000000000 1700000056762 1\n',False)):
                     child=MagicMock();child.poll.return_value=0;child.returncode=0
                     child.stdin=io.BytesIO();child.stdout=io.BytesIO(metadata)
@@ -311,6 +313,7 @@ class PartialProtocolTests(unittest.TestCase):
                         if accepted:
                             self.assertIsNotNone(archive.export_piece(stream,1800000000,1800000063.960,directory))
                             self.assertTrue(stream.archive_piece['partial'])
+                            self.assertEqual(stream.archive_piece['record_setup_ms'],5800 if b'SETUP' in metadata else 0)
                         else:
                             with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):
                                 archive.export_piece(stream,1800000000,1800000063.960,directory)

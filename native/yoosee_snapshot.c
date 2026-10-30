@@ -17,7 +17,8 @@ static volatile LONG frame_count;
 static int streaming;
 static int archive_mode;
 static int list_mode, known_archive;
-static volatile LONG clock_callbacks, clock_unit;
+static volatile LONG clock_callbacks, clock_unit, record_tracking;
+static ULONGLONG record_prepare_ms;
 static unsigned long long requested_begin;
 static ULONGLONG process_started;
 static unsigned char *chroma;
@@ -121,7 +122,7 @@ static int playback_seek_start(void *player,unsigned long long target,void *call
 }
 /* 0 complete, 1 confirmed partial, 2 wrong/unverified interval. */
 static int playback_coverage(unsigned long long first,unsigned long long last,unsigned long long begin,unsigned long long end) {
-    if (first<begin || first>begin+5000 || last<=first || last>end+5000) return 2;
+    if (first<begin || first>=end || last<=first || last>end+5000) return 2;
     return first>begin+1000 || last+1000<end ? 1 : 0;
 }
 /* END portable playback clock contract */
@@ -131,7 +132,7 @@ static void time_invoke(void *self, const unsigned long long *stamp) {
     unsigned long long milliseconds=playback_clock_ms(*stamp);
     InterlockedExchange(&clock_unit,milliseconds?(*stamp>1000000000000000ULL?2:1):0);
     if (milliseconds) {
-        InterlockedCompareExchange64(&archive_first_time,(LONG64)milliseconds,0);
+        if (record_tracking) InterlockedCompareExchange64(&archive_first_time,(LONG64)milliseconds,0);
         InterlockedExchange64(&archive_last_time,(LONG64)milliseconds);
     }
 }
@@ -201,8 +202,8 @@ static void make_list_callback(unsigned char *storage) {
 static void archive_failure(unsigned code,unsigned stage) {
     char data[240];
     long long delta=archive_last_time?(long long)archive_last_time-(long long)requested_begin:0;
-    int n=snprintf(data,sizeof(data),"SDFAIL1 %u %u %ld %u %ld %ld %lld %ld %d\n",
-        code,stage,(long)list_kind,record_count,(long)clock_callbacks,(long)clock_unit,delta,(long)frame_count,last_reason);
+    int n=snprintf(data,sizeof(data),"SDFAIL1 %u %u %ld %u %ld %ld %lld %ld %d SETUP %llu\n",
+        code,stage,(long)list_kind,record_count,(long)clock_callbacks,(long)clock_unit,delta,(long)frame_count,last_reason,record_prepare_ms);
     emit(data,(DWORD)n);ExitProcess(code);
 }
 
@@ -358,8 +359,17 @@ int main(int argc, char **argv) {
         if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) archive_failure(33,3);
         }
         MsvcString filename=make_string("archive.mp4",alloc);
+        void (*pause_record)(void *)=symbol(dll,"?pause@IoTVideoPlayer@@QEAAXXZ");
+        void (*resume_record)(void *)=symbol(dll,"?resume@IoTVideoPlayer@@QEAAXXZ");
+        /* Pause presentation while the SDK prepares its encoder/muxer. Counting
+         * playback callbacks during initialization overstates the saved range. */
+        InterlockedExchange(&record_tracking,0);
+        ULONGLONG preparing=GetTickCount64();pause_record(player);Sleep(150);
+        unsigned char accepted=start_record(player,&filename,callback1,callback2,callback3);
+        record_prepare_ms=GetTickCount64()-preparing;
         InterlockedExchange64(&archive_first_time,0);
-        if (!start_record(player,&filename,callback1,callback2,callback3)) archive_failure(32,4);
+        if (!accepted) {resume_record(player);archive_failure(32,4);}
+        InterlockedExchange(&record_tracking,1);resume_record(player);
         ULONGLONG progress_at=GetTickCount64();
         unsigned long long progress_time=(unsigned long long)archive_last_time;
         unsigned ending_reason=2;
@@ -373,15 +383,15 @@ int main(int argc, char **argv) {
         /* Playback can keep advancing while stopRecord finalizes: freeze the
          * confirmed range now, not after closing the file. */
         unsigned long long first=(unsigned long long)archive_first_time,last=(unsigned long long)archive_last_time;
-        stop_record(player);
+        InterlockedExchange(&record_tracking,0);stop_record(player);
         ULONGLONG finishing=GetTickCount64();
         while (is_recording(player) && GetTickCount64()-finishing<5000) Sleep(50);
         Sleep(500);
         int coverage=playback_coverage(first,last,begin,end);
         if (coverage==2) archive_failure(33,4);
         char metadata[128];int count;
-        if (coverage==1) count=snprintf(metadata,sizeof(metadata),"SDPART %llu %llu %u\n",first,last,ending_reason?ending_reason:3);
-        else count=snprintf(metadata,sizeof(metadata),"SDTIME %llu %llu\n",first,last);
+        if (coverage==1) count=snprintf(metadata,sizeof(metadata),"SDPART %llu %llu %u SETUP %llu\n",first,last,ending_reason?ending_reason:3,record_prepare_ms);
+        else count=snprintf(metadata,sizeof(metadata),"SDTIME %llu %llu SETUP %llu\n",first,last,record_prepare_ms);
         emit(metadata,count);ExitProcess(0);
     }
     set_source(player,device,1,definition,0);play(player);
@@ -390,8 +400,8 @@ int main(int argc, char **argv) {
         LONG state = InterlockedCompareExchange(&finished,0,0);
         ULONGLONG now = GetTickCount64();
         if (state < 0 || (!streaming && state==1)) break;
-        if (!frame_count && now-started>=25000) break;
-        if (streaming && frame_count && now-last_frame>=8000) ExitProcess(24);
+        if (!frame_count && now-started>=(streaming?50000ULL:25000ULL)) break;
+        if (streaming && frame_count && now-last_frame>=15000) ExitProcess(24);
         /* Absolute bound even if the controlling process disappears. */
         if (streaming && now-started>=1200000) ExitProcess(25);
         Sleep(100);

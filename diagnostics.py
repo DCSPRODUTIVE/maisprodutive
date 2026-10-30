@@ -14,9 +14,9 @@ import time
 
 import health
 
-EVENTS={'source_started','source_closed','connection_lost','connection_retry','camera_state','card_requested','card_attempt','card_attempt_result','card_result','person_detected','detection_failed','account_connected','account_disconnected'}
-WORDS=set('recording fetching interrupted no_frames invalid_video encoder_busy encoding_timeout video_tools conversion balanced original hd fhd sent idle queue_full receiving paused retrying queued connecting waiting stopped done partial ready failed live sd sd_backup sd_partial automatic backup list unavailable invalid_video video_stale video_timeout video_native video_decode video_resources video_stopped video_busy video_idle authentication protocol input video_configuration no_recording timestamp_unverified list_unavailable list_incomplete recording_unavailable recording_gap archive_fragmented seek_unavailable playback_unavailable list_request_rejected list_response_unsupported economy_or_disabled cooldown busy adapter_update_required disk_space partial_saved bounded_export'.split())
-NUMBERS={'attempt','max_attempts','frames','duration','age_seconds','definition','width','stage','list_kind','records','clock_callbacks','clock_unit','clock_delta_ms','frame_rejection','received_seconds','requested_seconds','fps','record_id','partial','analysis_ms','people','expected_seconds','probe_frames','height','load1'}
+EVENTS={'source_started','source_closed','connection_lost','connection_failed','connection_retry','camera_state','card_requested','card_attempt','card_attempt_result','card_result','person_detected','detection_failed','account_connected','account_disconnected'}
+WORDS=set('sd_requested recording fetching interrupted no_frames invalid_video encoder_busy encoding_timeout video_tools conversion balanced original hd fhd sent idle queue_full receiving paused retrying queued connecting waiting stopped done partial ready failed live sd sd_backup sd_partial automatic backup list unavailable invalid_video video_stale video_timeout video_native video_decode video_resources video_stopped video_busy video_idle authentication protocol input video_configuration no_recording timestamp_unverified list_unavailable list_incomplete recording_unavailable recording_gap archive_fragmented seek_unavailable playback_unavailable list_request_rejected list_response_unsupported economy_or_disabled cooldown busy adapter_update_required disk_space partial_saved bounded_export'.split())
+NUMBERS={'attempt','max_attempts','frames','duration','age_seconds','definition','width','stage','list_kind','records','clock_callbacks','clock_unit','clock_delta_ms','frame_rejection','received_seconds','requested_seconds','fps','record_id','partial','analysis_ms','people','expected_seconds','probe_frames','height','load1','record_setup_ms'}
 IDENTIFIER=re.compile(r'[A-Za-z0-9_:\-]{1,80}\Z')
 
 
@@ -50,7 +50,7 @@ class Diagnostics:
 
     def record(self,owner,camera,event,**values):
         if not owner or event not in EVENTS or self.stopped.is_set():return
-        if event in ('connection_lost','detection_failed') or (event=='card_result' and values.get('status') not in ('done','partial','cooldown','busy','economy_or_disabled')):
+        if event in ('connection_lost','connection_failed','detection_failed') or (event=='card_result' and values.get('status') not in ('done','partial','cooldown','busy','economy_or_disabled')):
             try:values['load1']=round(os.getloadavg()[0],2)
             except (OSError,AttributeError):pass
         row={'owner':owner,'camera':identifier(camera),'event':event,'created':time.time(),'details':fields(values)}
@@ -122,7 +122,9 @@ class Diagnostics:
         for row in self.store.videos(owner):
             item={k:row[k] for k in ('id','created','duration','pre_roll','frame_count','capture_fps','max_gap','sd_gap_seconds','archive_start','archive_end')}
             item.update(camera=identifier(row['camera']),name=label(row['name']))
-            for key in ('status','source','archive_status','reason'):item[key]=row[key] if row[key] in WORDS else 'other'
+            for key in ('status','source','archive_status','reason'):
+                value=row[key]
+                item[key]=value if value=='' or value in WORDS or (key=='reason' and value.startswith('archive_') and value[8:] in WORDS) else 'other'
             item['archive_diagnostic']=fields(row['archive_diagnostic']);videos.append(item)
         with self.store.guard,self.store.connect() as db:
             people=db.execute("SELECT COUNT(*),MAX(created) FROM events WHERE owner=? AND kind='person'",(owner,)).fetchone()
@@ -134,6 +136,7 @@ class Diagnostics:
                 key,value=line.split(':',1)
                 if key in ('MemTotal','MemAvailable'):memory[key+'_mib']=round(int(value.split()[0])/1024)
         except (OSError,ValueError):pass
+        from runtime_policy import FIRST_FRAME_TIMEOUT,STALE_TIMEOUT,QUEUE_TIMEOUT,startup_parallelism,encoder_parallelism
         from video import readiness as video_readiness
         adapter_ready=video_readiness()[0]
         telegram=server.telegram.status(owner)
@@ -160,23 +163,25 @@ class Diagnostics:
         for camera in cameras:
             rows=[r for r in counts if r['camera']==camera['id']]
             total=lambda event,status=None:sum(r['total'] for r in rows if r['event']==event and (status is None or r.get('status')==status))
-            starts=total('source_started');lost=total('connection_lost')
+            starts=total('source_started');lost=total('connection_lost');opening_failed=total('connection_failed')
             card_rows=[r for r in rows if r['event']=='card_result' and r.get('action')!='list' and r.get('status') not in ('busy','cooldown','economy_or_disabled')]
             complete=sum(r['total'] for r in card_rows if r.get('status')=='done')
             partial=sum(r['total'] for r in card_rows if r.get('status')=='partial')
             jobs=sum(r['total'] for r in card_rows)
-            statistics.append(dict(camera=camera['id'],name=camera['name'],connections_started=starts,unexpected_drops=lost,
+            statistics.append(dict(camera=camera['id'],name=camera['name'],connections_started=starts,unexpected_drops=lost,initial_open_failures=opening_failed,
                 card_attempts=total('card_attempt'),card_jobs=jobs,card_complete=complete,card_partial=partial,
                 card_complete_percent=round(complete/jobs*100,1) if jobs else None))
+            if opening_failed>=3:findings.append(dict(camera=camera['id'],code='repeated_open_failures',detail=f'{opening_failed} aberturas sem receber o primeiro quadro. Comparar negociação P2P e carga do servidor.'))
             if lost>=3:findings.append(dict(camera=camera['id'],code='repeated_drops',detail=f'{lost} quedas registradas; comparar conexão, qualidade escolhida e carga do servidor.'))
             if camera['state']=='receiving' and camera['fps']<4:findings.append(dict(camera=camera['id'],code='low_received_fps',detail=f"FPS recebido neste instante: {camera['fps']}. Comparar com qualidade e carga do servidor."))
             if jobs>=3 and complete/jobs<.5:findings.append(dict(camera=camera['id'],code='low_card_completion',detail=f'{complete} cópias completas e {partial} parciais em {jobs} trabalhos. Os eventos detalham tentativas e falhas.'))
+        if hasattr(os,'getloadavg') and os.getloadavg()[0]>(os.cpu_count() or 1):findings.append(dict(code='server_pressure',detail='Carga de trabalho elevada em relação ao número de CPUs; correlacionar com aberturas e cópias do cartão.'))
         if disk.free<1024**3:findings.append(dict(code='low_disk',detail='Menos de 1 GiB livre para gravações e arquivos temporários.'))
         return dict(format='DCS-diagnostics-v1',generated_at=time.time(),version=self.version,uptime_seconds=round(now-self.started),
             scope='Esta conta; sem senhas, tokens, cookies, imagens ou logs brutos do fornecedor. Histórico: até 7 dias/10000 eventos globais; últimos 120 desta conta.',
             system=dict(os=platform.system(),python=sys.version.split()[0],cpu_count=os.cpu_count(),architecture=platform.machine(),webcam_device_count=sum(bool(d.get('local')) for d in devices),load_average=list(os.getloadavg()) if hasattr(os,'getloadavg') else [],
                 memory=memory,disk_free_mib=round(disk.free/1024**2),disk_total_mib=round(disk.total/1024**2),ffmpeg=bool(shutil.which('ffmpeg')),ffprobe=bool(shutil.which('ffprobe')),wine=bool(shutil.which('wine') or shutil.which('wine64'))),
-            monitoring=dict(native_adapter_ready=adapter_ready,background_worker=bool(server.background.thread and server.background.thread.is_alive()),detection_ready=bool(server.reports.ready),
+            monitoring=dict(startup_parallelism=startup_parallelism(),encoder_parallelism=encoder_parallelism(),first_frame_timeout=FIRST_FRAME_TIMEOUT,stale_timeout=STALE_TIMEOUT,queue_timeout=QUEUE_TIMEOUT,native_adapter_ready=adapter_ready,background_worker=bool(server.background.thread and server.background.thread.is_alive()),detection_ready=bool(server.reports.ready),
                 detection_worker=bool(server.reports.thread and server.reports.thread.is_alive()),log_queue=self.pending.qsize(),log_dropped=self.dropped,log_write_errors=self.write_errors),
             telegram=dict(enabled=telegram['enabled'],configured=telegram['configured'],last_result=telegram_result),
             card_queue_size=server.archive.queue.qsize(),learning=dict(method='Estatísticas do histórico disponível; sem alteração automática do código ou da qualidade das câmeras.',statistics=statistics,findings=findings),cameras=cameras,people_reports=dict(count=people[0],last_created=people[1]),recent_videos=videos,events=events,event_counts=counts,browser=browser)

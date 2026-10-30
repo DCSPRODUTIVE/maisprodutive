@@ -8,6 +8,7 @@ function diagnosticText(d){
   if(d.clock_callbacks>0&&d.clock_unit>0)text+=` · diferença do início: ${(d.clock_delta_ms/1000).toFixed(3)}s`;
   if(d.clock_callbacks>0&&d.clock_unit===0)text+=' · relógio em unidade não reconhecida';
   if(d.stage===5&&Number.isFinite(d.duration))text+=` · duração do arquivo: ${d.duration}s · intervalo esperado: ${d.expected_seconds}s`;
+  if(d.record_setup_ms>0)text+=` · preparação do gravador: ${(d.record_setup_ms/1000).toFixed(3)}s`;
   if(d.frame_rejection)text+=` · formato de quadro rejeitado: ${d.frame_rejection}`;
   return text;
 }

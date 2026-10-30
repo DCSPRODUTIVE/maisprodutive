@@ -47,7 +47,7 @@ def readiness():
 def native_failure(code, raw=b''):
     reasons = {11: 'Não foi possível carregar a biblioteca local.',
                14: 'O SDK não aceitou o registro da sessão.',
-               15: 'A conexão P2P não entregou um quadro em 25 segundos.',
+               15: 'A conexão P2P não entregou o primeiro quadro no prazo esperado.',
                16: 'O adaptador anterior rejeitou os dados do quadro.',
                17: 'O SDK informou um formato de imagem ainda não suportado.',
                18: 'O quadro chegou com dimensões inválidas ou não suportadas.',
@@ -55,7 +55,7 @@ def native_failure(code, raw=b''):
                20: 'Os buffers do quadro não têm os tamanhos esperados.',
                21: 'Não foi possível transferir o quadro do adaptador.',
                23: 'A resolução da câmera mudou durante a transmissão. Inicie novamente.',
-               24: 'A câmera parou de entregar quadros por 8 segundos.',
+               24: 'A câmera parou de entregar quadros por 15 segundos.',
                25: 'O limite de tempo da transmissão foi atingido. Inicie novamente.',
                26: 'Não foi possível reservar memória para converter a imagem.'}
     diagnostic = re.fullmatch(rb'MPVD1 (17|18|19|20) (-?[0-9]{1,11}) (-?[0-9]{1,11}) (-?[0-9]{1,11})\n', raw)

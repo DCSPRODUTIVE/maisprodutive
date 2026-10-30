@@ -4,6 +4,7 @@ import health
 import secrets
 import threading
 import time
+from runtime_policy import FIRST_FRAME_TIMEOUT, STALE_TIMEOUT, QUEUE_TIMEOUT, STABLE_RESET_SECONDS
 
 from yoosee import IntegrationError
 
@@ -25,6 +26,7 @@ class Entry:
         self.width, self.definition = 640, 0
         self.retry_at = 0
         self.attempts = 0
+        self.stable_since = None
         self.message = ''
         self.detection = True
         self.logged_state = None
@@ -141,10 +143,12 @@ class BackgroundMonitor:
         with stream.condition:
             sequence = getattr(stream, 'sequence', 0)
             if stream.image and sequence != entry.native_sequence:
+                if entry.last_frame is None or stream.last_frame-entry.last_frame>3:entry.stable_since=self.clock()
+                if entry.stable_since is None:entry.stable_since=self.clock()
                 entry.image, entry.last_frame = stream.image, stream.last_frame
                 entry.native_sequence = sequence
                 entry.sequence += 1
-                entry.attempts = 0
+                if self.clock()-entry.stable_since>=STABLE_RESET_SECONDS:entry.attempts = 0
 
     def _drop(self, entry):
         if entry.native is not None:
@@ -154,6 +158,7 @@ class BackgroundMonitor:
             entry.native.stop(wait=False)
             entry.native = None
             entry.native_sequence = -1
+            entry.stable_since = None
 
     def observe(self,entry,now):
         stream=entry.native;stamp=getattr(stream,'last_frame',None)
@@ -180,17 +185,20 @@ class BackgroundMonitor:
                     stamp=getattr(stream,'last_frame',None)
                     connect=getattr(stream,'connect_started',None)
                     started=getattr(stream,'started',now)
-                    if ((stamp is not None and now-stamp>8) or
-                        (stamp is None and connect is not None and now-connect>30) or
-                        (stamp is None and connect is None and now-started>45)):
-                        stream.stop(wait=False)
+                    if ((stamp is not None and now-stamp>STALE_TIMEOUT) or
+                        (stamp is None and connect is not None and now-connect>FIRST_FRAME_TIMEOUT) or
+                        (stamp is None and connect is None and now-started>QUEUE_TIMEOUT)):
+                        kind='video_stale' if stamp is not None else 'video_timeout'
+                        if callable(getattr(stream,'_fail',None)):stream._fail(kind,'Fonte sem novos quadros; recuperando conexão.')
+                        else:stream.stop(wait=False)
                         entry.message='Fonte sem novos quadros; recuperando conexão.'
                 if stream is not None and stream.stopped.is_set():
                     error = getattr(stream, 'error', None)
-                    if self.event_sink:self.event_sink(entry.owner,entry.device_id,'connection_lost',code=error.kind if isinstance(error,IntegrationError) else 'video_stale')
+                    if self.event_sink:self.event_sink(entry.owner,entry.device_id,'connection_lost' if getattr(stream,'sequence',0)>0 else 'connection_failed',code=error.kind if isinstance(error,IntegrationError) else 'video_timeout')
                     entry.message = str(error) if isinstance(error, IntegrationError) else 'A câmera interrompeu a conexão.'
                     entry.native = None
                     entry.native_sequence = -1
+                    entry.stable_since = None
                     entry.retry_at = now + min(60, 2 * 2 ** min(entry.attempts, 5))
                     entry.attempts += 1
                     if entry.attempts>=2 and entry.definition>0:

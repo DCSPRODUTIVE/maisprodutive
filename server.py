@@ -614,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
                         if stream is not None:
                             code=getattr(getattr(stream,'error',None),'kind','stopped')
                             self.server.diagnostics.record(owner,device_id,'source_closed',code=code,frames=getattr(stream,'sequence',0),definition=getattr(stream,'definition',0),duration=round(max(0,time.monotonic()-getattr(stream,'started',time.monotonic())),2))
-                            if code in ('video_stale','video_timeout','video_native','video_decode','video_resources'):self.server.diagnostics.record(owner,device_id,'connection_lost',code=code)
+                            if code in ('video_stale','video_timeout','video_native','video_decode','video_resources'):self.server.diagnostics.record(owner,device_id,'connection_lost' if getattr(stream,'sequence',0)>0 else 'connection_failed',code=code)
                     try:
                         mosaic = body.get("mosaic", False)
                         if not isinstance(mosaic, bool):

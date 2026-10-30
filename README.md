@@ -638,6 +638,45 @@ busca automática mantém o vídeo local original e a cópia parcial separada.
 Uma cópia parcial real confirma que a integração consegue obter vídeo desse modelo;
 não prova que todas as falhas sejam da rede. Os novos logs permitem distinguir
 conexão, relógio, formato, duração do arquivo e junção. Não há garantia de completar
-uma gravação que o SDK deixe de fornecer. Esta revisão não altera o código nativo:
-quem já está na versão d322c4e pode atualizar com git pull e reiniciar os serviços.
-Instalações anteriores ainda devem recompilar o adaptador conforme as instruções.
+uma gravação que o SDK deixe de fornecer. A revisão seguinte altera o código nativo:
+recompile o adaptador com as instruções abaixo, mesmo se já tiver atualizado antes.
+
+
+## Estabilidade orientada pelos diagnósticos
+
+A análise dos diagnósticos mostrou pressão de trabalho em um servidor de quatro
+CPUs e tentativas sem primeiro quadro contabilizadas como quedas. Agora o histórico
+separa falhas de abertura de interrupções após receber imagens. Em servidores de
+até quatro CPUs, apenas um vídeo local é codificado por vez; as conexões iniciam
+em grupos de dois (um em máquinas de até duas CPUs). Isso reserva capacidade para
+os fluxos e a detecção, sem mudar as preferências ou a qualidade escolhida.
+
+O primeiro quadro tem até 50 segundos no adaptador e 55 no controlador, a fila
+até 180 segundos e a recuperação por falta de quadros ocorre após 15 segundos.
+Uma imagem isolada não zera mais o intervalo progressivo de reconexão: são
+necessários 30 segundos de entrega contínua. Economia e último quadro continuam
+preservados; durante pausas não se abre conexão para tentar recuperar imagem.
+
+Seis tentativas de cartão apresentaram diferença quase constante de aproximadamente
+5,8 segundos entre o relógio de reprodução e a duração do arquivo. O adaptador agora
+pausa a apresentação enquanto prepara o gravador, retoma em seguida e só começa a
+contar o intervalo gravado após essa preparação. Os logs incluem `record_setup_ms`.
+A duração do arquivo continua validada independentemente: não se aceita um vídeo
+curto como completo por presumir que o atraso explica a diferença. Trechos que
+começam depois do horário pedido, mas ainda dentro dele, podem ser guardados como
+parciais, com seus horários reais. A eficácia da pausa depende do SDK/modelo e
+precisa ser confirmada nos próximos testes com a câmera física.
+
+Esta atualização exige recompilação no servidor:
+
+```bash
+cd ~/maisprodutive
+git pull
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
+sudo systemctl restart dcs-control.service dcs-tunnel.service
+```
+
+Depois atualize a página com Ctrl+Shift+R e entre novamente se necessário. Faça um
+backup de teste e copie os logs para comparar o tempo de preparação, a duração
+recebida e os eventos de conexão. Os limites efetivos de concorrência e espera
+aparecem no diagnóstico; os contadores antigos não são reclassificados.

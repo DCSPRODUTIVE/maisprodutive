@@ -32,10 +32,11 @@ def native_failure(code,data):
     reasons={14:"authentication",31:"no_recording",32:"recording_unavailable",33:"timestamp_unverified",34:"list_unavailable",
         35:"seek_unavailable",36:"playback_unavailable",37:"list_request_rejected",38:"list_response_unsupported",39:"list_incomplete"}
     diagnostic={}
-    match=re.fullmatch(rb"SDFAIL1 ([0-9]{1,3}) ([0-9]) (-?[0-9]{1,3}) ([0-9]{1,4}) ([0-9]{1,10}) ([0-9]) (-?[0-9]{1,19}) ([0-9]{1,10}) ([0-9]{1,3})\n",data)
+    match=re.fullmatch(rb"SDFAIL1 ([0-9]{1,3}) ([0-9]) (-?[0-9]{1,3}) ([0-9]{1,4}) ([0-9]{1,10}) ([0-9]) (-?[0-9]{1,19}) ([0-9]{1,10}) ([0-9]{1,3})(?: SETUP ([0-9]{1,6}))?\n",data)
     if match and int(match[1])==code:
         keys=("stage","list_kind","records","clock_callbacks","clock_unit","clock_delta_ms","frames","frame_rejection")
-        diagnostic=dict(zip(keys,(int(x) for x in match.groups()[1:])))
+        diagnostic=dict(zip(keys,(int(x) for x in match.groups()[1:9])))
+        if match[10] is not None:diagnostic['record_setup_ms']=int(match[10])
     return ArchiveFailure(reasons.get(code,"unavailable"),diagnostic)
 
 
@@ -252,7 +253,10 @@ class CameraArchive:
                     result=self.export_piece(stream,cursor,finish,folder,overall_deadline=deadline,file_bounds=(bounds['start'],bounds['end']))
                     if result is None:raise RuntimeError('invalid_video')
                     piece=getattr(stream,'archive_piece',None) or {'first':cursor,'last':finish,'partial':False}
-                    signature=self.probe_piece(result[0],piece['last']-piece['first'])
+                    try:signature=self.probe_piece(result[0],piece['last']-piece['first'])
+                    except ArchiveFailure as error:
+                        error.diagnostic['record_setup_ms']=piece.get('record_setup_ms',0)
+                        raise
                     if not signature or (signatures and signature!=signatures[0]):raise RuntimeError('invalid_video')
                     if coverage:
                         gap=piece['first']-coverage[-1][1]
@@ -262,7 +266,7 @@ class CameraArchive:
                     paths.append(result[0]);signatures.append(signature);coverage.append((piece['first'],piece['last']))
                     stream.archive_actual_start=coverage[0][0];stream.archive_actual_end=coverage[-1][1]
                     stream.archive_gap_seconds=round(max(0,coverage[-1][1]-coverage[0][0]-sum(b-a for a,b in coverage)),3)
-                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3))
+                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3),record_setup_ms=piece.get('record_setup_ms',0))
                     cursor=min(finish,piece['last']+.001)
                     if not piece['partial']:cursor=finish
                 except RuntimeError as error:
@@ -318,15 +322,15 @@ class CameraArchive:
                     raise RuntimeError('bounded_export')
                 self.stopped.wait(.25)
             metadata=process.stdout.read(512)
-            match=re.fullmatch(rb'(SDTIME|SDPART) ([0-9]{13}) ([0-9]{13})(?: ([1-3]))?\n',metadata)
+            match=re.fullmatch(rb'(SDTIME|SDPART) ([0-9]{13}) ([0-9]{13})(?: ([1-3]))?(?: SETUP ([0-9]{1,6}))?\n',metadata)
             if process.returncode:raise native_failure(process.returncode,metadata)
             if not output.is_file() or output.stat().st_size>MAX_ARCHIVE_BYTES:return None
             if not match:raise RuntimeError('timestamp_unverified')
             partial=match[1]==b'SDPART'
             if (partial and match[4] is None) or (not partial and match[4] is not None):raise RuntimeError('timestamp_unverified')
             first,last=int(match[2])/1000,int(match[3])/1000
-            if not start<=first<=start+5 or not first<last<=end+5 or (not partial and last<end-3):raise RuntimeError('timestamp_unverified')
-            stream.archive_piece={'first':first,'last':last,'partial':partial}
+            if not start<=first<end or not first<last<=end+5 or (not partial and (first>start+1 or last<end-3)):raise RuntimeError('timestamp_unverified')
+            stream.archive_piece={'first':first,'last':last,'partial':partial,'record_setup_ms':int(match[5]) if match[5] else 0}
             return output,round(max(0,min(5,start+5-first)),2)
         finally:
             self.kill(process);process.wait(timeout=5)
