@@ -1,5 +1,6 @@
 """Best-effort SD playback export; validated replacement only, never delete fallback."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import queue
@@ -14,6 +15,7 @@ import threading
 import time
 
 import video
+from runtime_policy import background_priority
 
 MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
 EXPORT_OVERHEAD = 180
@@ -204,6 +206,7 @@ class CameraArchive:
         with self.lock:
             if self.stopped.is_set():raise RuntimeError('stopped')
             self.process=subprocess.Popen(args,start_new_session=True,stderr=subprocess.DEVNULL,**kwargs)
+            background_priority(self.process)
             return self.process
 
     def probe_piece(self,path,expected):
@@ -219,20 +222,30 @@ class CameraArchive:
         except (OSError,ValueError,KeyError,IndexError,subprocess.TimeoutExpired):raise ArchiveFailure('invalid_video',{'stage':5})
 
     def export(self,stream,start,end,directory):
+        if importlib.util.find_spec('cv2') is not None and importlib.util.find_spec('numpy') is not None:
+            stream.archive_use_frames=True
         if not self.allowed(stream,30):return None
         deadline=min(time.monotonic()+min(600,(end-start)*2+EXPORT_OVERHEAD),getattr(stream,'monitor_until',float('inf')))
-        records=self.query_records(stream,start,end,directory)
-        if not records:raise RuntimeError('no_recording')
-        try:parts=playback_segments(records,start,end)
-        except RuntimeError:
-            if getattr(stream,'archive_list_partial',False):raise RuntimeError('list_incomplete')
-            raise
+        try:
+            records=self.query_records(stream,start,end,directory)
+            if not records:raise RuntimeError('no_recording')
+            try:parts=playback_segments(records,start,end)
+            except RuntimeError:
+                if getattr(stream,'archive_list_partial',False):raise RuntimeError('list_incomplete')
+                raise
+        except RuntimeError as error:
+            if str(error) not in ('list_unavailable','list_incomplete','recording_gap'):raise
+            # Open playback by time when the SDK cannot enumerate files. These
+            # are requested bounds, not a claim that a card file was discovered.
+            stream.archive_use_frames=True;stream.archive_without_list=True
+            records=[{'start':start,'end':end}];parts=[(start,end)]
+            self.event(stream,'card_attempt_result',source='sd_frames',status=str(error))
         stream.archive_gap_seconds=round(max(0,end-start-sum(b-a for a,b in parts)),3)
         paths=[];pre_roll=0;coverage=[];signatures=[];serial=0;last_error=None
         stream.archive_partial=False
         stream.archive_actual_start=0;stream.archive_actual_end=0
         retryable={'list_unavailable','list_incomplete','playback_unavailable','timestamp_unverified','seek_unavailable',
-            'recording_unavailable','unavailable','invalid_video','bounded_export'}
+            'recording_unavailable','unavailable','invalid_video','bounded_export','no_frames'}
         for begin,finish in parts:
             cursor=begin
             bounds=max((r for r in records if r['start']<=begin and r['end']>=finish),key=lambda r:r['start'])
@@ -246,7 +259,7 @@ class CameraArchive:
                     self.stopped.wait(delay)
                 self.job_update(getattr(stream,'archive_job_id',None),progress={'attempt':attempt,'max_attempts':MAX_CARD_ATTEMPTS,
                     'received_seconds':round(sum(b-a for a,b in coverage),2),'requested_seconds':round(end-start,2)})
-                self.event(stream,'card_attempt',attempt=attempt,max_attempts=MAX_CARD_ATTEMPTS,received_seconds=round(sum(b-a for a,b in coverage),2))
+                self.event(stream,'card_attempt',source='sd_frames' if getattr(stream,'archive_use_frames',False) else 'sd',attempt=attempt,max_attempts=MAX_CARD_ATTEMPTS,received_seconds=round(sum(b-a for a,b in coverage),2))
                 folder=Path(directory)/f'piece-{serial:02d}';serial+=1;folder.mkdir(mode=0o700)
                 stream.archive_piece=None;result=None
                 try:
@@ -266,12 +279,14 @@ class CameraArchive:
                     paths.append(result[0]);signatures.append(signature);coverage.append((piece['first'],piece['last']))
                     stream.archive_actual_start=coverage[0][0];stream.archive_actual_end=coverage[-1][1]
                     stream.archive_gap_seconds=round(max(0,coverage[-1][1]-coverage[0][0]-sum(b-a for a,b in coverage)),3)
-                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3),record_setup_ms=piece.get('record_setup_ms',0))
+                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3),record_setup_ms=piece.get('record_setup_ms',0),source=piece.get('method','sd'),frames=piece.get('frame_count',0))
                     cursor=min(finish,piece['last']+.001)
                     if not piece['partial']:cursor=finish
                 except RuntimeError as error:
                     last_error=error
-                    self.event(stream,'card_attempt_result',status=str(error),attempt=attempt,**getattr(error,'diagnostic',{}))
+                    self.event(stream,'card_attempt_result',status=str(error),attempt=attempt,source='sd_frames' if getattr(stream,'archive_use_frames',False) else 'sd',**getattr(error,'diagnostic',{}))
+                    if str(error) in ('invalid_video','timestamp_unverified') and getattr(error,'diagnostic',{}).get('stage',3)>=3:
+                        stream.archive_use_frames=True
                     if not paths or result is None or (paths and folder not in [path.parent for path in paths]):
                         shutil.rmtree(folder,ignore_errors=True)
                     if str(error) not in retryable:break
@@ -311,6 +326,10 @@ class CameraArchive:
         env=dict(os.environ,WINEDEBUG='-all',WINEDLLOVERRIDES='mscoree,mshtml=',WINEPREFIX=str(video.ROOT/'.local'/'wine-video'))
         deadline=min(overall_deadline,time.monotonic()+end-start+60,getattr(stream,'monitor_until',float('inf')))
         if file_bounds is not None:payload+=''.join(str(round(value*1000))+'\n' for value in file_bounds)+str(max(1000,min(300000,round((deadline-time.monotonic()-2)*1000))))+'\n'
+        if file_bounds is not None and getattr(stream,'archive_use_frames',False):
+            from archive_frames import capture
+            try:return capture(self,stream,start,end,directory,payload,env,deadline)
+            except (OSError,ValueError,subprocess.TimeoutExpired):raise ArchiveFailure('playback_unavailable') from None
         process=self.launch([shutil.which('wine') or shutil.which('wine64'),str(video.NATIVE/'yoosee_snapshot.exe'),'--archive-known' if file_bounds is not None else '--archive'],
             cwd=directory,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
         try:

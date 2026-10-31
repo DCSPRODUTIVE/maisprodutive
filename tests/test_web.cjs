@@ -40,7 +40,7 @@ async function setup(networkResponse, statusOverride = {}, loginResponse = null,
     throw new Error("Unexpected request: " + url);
   };
   const code = fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8");
-  vm.runInNewContext(code, { fetch, AbortSignal, Date: class extends Date { static now() { return clock; } },
+  vm.runInNewContext(code, { fetch, AbortSignal, performance:extra.__performance, Date: class extends Date { static now() { return clock; } },
     setInterval: (fn) => { intervals.push(fn); return intervals.length; },
     setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
     clearTimeout: (id) => timers.delete(id),
@@ -509,4 +509,47 @@ test('touch menu exit also leaves an expanded camera without fullscreen API supp
   assert.equal(get('fullscreen-actions').hidden,true);
   assert.ok(!descendants(get('cameras')).some(e=>e.className?.includes('camera-expanded')));
   assert.equal(calls.filter(c=>c.url==='/api/video/start').length,starts);
+});
+
+test('MJPEG with no decoded image never claims live and falls back without reopening the camera',async()=>{
+  const {get,calls,advance,runTimer,runDelay}=await setup(null,{...liveStatus,mjpeg_available:true},null,null,liveResponses());
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  const badge=()=>descendants(get('cameras').children[0]).find(el=>el.className==='camera-badge');
+  assert.doesNotMatch(badge().textContent,/AO VIVO/);
+  advance(6500);await runDelay(1500);await runDelay(100);
+  const requests=calls.filter(c=>c.url==='/api/video/frame').map(c=>JSON.parse(c.options.body));
+  assert.equal(requests[0].metadata_only,true);
+  assert.equal(requests.at(-1).metadata_only,undefined);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,1);
+  const image=descendants(get('cameras').children[0]).find(el=>el.tagName==='img');
+  assert.match(image.src,/^data:image\/jpeg;base64,/);
+});
+
+test('unknown frame age never renders Infinity seconds or a live badge',async()=>{
+  const responses=liveResponses();
+  responses['/api/video/frame']={ok:true,json:async()=>({device_id:'a',sequence:0,age_seconds:null,state:'waiting'})};
+  const {get,runTimer}=await setup(null,{...liveStatus,devices:[{id:'a',name:'Entrada'}]},null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  assert.doesNotMatch(descendants(get('cameras')).map(e=>e.textContent).join(' '),/Infinity|NaN|AO VIVO/);
+});
+
+test('HTTP1 reserves browser connections for controls instead of opening eight permanent streams',async()=>{
+  const devices=Array.from({length:8},(_,i)=>({id:String(i),name:'Camera '+i}));
+  const {get,calls,runTimer}=await setup(null,{...liveStatus,mjpeg_available:true,devices},null,null,liveResponses());
+  await get('watch-all').handlers.click();
+  for(let i=0;i<8;i++)await runTimer();
+  const requests=calls.filter(c=>c.url==='/api/video/frame').slice(0,8).map(c=>JSON.parse(c.options.body));
+  assert.equal(requests.filter(c=>c.metadata_only).length,4);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,8);
+});
+
+
+test('confirmed HTTP2 allows all mosaic MJPEG streams without the HTTP1 connection cap',async()=>{
+  const devices=Array.from({length:8},(_,i)=>({id:String(i),name:'Camera '+i}));
+  const responses=liveResponses();responses.__performance={getEntriesByType:()=>[{name:'https://dcs.test/api/status',nextHopProtocol:'h2'}]};
+  const {get,calls,runTimer}=await setup(null,{...liveStatus,mjpeg_available:true,devices},null,null,responses);
+  await get('watch-all').handlers.click();
+  for(let i=0;i<8;i++)await runTimer();
+  const requests=calls.filter(c=>c.url==='/api/video/frame').slice(0,8).map(c=>JSON.parse(c.options.body));
+  assert.equal(requests.filter(c=>c.metadata_only).length,8);
 });

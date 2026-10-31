@@ -258,3 +258,13 @@ class WebcamPipelineTests(unittest.TestCase):
         finally:stream.stop()
         self.assertEqual(closed,[True]);self.assertTrue(stream.done.is_set())
         self.assertTrue(all(p.poll() is not None for p in stream.processes))
+
+class MetadataTests(unittest.TestCase):
+    def test_metadata_reads_health_without_base64_serialization(self):
+        with patch('live.video.readiness',return_value=(True,'')):
+            stream=LiveStream(DesktopAccount('id','private-test-token'),'camera',time.monotonic()+30,lambda:None)
+        stream.image=b'jpeg';stream.sequence=1;stream.last_frame=time.monotonic()
+        with patch('live.base64.b64encode') as encode:
+            result=stream.metadata(0)
+            self.assertIsNone(result['image']);self.assertEqual(result['state'],'receiving')
+            encode.assert_not_called()

@@ -136,3 +136,12 @@ class BackgroundTests(unittest.TestCase):
         self.manager.tick()
         self.assertIn('connection_failed',events)
         self.assertNotIn('connection_lost',events)
+
+    def test_metadata_does_not_encode_the_cached_picture(self):
+        from unittest.mock import patch
+        self.configure(False);self.manager.tick()
+        view=self.manager.view('owner','a',640,0)
+        with patch('background.base64.b64encode') as encode:
+            result=view.metadata(0)
+            self.assertIsNone(result['image']);self.assertEqual(result['state'],'receiving')
+            encode.assert_not_called()

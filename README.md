@@ -648,7 +648,7 @@ A análise dos diagnósticos mostrou pressão de trabalho em um servidor de quat
 CPUs e tentativas sem primeiro quadro contabilizadas como quedas. Agora o histórico
 separa falhas de abertura de interrupções após receber imagens. Em servidores de
 até quatro CPUs, apenas um vídeo local é codificado por vez; as conexões iniciam
-em grupos de dois (um em máquinas de até duas CPUs). Isso reserva capacidade para
+uma por vez nessas máquinas. Isso reserva capacidade para
 os fluxos e a detecção, sem mudar as preferências ou a qualidade escolhida.
 
 O primeiro quadro tem até 50 segundos no adaptador e 55 no controlador, a fila
@@ -682,7 +682,7 @@ recebida e os eventos de conexão. Os limites efetivos de concorrência e espera
 aparecem no diagnóstico; os contadores antigos não são reclassificados.
 
 
-## Retorno da tela cheia no Android
+## Retorno da tela cheia no Android (76fac03)
 
 A visão completa e a câmera ampliada têm uma barra sempre visível com
 **Voltar ao menu** e **Reports**. Os controles funcionam por toque, sem depender de
@@ -699,3 +699,69 @@ Esta revisão altera a interface e os diagnósticos; não exige recompilar o ada
 Atualize com `git pull`, reinicie `dcs-control.service` e recarregue a página. No
 Android, feche e reabra o atalho/app após a atualização do servidor se ele ainda
 mostrar a interface antiga.
+
+## Recuperação da visualização, carga e alternativa do cartão
+
+O diagnóstico mostrou carga de trabalho acima de 31 em quatro CPUs após uma
+reinicialização. Isso indica pressão de CPU e/ou I/O, mas não identifica a causa
+da queda anterior sem dados do sistema operacional daquele momento. Novos logs
+incluem tempo desde o boot, contagem de OOM no boot atual, pressão de CPU/memória/I/O
+e totais numéricos de processos, threads e RSS conhecidos. Também mostram fontes
+ativas por câmera e possíveis conexões duplicadas da conta. Não leem argumentos,
+ambiente nem mensagens privadas dos processos; RSS agregado pode contar páginas
+compartilhadas e não equivale ao consumo físico exclusivo.
+
+Em máquinas de até quatro CPUs, a abertura P2P agora ocorre uma por vez. Os
+auxiliares de vídeo recebem menor prioridade de CPU no Linux, sem limite artificial
+quando há capacidade disponível. A consulta de metadados deixa de converter JPEG
+para base64 para depois descartá-lo. A amostragem nativa mantém a cadência alvo de
+10 quadros/s: antes, uma fonte de 15 quadros/s podia ser reduzida para aproximadamente
+7,5 por arredondar cada espera. Isso não garante 10 quadros/s recebidos ou gravados;
+rede, fonte e recursos disponíveis continuam determinantes.
+
+A visualização MJPEG só recebe indicação de ao vivo depois de o navegador conseguir
+exibir a imagem. Se chegam metadados mas nenhuma imagem é decodificada em seis
+segundos, o painel tenta obter JPEGs pela API, mantendo a mesma conexão com a câmera.
+Sem HTTP/2 ou HTTP/3 confirmado, o navegador usa no máximo quatro conexões MJPEG,
+reservando conexões para comandos e demais imagens; as outras câmeras usam JPEGs
+pela API. Esse modo de recuperação consulta até cinco vezes por segundo; não altera a resolução
+escolhida nem abre outra conexão P2P. Economia e último quadro continuam preservados.
+Um quadro com pixels pretos enviado pela própria câmera não é distinguido de uma cena
+escura por esse teste: ele trata falha de exibição/transporte, sem presumir movimento.
+
+Os testes do gravador do cartão mostraram que a diferença de aproximadamente 5,5
+segundos persistia com preparação de apenas 150 ms; portanto, o ajuste anterior de
+pausa não explicou o problema. Agora, com OpenCV/NumPy disponíveis, a cópia prefere outra rota:
+receber os quadros decodificados da **reprodução do cartão**, com o relógio de playback
+do SDK, e gerar MP4 H.264 com intervalos variáveis. Não usa o MP4 problemático do
+`startRecord`, nem estica seu tempo para fazê-lo parecer correto. Quando a listagem
+expira ou não cobre o pedido, a cópia também pode tentar abrir playback diretamente
+pelo horário, validando os quadros efetivamente recebidos. Uma consulta da lista ainda
+pode falhar por incompatibilidade do SDK mesmo quando essa tentativa de cópia funciona.
+
+O novo caminho descarta horários fora do intervalo ou regressivos; uma interrupção,
+quadro incompleto, mudança de dimensões ou lacuna de mais de dois segundos encerra
+o prefixo aproveitável. Os arquivos são validados por FFprobe antes de salvar. Há
+limites de prazo, disco e staging de 96 MiB; cópias curtas continuam parciais. Depois
+da pausa de Economia não se continua recebendo da câmera; a codificação dos quadros
+já recebidos pode terminar. A gravação local da detecção continua preservada. A
+alternativa exige OpenCV/NumPy locais, já usados pela detecção de pessoas, e grava
+sem áudio. Logs identificam esse caminho como `source: sd_frames`.
+
+A rota foi validada com quadros/horários simulados e FFmpeg real; compatibilidade,
+velocidade e correlação dos callbacks precisam ser confirmadas nos modelos físicos.
+O cliente Yoosee usa uma integração própria com codecs e transporte distintos: esses
+ajustes não tornam a integração experimental equivalente ao aplicativo nativo.
+
+**É necessário recompilar o adaptador nesta revisão:**
+
+```bash
+cd ~/maisprodutive
+git pull
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
+sudo systemctl restart dcs-control.service
+```
+
+Recarregue o navegador e reabra o atalho Android. Entre na conta, se solicitado.
+Para avaliar, peça um backup curto de horário comprovadamente disponível no app e
+copie os logs depois que o trabalho terminar. Não é necessário reiniciar a máquina.

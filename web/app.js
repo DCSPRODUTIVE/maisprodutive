@@ -29,9 +29,15 @@ function frameAge(feed) {
   if(feed.age===null||feed.age===undefined)return Infinity;
   return feed.updatedAt ? (feed.age || 0) + (Date.now() - feed.updatedAt) / 1000 : Infinity;
 }
+function displayed(feed){
+  return !!feed?.image && (!feed.mjpeg || !!views.get(feed.id)?.img.naturalWidth);
+}
+function isFresh(feed){
+  return displayed(feed) && !["paused","retrying","queued","connecting"].includes(feed.state) && frameAge(feed)<=3;
+}
 function updateMetrics() {
   $("camera-count").textContent = String(currentStatus?.devices.length || 0);
-  $("live-count").textContent = String([...feeds.values()].filter((f) => f.image && !["paused","retrying","queued","connecting"].includes(f.state) && frameAge(f) <= 3).length);
+  $("live-count").textContent = String([...feeds.values()].filter((f) => isFresh(f)).length);
   $("capture-count").textContent = String(snapshots.size);
 }
 function buttons() {
@@ -164,7 +170,7 @@ function paint(id) {
   const snapshot = snapshots.get(id);
   const image = feed?.image || snapshot;
   if(view.still){view.still.hidden=!snapshot||(feed?.state==='receiving'&&feed.sequence>0&&view.img.naturalWidth>0);if(snapshot&&view.still.src!==snapshot)view.still.src=snapshot;}
-  const fresh = feed && feed.image && !["paused","retrying","queued","connecting"].includes(feed.state) && frameAge(feed) <= 3;
+  const fresh = isFresh(feed);
   view.card.className = "camera-card" + (id===expandedCamera ? " camera-expanded" : "") + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
   view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : ["retrying","connecting"].includes(feed.state) ? "RECONECTANDO" : feed.state === "queued" ? "NA FILA" : feed.image ? "AGUARDANDO" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
   view.img.hidden = !image || (!!feed?.mjpeg && !feed.sequence);
@@ -172,8 +178,10 @@ function paint(id) {
   if(feed?.mjpeg&&feed.onTransportError)view.img.onerror=feed.onTransportError;
   if (image && (view.img.getAttribute?.('src')||view.img.src) !== image) view.img.src = image;
   view.img.onload = () => {
-    if(feed?.mjpeg)feed.transportFailures=0;
+    if(feed?.mjpeg){feed.transportFailures=0;feed.transportDecoded=true;}
     if(view.still&&feed?.state==='receiving')view.still.hidden=true;
+    view.badge.textContent=isFresh(feed)?"● AO VIVO":view.badge.textContent;
+    updateMetrics();
     if (feed && view.img.naturalWidth) view.caption.textContent = `${feed.caption} Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.`;
   };
   view.caption.textContent = feed ? feed.caption + (view.img.naturalWidth ? ` Quadro integral: ${view.img.naturalWidth} × ${view.img.naturalHeight}.` : "") : errors.get(id) || (snapshot ? "Captura pontual desta sessão. A imagem não está sendo atualizada." : "Selecione Assistir para iniciar a transmissão.");
@@ -349,8 +357,14 @@ function freezeFeed(id){
     canvas.getContext('2d').drawImage(img,0,0);return canvas.toDataURL('image/jpeg',.85);
   }catch{return null;}
 }
+function continuousLimit(){
+  // HTTP/1 browsers commonly allow only six connections to one origin. Leave
+  // capacity for commands/metadata instead of filling every slot with MJPEG.
+  const timings=globalThis.performance?.getEntriesByType?.('resource')||[];
+  return timings.some(entry=>entry.name?.split('?')[0].endsWith('/api/status')&&['h2','h3'].includes(entry.nextHopProtocol))?12:4;
+}
 function continuousSource(feed){
-  feed.transportOpen=true;feed.image=`/api/video/mjpeg?device_id=${encodeURIComponent(feed.id)}&stream_id=${encodeURIComponent(feed.handle)}&t=${Date.now()}`;
+  feed.transportOpen=true;feed.transportStarted=Date.now();feed.transportDecoded=false;feed.image=`/api/video/mjpeg?device_id=${encodeURIComponent(feed.id)}&stream_id=${encodeURIComponent(feed.handle)}&t=${Date.now()}`;
   const img=views.get(feed.id)?.img;
   feed.onTransportError=()=>{
     if(feeds.get(feed.id)!==feed||!feed.mjpeg||!feed.transportOpen||!views.has(feed.id))return;
@@ -425,7 +439,7 @@ async function startOne(id, mosaic = false, retry = false) {
     const effective=attempts>=4?'balanced':attempts>=2&&chosen==='fhd'?'hd':chosen;
     const data = await post("/api/video/start", { device_id: id, mosaic, quality: effective });
     feed.handle = data.stream_id;
-    feed.mjpeg=!!currentStatus?.mjpeg_available;
+    feed.mjpeg=!!currentStatus?.mjpeg_available&&[...feeds.values()].filter(other=>other.mjpeg).length<continuousLimit();
     if(feed.mjpeg)continuousSource(feed);
     paint(id);
     if (feeds.get(id) !== feed) {
@@ -470,6 +484,14 @@ async function pollFeed(feed) {
       if (desired.has(feed.id)) desired.get(feed.id).attempts = 0;
     }
     if(feed.mjpeg){
+      // Receiving metadata does not prove that the browser decoded the MJPEG.
+      const img=views.get(feed.id)?.img;
+      if(data.state==='receiving'&&feed.transportOpen&&!img?.naturalWidth&&Date.now()-feed.transportStarted>=6000){
+        feed.mjpeg=false;feed.transportOpen=false;clearTimeout(feed.transportTimer);
+        img?.removeAttribute?.('src');feed.image=snapshots.get(feed.id)||null;
+        feed.sequence=0;feed.state='connecting';feed.caption='Recuperando a imagem no navegador…';paint(feed.id);
+        feed.timer=setTimeout(()=>pollFeed(feed),100);return;
+      }
       feed.sequence=data.sequence;
       if(data.state!=='receiving'&&data.sequence>0&&feed.cachedSequence!==data.sequence){
         feed.cachedSequence=data.sequence;
@@ -497,10 +519,12 @@ async function pollFeed(feed) {
       : data.state === "retrying" ? `${data.message || "Reconectando a câmera."} Nova tentativa em ${data.retry_seconds || 0}s pelo servidor.`
       : data.state === "queued" ? "Na fila de conexão. A abertura é limitada para proteger o servidor."
       : data.state === "connecting" ? "Reconectando a fonte. O último quadro não é ao vivo."
-      : data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
+      : Number.isFinite(data.age_seconds) && data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
+      : !Number.isFinite(data.age_seconds) ? "Aguardando o primeiro quadro válido…"
+      : !displayed(feed) ? "Servidor recebendo quadros; aguardando a imagem no navegador…"
       : feed.image ? `Recebendo imagens · ${data.health?.fps ?? "—"} fps · ${data.health?.resolution?.join(" × ") || "resolução em leitura"} · sem áudio.${data.health?.detection?.error ? " Falha na análise; nova tentativa automática." : data.health?.detection?.age_seconds !== undefined ? " Análise há "+data.health.detection.age_seconds+"s · "+data.health.detection.people+" pessoa(s)." : ""}` : data.state === "queued" ? "Na fila de conexão. As câmeras abrem em etapas para manter a estabilidade." : "Conectando. Aguardando o primeiro quadro…";
     paint(feed.id); buttons();
-    feed.timer = setTimeout(() => pollFeed(feed), feed.mjpeg ? 1500 : data.state === "paused" ? 1000 : data.image ? 100 : 200);
+    feed.timer = setTimeout(() => pollFeed(feed), feed.mjpeg ? 1500 : data.state === "paused" ? 1000 : data.image ? 200 : 300);
   } catch (error) {
     if (feeds.get(feed.id) !== feed) return;
     cancelOne(feed.id); errors.set(feed.id, error.message);

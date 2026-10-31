@@ -13,9 +13,10 @@ import threading
 import time
 
 import health
+import runtime_health
 
 EVENTS={'source_started','source_closed','connection_lost','connection_failed','connection_retry','camera_state','card_requested','card_attempt','card_attempt_result','card_result','person_detected','detection_failed','account_connected','account_disconnected'}
-WORDS=set('sd_requested recording fetching interrupted no_frames invalid_video encoder_busy encoding_timeout video_tools conversion balanced original hd fhd sent idle queue_full receiving paused retrying queued connecting waiting stopped done partial ready failed live sd sd_backup sd_partial automatic backup list unavailable invalid_video video_stale video_timeout video_native video_decode video_resources video_stopped video_busy video_idle authentication protocol input video_configuration no_recording timestamp_unverified list_unavailable list_incomplete recording_unavailable recording_gap archive_fragmented seek_unavailable playback_unavailable list_request_rejected list_response_unsupported economy_or_disabled cooldown busy adapter_update_required disk_space partial_saved bounded_export'.split())
+WORDS=set('sd_frames sd_requested recording fetching interrupted no_frames invalid_video encoder_busy encoding_timeout video_tools conversion balanced original hd fhd sent idle queue_full receiving paused retrying queued connecting waiting stopped done partial ready failed live sd sd_backup sd_partial automatic backup list unavailable invalid_video video_stale video_timeout video_native video_decode video_resources video_stopped video_busy video_idle authentication protocol input video_configuration no_recording timestamp_unverified list_unavailable list_incomplete recording_unavailable recording_gap archive_fragmented seek_unavailable playback_unavailable list_request_rejected list_response_unsupported economy_or_disabled cooldown busy adapter_update_required disk_space partial_saved bounded_export'.split())
 NUMBERS={'attempt','max_attempts','frames','duration','age_seconds','definition','width','stage','list_kind','records','clock_callbacks','clock_unit','clock_delta_ms','frame_rejection','received_seconds','requested_seconds','fps','record_id','partial','analysis_ms','people','expected_seconds','probe_frames','height','load1','record_setup_ms'}
 IDENTIFIER=re.compile(r'[A-Za-z0-9_:\-]{1,80}\Z')
 
@@ -110,7 +111,8 @@ class Diagnostics:
 
     def build(self,server,owner,devices,client):
         now=time.monotonic();prefs=self.store.preferences(owner);names={d['id']:label(d['name']) for d in devices}
-        active={s.device_id:s for s in server.stream_snapshot() if getattr(s,'report_owner',None)==owner}
+        sources=[s for s in server.stream_snapshot() if getattr(s,'report_owner',None)==owner and not s.stopped.is_set()]
+        active={s.device_id:s for s in sources}
         cameras=[]
         with server.background.lock:
             for device in devices:
@@ -122,7 +124,7 @@ class Diagnostics:
                     'queued' if getattr(native,'connect_started',None) is None else 'connecting')
                 camera_health=health.snapshot(native) if native else {}
                 detection=camera_health.get('detection',{})
-                cameras.append(dict(id=identifier(camera),name=names[camera],state=state,economy=camera in prefs.get('economy_ids',[]),
+                cameras.append(dict(id=identifier(camera),name=names[camera],source_count=sum(s.device_id==camera for s in sources),state=state,economy=camera in prefs.get('economy_ids',[]),
                     detection=camera in prefs.get('detection_ids',[]),last_frame_age_seconds=round(max(0,now-stamp),1) if stamp is not None else None,
                     fps=camera_health.get('fps',0),resolution=camera_health.get('resolution') or (health.jpeg_size(entry.image) if entry and entry.image else None),definition=camera_health.get('definition',entry.definition if entry else None),
                     detection_health={k:v for k,v in detection.items() if k in ('people','analysis_ms','age_seconds','error') and type(v) in (int,float,bool)},
@@ -186,6 +188,7 @@ class Diagnostics:
             statistics.append(dict(camera=camera['id'],name=camera['name'],connections_started=starts,unexpected_drops=lost,initial_open_failures=opening_failed,
                 card_attempts=total('card_attempt'),card_jobs=jobs,card_complete=complete,card_partial=partial,
                 card_complete_percent=round(complete/jobs*100,1) if jobs else None))
+            if camera['source_count']>1:findings.append(dict(camera=camera['id'],code='multiple_sources',detail=f"{camera['source_count']} fontes simultâneas para esta câmera; verificar múltiplas visualizações e consumo do servidor."))
             if opening_failed>=3:findings.append(dict(camera=camera['id'],code='repeated_open_failures',detail=f'{opening_failed} aberturas sem receber o primeiro quadro. Comparar negociação P2P e carga do servidor.'))
             if lost>=3:findings.append(dict(camera=camera['id'],code='repeated_drops',detail=f'{lost} quedas registradas; comparar conexão, qualidade escolhida e carga do servidor.'))
             if camera['state']=='receiving' and camera['fps']<4:findings.append(dict(camera=camera['id'],code='low_received_fps',detail=f"FPS recebido neste instante: {camera['fps']}. Comparar com qualidade e carga do servidor."))
@@ -194,9 +197,9 @@ class Diagnostics:
         if disk.free<1024**3:findings.append(dict(code='low_disk',detail='Menos de 1 GiB livre para gravações e arquivos temporários.'))
         return dict(format='DCS-diagnostics-v1',generated_at=time.time(),version=self.version,uptime_seconds=round(now-self.started),
             scope='Esta conta; sem senhas, tokens, cookies, imagens ou logs brutos do fornecedor. Histórico: até 7 dias/10000 eventos globais; últimos 120 desta conta e até 40 eventos do cartão.',
-            system=dict(os=platform.system(),python=sys.version.split()[0],cpu_count=os.cpu_count(),architecture=platform.machine(),webcam_device_count=sum(bool(d.get('local')) for d in devices),load_average=list(os.getloadavg()) if hasattr(os,'getloadavg') else [],
+            system=dict(runtime=runtime_health.snapshot(),os=platform.system(),python=sys.version.split()[0],cpu_count=os.cpu_count(),architecture=platform.machine(),webcam_device_count=sum(bool(d.get('local')) for d in devices),load_average=list(os.getloadavg()) if hasattr(os,'getloadavg') else [],
                 memory=memory,disk_free_mib=round(disk.free/1024**2),disk_total_mib=round(disk.total/1024**2),ffmpeg=bool(shutil.which('ffmpeg')),ffprobe=bool(shutil.which('ffprobe')),wine=bool(shutil.which('wine') or shutil.which('wine64'))),
-            monitoring=dict(startup_parallelism=startup_parallelism(),encoder_parallelism=encoder_parallelism(),first_frame_timeout=FIRST_FRAME_TIMEOUT,stale_timeout=STALE_TIMEOUT,queue_timeout=QUEUE_TIMEOUT,native_adapter_ready=adapter_ready,background_worker=bool(server.background.thread and server.background.thread.is_alive()),detection_ready=bool(server.reports.ready),
+            monitoring=dict(native_source_count=len(sources),startup_parallelism=startup_parallelism(),encoder_parallelism=encoder_parallelism(),first_frame_timeout=FIRST_FRAME_TIMEOUT,stale_timeout=STALE_TIMEOUT,queue_timeout=QUEUE_TIMEOUT,native_adapter_ready=adapter_ready,background_worker=bool(server.background.thread and server.background.thread.is_alive()),detection_ready=bool(server.reports.ready),
                 detection_worker=bool(server.reports.thread and server.reports.thread.is_alive()),log_queue=self.pending.qsize(),log_dropped=self.dropped,log_write_errors=self.write_errors),
             telegram=dict(enabled=telegram['enabled'],configured=telegram['configured'],last_result=telegram_result),
             card_queue_size=server.archive.queue.qsize(),learning=dict(method='Estatísticas do histórico disponível; sem alteração automática do código ou da qualidade das câmeras.',statistics=statistics,findings=findings),cameras=cameras,people_reports=dict(count=people[0],last_created=people[1]),recent_videos=videos,events=events,card_events=card_events,event_counts=counts,browser=browser)

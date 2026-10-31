@@ -13,6 +13,7 @@ import threading
 import time
 
 import video
+from runtime_policy import background_priority
 import webcam
 from runtime_policy import FIRST_FRAME_TIMEOUT, STALE_TIMEOUT, QUEUE_TIMEOUT, startup_parallelism
 from yoosee import IntegrationError
@@ -129,6 +130,7 @@ class LiveStream:
                 raise IntegrationError('video_stopped', 'Transmissão encerrada.')
             kwargs.setdefault("stderr", subprocess.DEVNULL)
             process = subprocess.Popen(args, start_new_session=True, **kwargs)
+            background_priority(process)
             self.processes.append(process)
             return process
 
@@ -308,7 +310,10 @@ class LiveStream:
             if self.stopped.is_set():raise IntegrationError('video_stopped','Transmissão encerrada.')
             return self.image if self.sequence>after else None,self.sequence
 
-    def frame(self, after, wait=True):
+    def metadata(self, after):
+        return self.frame(after, wait=False, include_image=False)
+
+    def frame(self, after, wait=True, include_image=True):
         if not isinstance(after, int) or isinstance(after, bool) or after < 0:
             raise IntegrationError('input', 'Sequência de vídeo inválida.')
         with self.condition:
@@ -319,10 +324,10 @@ class LiveStream:
                 raise self.error
             if self.stopped.is_set():
                 raise IntegrationError('video_stopped', 'Transmissão encerrada.')
-            image = self.image if self.sequence > after else None
+            image = self.image if include_image and self.sequence > after else None
             age = time.monotonic()-self.last_frame if self.last_frame is not None else None
             return {'device_id': self.device_id, 'sequence': self.sequence,
                     'image': 'data:image/jpeg;base64,'+base64.b64encode(image).decode() if image else None,
                     'age_seconds': round(age, 2) if age is not None else None,
                     'health': health.snapshot(self),
-                    'state': 'receiving' if image else 'waiting' if self.sequence else 'connecting' if self.connect_started is not None else 'queued'}
+                    'state': 'receiving' if self.sequence > after else 'waiting' if self.sequence else 'connecting' if self.connect_started is not None else 'queued'}

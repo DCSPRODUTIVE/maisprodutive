@@ -85,7 +85,7 @@ int main(void) {
         fixture=r'''#include <assert.h>
 typedef long long LONG64;
 static long clock_callbacks,clock_unit,record_tracking;
-static LONG64 archive_first_time,archive_last_time;
+static LONG64 archive_first_time,archive_last_time,archive_clock;
 static void InterlockedIncrement(long *value) { ++*value; }
 static void InterlockedExchange(long *value,long next) { *value=next; }
 static void InterlockedExchange64(LONG64 *value,LONG64 next) { *value=next; }

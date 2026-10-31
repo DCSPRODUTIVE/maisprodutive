@@ -16,14 +16,17 @@ static volatile LONG writing;
 static volatile LONG frame_count;
 static int streaming;
 static int archive_mode;
-static int list_mode, known_archive;
+static int list_mode, known_archive, archive_frames;
+static unsigned long long requested_end;
+static volatile LONG64 archive_clock, captured_first, captured_last;
+static volatile LONG captured_frames;
 static volatile LONG clock_callbacks, clock_unit, record_tracking;
 static ULONGLONG record_prepare_ms;
 static unsigned long long requested_begin;
 static ULONGLONG process_started;
 static unsigned char *chroma;
 static size_t chroma_capacity;
-static ULONGLONG last_frame, last_sent;
+static ULONGLONG last_frame, next_frame;
 static int width, height, format = -1;
 static int last_format = -1, last_width, last_height, last_reason, rejected;
 static void *callbacks[4];
@@ -40,10 +43,19 @@ static void init(void *self, const unsigned char *header) {
     memcpy(&format, header + 0x18, 4);
 }
 static void release(void *self) { (void)self; format = -1; }
+/* BEGIN portable frame cadence contract */
+static int frame_due(unsigned long long now,unsigned long long *next) {
+    if (*next && now<*next) return 0;
+    if (!*next || now>*next+200) *next=now+100;
+    else *next+=100;
+    return 1;
+}
+/* END portable frame cadence contract */
 static void frame(void *self, const unsigned char *av) {
     (void)self;
     if (InterlockedCompareExchange(&writing, 1, 0)) return;
     int w, h, sy, su, sv, reason = 0, planar = 0; const void *y, *u, *v;
+    unsigned long long frame_stamp=0;
     memcpy(&w, av + 0x40, 4); memcpy(&h, av + 0x44, 4);
     memcpy(&y, av, 8); memcpy(&u, av + 0x10, 8); memcpy(&v, av + 0x20, 8);
     memcpy(&sy, av + 8, 4); memcpy(&su, av + 0x18, 4); memcpy(&sv, av + 0x28, 4);
@@ -67,8 +79,14 @@ static void frame(void *self, const unsigned char *av) {
         InterlockedExchange(&finished, -23); return;
     }
     last_frame = now;
-    if (archive_mode) { InterlockedIncrement(&frame_count); InterlockedExchange(&writing,0); return; }
-    if (streaming && frame_count && now - last_sent < 100) {
+    if (archive_mode && !archive_frames) { InterlockedIncrement(&frame_count); InterlockedExchange(&writing,0); return; }
+    if (archive_frames) {
+        frame_stamp=(unsigned long long)InterlockedCompareExchange64(&archive_clock,0,0);
+        if (frame_stamp<requested_begin || frame_stamp>=requested_end || frame_stamp<=(unsigned long long)captured_last) {
+            InterlockedIncrement(&frame_count);InterlockedExchange(&writing,0);return;
+        }
+    }
+    if (streaming && !frame_due(now,&next_frame)) {
         InterlockedExchange(&writing, 0); return;
     }
     if (format == 5 && !planar) {
@@ -86,14 +104,18 @@ static void frame(void *self, const unsigned char *av) {
     width = w; height = h;
     char header[120];
     int n;
-    if (!frame_count) n = snprintf(header, sizeof(header), "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C420jpeg\nFRAME\n", w, h, streaming ? 10 : 1);
+    if (archive_frames) n=snprintf(header,sizeof(header),"DCSYUV1 %d %d %llu %d\n",w,h,frame_stamp,w*h*3/2);
+    else if (!frame_count) n = snprintf(header, sizeof(header), "YUV4MPEG2 W%d H%d F%d:1 Ip A1:1 C420jpeg\nFRAME\n", w, h, streaming ? 10 : 1);
     else n = snprintf(header, sizeof(header), "FRAME\n");
     if (!emit(header, n) || !emit(y, w*h) || !emit(u, w*h/4) || !emit(v, w*h/4)) {
         InterlockedExchange(&finished, -21); return;
     }
-    last_sent = now;
+    if (archive_frames) {
+        InterlockedCompareExchange64(&captured_first,(LONG64)frame_stamp,0);
+        InterlockedExchange64(&captured_last,(LONG64)frame_stamp);InterlockedIncrement(&captured_frames);
+    }
     InterlockedIncrement(&frame_count);
-    if (streaming) InterlockedExchange(&writing, 0);
+    if (streaming || archive_frames) InterlockedExchange(&writing, 0);
     else InterlockedExchange(&finished, 1);
 }
 
@@ -134,6 +156,7 @@ static void time_invoke(void *self, const unsigned long long *stamp) {
     if (milliseconds) {
         if (record_tracking) InterlockedCompareExchange64(&archive_first_time,(LONG64)milliseconds,0);
         InterlockedExchange64(&archive_last_time,(LONG64)milliseconds);
+        InterlockedExchange64(&archive_clock,(LONG64)milliseconds);
     }
 }
 static const void *time_type(void *self) { (void)self; return NULL; }
@@ -268,7 +291,8 @@ int main(int argc, char **argv) {
     streaming = argc==2 && (strcmp(argv[1],"--stream")==0 || strcmp(argv[1],"--stream-hd")==0 || strcmp(argv[1],"--stream-fhd")==0);
     if (streaming && strcmp(argv[1],"--stream-hd")==0) definition=1;
     if (streaming && strcmp(argv[1],"--stream-fhd")==0) definition=2;
-    known_archive = argc==2 && strcmp(argv[1],"--archive-known")==0;
+    archive_frames=argc==2 && (strcmp(argv[1],"--archive-frames-known")==0 || strcmp(argv[1],"--archive-frames")==0);
+    known_archive = archive_frames || (argc==2 && strcmp(argv[1],"--archive-known")==0);
     archive_mode = argc==2 && (strcmp(argv[1],"--archive")==0 || known_archive);
     list_mode = argc==2 && strcmp(argv[1],"--list")==0;
     char id[128],token[8192],device[128];
@@ -292,7 +316,7 @@ int main(int argc, char **argv) {
         if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
         unsigned long long begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
         unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:125000ULL)) ExitProcess(30);
-        requested_begin=begin;
+        requested_begin=begin;requested_end=end;
         unsigned long long file_begin=0,file_end=0;
         ULONGLONG process_deadline=process_started+end-begin+60000;
         if (known_archive) {
@@ -350,6 +374,21 @@ int main(int argc, char **argv) {
         ULONGLONG waiting=GetTickCount64();
         while (!frame_count && GetTickCount64()-waiting<25000) Sleep(50);
         if (!frame_count) archive_failure(36,2);
+        if (archive_frames) {
+            /* The playback clock bounds every emitted frame. A model that starts
+             * late yields a partial, never a falsely complete requested clip. */
+            ULONGLONG progressed=GetTickCount64();LONG64 previous=archive_clock;
+            while (GetTickCount64()+2000<process_deadline) {
+                LONG64 stamp=InterlockedCompareExchange64(&archive_clock,0,0);
+                if ((unsigned long long)stamp>=end) break;
+                if (stamp>previous) {previous=stamp;progressed=GetTickCount64();}
+                if (GetTickCount64()-last_frame>15000 || GetTickCount64()-progressed>15000) break;
+                Sleep(50);
+            }
+            /* ExitProcess stops further callbacks. Reader uses only frame headers,
+             * and safely discards an incomplete final frame if playback is cut. */
+            ExitProcess(captured_frames>=2?0:33);
+        }
         int (*seek)(void *,unsigned long long,unsigned long long,void *)=symbol(dll,"?seekPlaybackPosition@IoTVideoPlayer@@QEAAH_K0V?$function@$$A6AXE@Z@std@@@Z");
         if ((unsigned long long)archive_last_time<begin || (unsigned long long)archive_last_time>begin+5000) {
         InterlockedExchange64(&archive_last_time,0);

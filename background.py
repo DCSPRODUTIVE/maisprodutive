@@ -57,6 +57,10 @@ class ManagedView:
         if self.stopped.is_set():raise IntegrationError('video_stopped','Visualização encerrada.')
         return self.manager.jpeg_frame(self.owner,self.device_id,after)
 
+    def metadata(self, after):
+        if self.stopped.is_set():raise IntegrationError('video_stopped','Visualização encerrada.')
+        return self.manager.frame(self.owner,self.device_id,after,include_image=False)
+
     def frame(self, after, wait=True):
         if self.stopped.is_set():
             raise IntegrationError('video_stopped', 'Visualização encerrada.')
@@ -219,7 +223,7 @@ class BackgroundMonitor:
                     entry.retry_at = now + min(60, 2 * 2 ** min(entry.attempts, 5))
                     entry.attempts += 1
 
-    def frame(self, owner, device_id, after):
+    def frame(self, owner, device_id, after, include_image=True):
         if type(after) is not int or after < 0:
             raise IntegrationError('input', 'Sequência de vídeo inválida.')
         with self.lock:
@@ -232,7 +236,7 @@ class BackgroundMonitor:
             stream = entry.native
             has_native = stream is not None and not stream.stopped.is_set()
             age = now-entry.last_frame if entry.last_frame is not None else None
-            image = entry.image if entry.sequence > after else None
+            image = entry.image if include_image and entry.sequence > after else None
             native_stamp=getattr(stream,'last_frame',None) if has_native else None
             state = ('paused' if paused else 'retrying' if not has_native and entry.message else
                      'receiving' if native_stamp is not None and now-native_stamp<=3 else

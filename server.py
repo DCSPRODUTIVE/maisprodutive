@@ -436,7 +436,10 @@ class Handler(BaseHTTPRequestHandler):
                     stream=state['streams'].get(device_id)
                     if stream is None or state['client'] is None:raise IntegrationError('authentication','Inicie a transmissão desta câmera nesta sessão primeiro.')
                     if body.get('stream_id')!=stream.handle:raise IntegrationError('video_stopped','Esta transmissão foi substituída. Inicie novamente.')
-                data=stream.frame(body.get('after',0),wait=False)
+                if body.get('metadata_only') is True and callable(getattr(stream,'metadata',None)):
+                    data=stream.metadata(body.get('after',0))
+                else:
+                    data=stream.frame(body.get('after',0),wait=False)
                 if body.get('metadata_only') is True:data['image']=None
                 return self.send(200,data)
             except IntegrationError as error:return self.send(422,{'error':error.kind,'message':str(error)})
