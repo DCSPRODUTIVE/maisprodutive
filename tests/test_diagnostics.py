@@ -41,3 +41,22 @@ class DiagnosticHistoryTests(unittest.TestCase):
                 self.assertTrue(any(event['details'].get('record_setup_ms')==5800 for event in events))
                 self.assertNotIn('private-vendor-text',json.dumps(events))
             finally:log.close()
+
+    def test_card_evidence_survives_busy_connection_history_and_is_account_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log=Diagnostics(EventStore(directory))
+            try:
+                log.record('owner','123','card_attempt_result',status='failed',record_setup_ms=5800,token='private-token')
+                log.record('other','999','card_result',status='done')
+                log.pending.join()
+                for _ in range(130):log.record('owner','123','camera_state',state='receiving')
+                log.pending.join()
+                self.assertFalse(any(row['event'].startswith('card_') for row in log.history('owner')[0]))
+                cards=log.card_history('owner')
+                self.assertEqual(len(cards),1)
+                self.assertEqual(cards[0]['details']['record_setup_ms'],5800)
+                self.assertNotIn('private-token',json.dumps(cards))
+                self.assertNotIn('999',json.dumps(cards))
+                for _ in range(45):log.record('owner','123','card_attempt',attempt=1)
+                log.pending.join();self.assertEqual(len(log.card_history('owner')),40)
+            finally:log.close()

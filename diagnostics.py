@@ -95,6 +95,19 @@ class Diagnostics:
             with self.lock:rows=[r for r in self.recent if r['owner']==owner][-120:]
             return [{k:v for k,v in r.items() if k!='owner'} for r in reversed(rows)],[]
 
+    def card_history(self,owner):
+        # Keep SD evidence available even after 120 newer connection events.
+        allowed=('card_requested','card_attempt','card_attempt_result','card_result')
+        try:
+            with self.store.guard,self.store.connect() as db:
+                self.table(db)
+                rows=db.execute('SELECT camera,created,event,details FROM diagnostic_events WHERE owner=? AND created>? AND event IN (?,?,?,?) ORDER BY id DESC LIMIT 40',
+                    (owner,time.time()-7*86400,*allowed)).fetchall()
+            return [dict(camera=r['camera'],created=r['created'],event=r['event'],details=fields(json.loads(r['details']))) for r in rows]
+        except Exception:
+            with self.lock:rows=[r for r in self.recent if r['owner']==owner and r['event'] in allowed][-40:]
+            return [{k:v for k,v in r.items() if k!='owner'} for r in reversed(rows)]
+
     def build(self,server,owner,devices,client):
         now=time.monotonic();prefs=self.store.preferences(owner);names={d['id']:label(d['name']) for d in devices}
         active={s.device_id:s for s in server.stream_snapshot() if getattr(s,'report_owner',None)==owner}
@@ -117,6 +130,8 @@ class Diagnostics:
                     next_window_seconds=round(entry.next_open(server.background.clock())) if entry else 0,
                     error_code=getattr(getattr(native,'error',None),'kind',None) if getattr(getattr(native,'error',None),'kind',None) in WORDS else None))
         events,counts=self.history(owner)
+        card_events=self.card_history(owner)
+        for event in card_events:event['name']=names.get(event['camera'],event['camera'])
         for event in events:event['name']=names.get(event['camera'],event['camera'])
         videos=[]
         for row in self.store.videos(owner):
@@ -178,13 +193,13 @@ class Diagnostics:
         if hasattr(os,'getloadavg') and os.getloadavg()[0]>(os.cpu_count() or 1):findings.append(dict(code='server_pressure',detail='Carga de trabalho elevada em relação ao número de CPUs; correlacionar com aberturas e cópias do cartão.'))
         if disk.free<1024**3:findings.append(dict(code='low_disk',detail='Menos de 1 GiB livre para gravações e arquivos temporários.'))
         return dict(format='DCS-diagnostics-v1',generated_at=time.time(),version=self.version,uptime_seconds=round(now-self.started),
-            scope='Esta conta; sem senhas, tokens, cookies, imagens ou logs brutos do fornecedor. Histórico: até 7 dias/10000 eventos globais; últimos 120 desta conta.',
+            scope='Esta conta; sem senhas, tokens, cookies, imagens ou logs brutos do fornecedor. Histórico: até 7 dias/10000 eventos globais; últimos 120 desta conta e até 40 eventos do cartão.',
             system=dict(os=platform.system(),python=sys.version.split()[0],cpu_count=os.cpu_count(),architecture=platform.machine(),webcam_device_count=sum(bool(d.get('local')) for d in devices),load_average=list(os.getloadavg()) if hasattr(os,'getloadavg') else [],
                 memory=memory,disk_free_mib=round(disk.free/1024**2),disk_total_mib=round(disk.total/1024**2),ffmpeg=bool(shutil.which('ffmpeg')),ffprobe=bool(shutil.which('ffprobe')),wine=bool(shutil.which('wine') or shutil.which('wine64'))),
             monitoring=dict(startup_parallelism=startup_parallelism(),encoder_parallelism=encoder_parallelism(),first_frame_timeout=FIRST_FRAME_TIMEOUT,stale_timeout=STALE_TIMEOUT,queue_timeout=QUEUE_TIMEOUT,native_adapter_ready=adapter_ready,background_worker=bool(server.background.thread and server.background.thread.is_alive()),detection_ready=bool(server.reports.ready),
                 detection_worker=bool(server.reports.thread and server.reports.thread.is_alive()),log_queue=self.pending.qsize(),log_dropped=self.dropped,log_write_errors=self.write_errors),
             telegram=dict(enabled=telegram['enabled'],configured=telegram['configured'],last_result=telegram_result),
-            card_queue_size=server.archive.queue.qsize(),learning=dict(method='Estatísticas do histórico disponível; sem alteração automática do código ou da qualidade das câmeras.',statistics=statistics,findings=findings),cameras=cameras,people_reports=dict(count=people[0],last_created=people[1]),recent_videos=videos,events=events,event_counts=counts,browser=browser)
+            card_queue_size=server.archive.queue.qsize(),learning=dict(method='Estatísticas do histórico disponível; sem alteração automática do código ou da qualidade das câmeras.',statistics=statistics,findings=findings),cameras=cameras,people_reports=dict(count=people[0],last_created=people[1]),recent_videos=videos,events=events,card_events=card_events,event_counts=counts,browser=browser)
 
     def close(self):
         self.stopped.set();self.thread.join(timeout=3)

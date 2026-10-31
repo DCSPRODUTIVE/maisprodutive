@@ -483,3 +483,30 @@ test('economy cache stays visible through a transport error and a reconnect',asy
   assert.equal(still.src,'data:image/jpeg;base64,last-frame');assert.equal(still.hidden,false);
   assert.notEqual(get('live-count').textContent,'1');
 });
+
+
+test('touch menu exit leaves the wall without stopping or reconnecting cameras',async()=>{
+  const {get,calls}=await setup(null,liveStatus,null,null,liveResponses());
+  await get('watch-all').handlers.click();
+  assert.equal(get('fullscreen-actions').hidden,false);
+  const starts=calls.filter(c=>c.url==='/api/video/start').length;
+  const stops=calls.filter(c=>c.url==='/api/video/stop').length;
+  await get('tv-exit').handlers.click();
+  assert.equal(get('dashboard').className,'');
+  assert.equal(get('fullscreen-actions').hidden,true);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,starts);
+  assert.equal(calls.filter(c=>c.url==='/api/video/stop').length,stops);
+});
+
+test('touch menu exit also leaves an expanded camera without fullscreen API support',async()=>{
+  const {get,calls}=await setup(null,liveStatus,null,null,liveResponses());
+  await cardButton(get,0,'Assistir').handlers.click();
+  const starts=calls.filter(c=>c.url==='/api/video/start').length;
+  const expand=descendants(get('cameras').children[0]).find(e=>e.className==='camera-expand');
+  await expand.handlers.click();
+  assert.equal(get('fullscreen-actions').hidden,false);
+  await get('tv-exit').handlers.click();
+  assert.equal(get('fullscreen-actions').hidden,true);
+  assert.ok(!descendants(get('cameras')).some(e=>e.className?.includes('camera-expanded')));
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,starts);
+});

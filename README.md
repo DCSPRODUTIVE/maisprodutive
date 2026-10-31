@@ -680,3 +680,22 @@ Depois atualize a página com Ctrl+Shift+R e entre novamente se necessário. Fa�
 backup de teste e copie os logs para comparar o tempo de preparação, a duração
 recebida e os eventos de conexão. Os limites efetivos de concorrência e espera
 aparecem no diagnóstico; os contadores antigos não são reclassificados.
+
+
+## Retorno da tela cheia no Android
+
+A visão completa e a câmera ampliada têm uma barra sempre visível com
+**Voltar ao menu** e **Reports**. Os controles funcionam por toque, sem depender de
+hover, teclado, barra do navegador ou suporte à API de tela cheia. A área das
+imagens fica abaixo da barra, preservando o quadro inteiro e os nomes/estados.
+Voltar ao menu não reinicia as transmissões. Reports abre na mesma janela.
+
+A exportação de diagnóstico inclui `card_events`: até 40 eventos recentes do
+cartão da conta, além dos 120 eventos gerais. Isso evita que muitas reconexões
+retirem todas as tentativas do cartão do texto exportado. A retenção de sete dias,
+o limite global de 10000 eventos e a filtragem de segredos continuam iguais.
+
+Esta revisão altera a interface e os diagnósticos; não exige recompilar o adaptador.
+Atualize com `git pull`, reinicie `dcs-control.service` e recarregue a página. No
+Android, feche e reabra o atalho/app após a atualização do servidor se ele ainda
+mostrar a interface antiga.

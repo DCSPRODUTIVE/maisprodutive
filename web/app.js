@@ -187,6 +187,7 @@ function paint(id) {
   view.overlay.textContent = (saving?.paused || feed?.state === "paused") ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
 }
 function render() {
+  updateFullscreenActions();
   const oldViews=views;
   $("cameras").className = "camera-grid" + (mosaicLimit === 12 ? " mosaic-12" : "");
   $("cameras").replaceChildren();
@@ -589,11 +590,14 @@ $("login").addEventListener("submit", (event) => {
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));
 $("logout").addEventListener("click", () => { $("login").reset(); action("/api/logout", {}); });
+function updateFullscreenActions(){
+  $("fullscreen-actions").hidden=!(focused||expandedCamera);
+}
 function fitMosaic(){
   if(!focused)return;
   const count=views.size;if(!count)return;
   const width=typeof window!=='undefined'?window.innerWidth:1920;
-  const height=typeof window!=='undefined'?window.innerHeight:1080;
+  const height=(typeof window!=='undefined'?window.innerHeight:1080)-($('fullscreen-actions').offsetHeight||54);
   let best={score:-1,columns:1,rows:count};
   for(let columns=1;columns<=count;columns++){
     const rows=Math.ceil(count/columns);
@@ -608,17 +612,22 @@ function fitMosaic(){
 }
 function setFocus(value,fullscreen=false) {
   focused = value;
+  updateFullscreenActions();
   focusUsesFullscreen=value&&fullscreen;
   $("dashboard").className = focused ? "focus-mode" : "";
   $("focus-mode").textContent = focused ? "⛶ Sair da visão completa" : "⛶ Visão completa";
-  $("focus-mode").title='Somente imagens, nomes e estado das câmeras. Esc para sair.';
+  $("focus-mode").title='Somente imagens, nomes e estado das câmeras. Use Voltar ao menu para sair.';
   if(value&&fullscreen)document.documentElement?.requestFullscreen?.().catch(()=>{});
   if(!value&&!expandedCamera&&document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
   fitMosaic();
 }
 $("focus-mode").addEventListener("click", () => setFocus(!focused,true));
 if(typeof window!=='undefined')window.addEventListener('resize',fitMosaic);
-$("tv-exit").addEventListener("click", () => setFocus(false));
+$("tv-exit").addEventListener("click", async () => {
+  if(expandedCamera)await closeExpanded();
+  setFocus(false);
+  $("focus-mode").focus?.();
+});
 $("mosaic-limit").value="8";
 $("mosaic-limit").addEventListener("change", async () => {
   mosaicLimit=$("mosaic-limit").value === "12" ? 12 : 8;

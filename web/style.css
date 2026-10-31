@@ -733,9 +733,6 @@ body:has(.focus-mode) .topbar-status { display:none; }
 .report-image { position:relative; }
 .report-box { position:absolute; border:2px solid #40dfb7;pointer-events:none; }
 body:has(.focus-mode) .topbar-inner { min-height:60px; }
-#tv-exit { position:fixed;right:12px;top:12px;z-index:10;opacity:.2; }
-#tv-exit:hover,#tv-exit:focus { opacity:1; }
-body:not(:has(.focus-mode)) #tv-exit { display:none; }
 
 .data-saver { font-size:11px; padding:6px 9px; background:#172433; border:1px solid #395269;color:#bdd2e6; }
 .data-saver.selected { color:#082d24; background:#40d9b6; border-color:#40d9b6; }
@@ -784,7 +781,7 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 @media(max-width:650px){#card-form{grid-template-columns:1fr;}}
 
 /* Camera wall: use the entire viewport and keep only names, state and frames. */
-#dashboard.focus-mode{position:fixed;inset:0;z-index:900;max-width:none!important;width:100%;height:100dvh;margin:0;padding:4px;background:#030609;overflow:hidden;}
+#dashboard.focus-mode{position:fixed;inset:0;z-index:900;max-width:none!important;width:100%;height:100dvh;margin:0;padding:calc(58px + env(safe-area-inset-top,0px)) 4px max(4px,env(safe-area-inset-bottom,0px));background:#030609;overflow:hidden;}
 #dashboard.focus-mode .monitor-section{height:100%;padding:0;}
 #dashboard.focus-mode .monitor-section>:not(.camera-grid){display:none!important;}
 #dashboard.focus-mode .camera-grid{display:grid;width:100%;height:100%;margin:0;gap:4px;grid-template-columns:repeat(var(--tv-cols,3),minmax(0,1fr));grid-template-rows:repeat(var(--tv-rows,3),minmax(0,1fr));align-content:stretch;}
@@ -799,10 +796,8 @@ body:not(:has(.focus-mode)) #tv-exit { display:none; }
 .focus-mode .camera-title small,.focus-mode .camera-glyph,.focus-mode .camera-controls,.focus-mode .camera-caption,.focus-mode .camera-quality,.focus-mode .camera-overlay,.focus-mode .camera-expand,.focus-mode .camera-placeholder,
 .camera-expanded .camera-title small,.camera-expanded .camera-glyph,.camera-expanded .camera-controls,.camera-expanded .camera-caption,.camera-expanded .camera-quality,.camera-expanded .camera-overlay,.camera-expanded .camera-placeholder{display:none!important;}
 .camera-expanded .camera-media{background:#000;}
-.camera-expanded .camera-expand{opacity:0;transition:opacity .15s;}
+.camera-expanded .camera-expand{opacity:1;min-width:44px;min-height:44px;}
 .camera-expanded .camera-expand:hover,.camera-expanded .camera-expand:focus-visible{opacity:1;}
-body:has(#dashboard.focus-mode) #tv-exit{display:block;position:fixed;top:4px;right:4px;z-index:1100;opacity:0;transition:opacity .15s;}
-body:has(#dashboard.focus-mode) #tv-exit:hover,body:has(#dashboard.focus-mode) #tv-exit:focus-visible{opacity:1;}
 
 .camera-media .camera-still{z-index:0;pointer-events:none;}
 .camera-media>img:not(.camera-still){z-index:1;}
@@ -813,3 +808,10 @@ body:has(#dashboard.focus-mode) #tv-exit:hover,body:has(#dashboard.focus-mode) #
 .diagnostics-export{margin:16px 0;}
 #diagnostics-output{width:100%;height:220px;box-sizing:border-box;padding:12px;border:1px solid var(--line);border-radius:8px;background:#080e16;color:var(--text);font:12px/1.5 ui-monospace,monospace;resize:vertical;}
 .focus-mode .diagnostics-export{display:none;}
+
+/* Explicit touch navigation also works in installed Android/standalone mode. */
+#fullscreen-actions{position:fixed;inset:0 0 auto;z-index:1200;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;padding:4px max(10px,env(safe-area-inset-right,0px)) 4px max(10px,env(safe-area-inset-left,0px));padding-top:calc(4px + env(safe-area-inset-top,0px));background:#0b1219;border-bottom:1px solid #294455;}
+#fullscreen-actions[hidden]{display:none;}
+#fullscreen-actions button,#fullscreen-actions a{min-height:44px;display:inline-flex;align-items:center;margin:0;opacity:1;font-size:14px;}
+#fullscreen-actions a{padding:0 12px;}
+.camera-card.camera-expanded{padding-top:calc(54px + env(safe-area-inset-top,0px));padding-bottom:env(safe-area-inset-bottom,0px);}
