@@ -10,6 +10,7 @@ let expandedPrevious = null;
 let mosaicLimit = 8;
 let preferenceKey = null;
 let preferenceSave = Promise.resolve();
+let sessionRecovery=null;
 const preferredEconomy = new Set();
 const detectionIds = new Set();
 const webcamEnabled = new Set();
@@ -317,6 +318,11 @@ async function status() {
   $("session-label").textContent = data.authenticated ? "Conta conectada" : "Conta desconectada";
   $("session-dot").className = data.authenticated ? "status-dot connected" : "status-dot";
   $("connect").textContent = "Entrar";
+  $("remember-device").disabled=data.remember_available===false;
+  if(data.remember_available===false){
+    $("remember-device").checked=false;
+    $("remember-hint").textContent="Sessão temporária: o armazenamento protegido ainda precisa ser preparado no servidor.";
+  }
   $("login").hidden = !!data.authenticated;
   $("configuration").textContent = data.configured ? data.authenticated
     ? "Conta conectada. Consulte as câmeras e escolha quais deseja acompanhar."
@@ -473,6 +479,19 @@ async function startAll(event) {
   }
   if (token === batchToken) { bulk = false; $("message").textContent = "Mosaico iniciado. Cada câmera recebe imagens de forma independente."; buttons(); }
 }
+async function restoreDeviceSession(){
+  if(!currentStatus?.remembered)return false;
+  if(sessionRecovery)return sessionRecovery;
+  const previous=csrf;
+  sessionRecovery=(async()=>{
+    try{
+      await status();
+      if(!currentStatus?.authenticated||csrf===previous)return false;
+      cancelAll();render();await startAll();return true;
+    }catch{return false;}
+  })();
+  try{return await sessionRecovery;}finally{sessionRecovery=null;}
+}
 async function pollFeed(feed) {
   if (feeds.get(feed.id) !== feed) return;
   try {
@@ -528,6 +547,8 @@ async function pollFeed(feed) {
   } catch (error) {
     if (feeds.get(feed.id) !== feed) return;
     cancelOne(feed.id); errors.set(feed.id, error.message);
+    if(error.kind==='authentication'){await status().catch(()=>{});$("account-panel").open=true;return;}
+    if (error.status === 403 && await restoreDeviceSession())return;
     if (error.status === 403) {
       cancelAll(); snapshots.clear();
       try { await status(); } catch { render(); }
@@ -588,6 +609,7 @@ if (typeof setInterval !== "undefined") setInterval(() => {
   fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(12000) })
     .then(response => response.ok ? readResponse(response) : null)
     .then(data => {
+      if(data?.authenticated&&currentStatus?.remembered&&data.csrf!==csrf)restoreDeviceSession().catch(()=>{});
       if (data && currentStatus?.authenticated && !data.authenticated) {
         cancelAll(); snapshots.clear();
         status().catch(() => {});
@@ -597,7 +619,7 @@ if (typeof setInterval !== "undefined") setInterval(() => {
 }, 5 * 60 * 1000);
 if (typeof setInterval !== "undefined") setInterval(() => {
   for (const feed of feeds.values()) {
-    if (feed.image && feed.state !== "paused" && frameAge(feed) > 3) feed.caption = `Sem novos quadros há ${Math.floor(frameAge(feed))} segundos…`;
+    if (feed.image && feed.state !== "paused" && Number.isFinite(frameAge(feed)) && frameAge(feed) > 3) feed.caption = `Sem novos quadros há ${Math.floor(frameAge(feed))} segundos…`;
     paint(feed.id);
   }
   updateMetrics();
@@ -609,7 +631,7 @@ $("login").addEventListener("submit", (event) => {
   const password = form.elements.password.value;
   const country_code = form.elements.country_code.value;
   form.elements.password.value = "";
-  return action("/api/login", { username, password, country_code });
+  return action("/api/login", { username, password, country_code,remember:$("remember-device").checked!==false&&!$("remember-device").disabled });
 });
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));

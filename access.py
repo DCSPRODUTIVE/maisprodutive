@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import threading
 import time
+from remembered import DeviceVault,TTL as REMEMBER_TTL
 from urllib.parse import urlsplit
 
 CONFIG = Path(__file__).parent / '.local' / 'access.json'
@@ -46,20 +47,40 @@ class Gate:
         self.digest = bytes.fromhex(data['digest'])
         if len(self.salt) != 32 or len(self.digest) != 64:
             raise ValueError('Configuração de acesso inválida.')
+        self.vault=DeviceVault(Path(path).parent)
+        self.scope=hashlib.sha256(self.salt+self.digest).hexdigest()
+        self.trusted={}
         self.sessions = {}
         self.attempts = deque()
         self.lock = threading.Lock()
+
+    def remembered_until(self,token):
+        digest=DeviceVault.digest(token)
+        if not digest:return 0
+        if digest in self.trusted:return self.trusted[digest]
+        record=self.vault.load('gate',self.scope,token)
+        if record:self.trusted[digest]=record[1];return record[1]
+        return 0
+
+    def cookie_ttl(self,token):
+        if token in self.sessions:return TTL
+        expiry=self.remembered_until(token)
+        return max(0,int(expiry-time.time())) if expiry else TTL
+
+    def revoke(self,token):
+        with self.lock:
+            self.sessions.pop(token,None);self.trusted.pop(DeviceVault.digest(token),None)
+            self.vault.forget('gate',self.scope,token)
 
     def valid(self, token):
         with self.lock:
             now = time.monotonic()
             self.sessions = {key: expiry for key, expiry in self.sessions.items() if expiry > now}
-            if token not in self.sessions:
-                return False
-            self.sessions[token] = now + TTL
-            return True
+            if token in self.sessions:
+                self.sessions[token]=now+TTL;return True
+            return self.remembered_until(token)>time.time()
 
-    def login(self, password):
+    def login(self, password, remember=False):
         with self.lock:
             now = time.monotonic()
             while self.attempts and now-self.attempts[0] >= 60:
@@ -76,5 +97,9 @@ class Gate:
             if len(self.sessions) >= 32:
                 return None, 429
             token = secrets.token_urlsafe(32)
-            self.sessions[token] = now + TTL
+            if remember and self.vault.available:
+                expires=time.time()+REMEMBER_TTL
+                if not self.vault.save('gate',self.scope,token,{},expires):return None,429
+                self.trusted[DeviceVault.digest(token)]=expires
+            else:self.sessions[token] = now + TTL
             return token, 200

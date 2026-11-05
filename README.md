@@ -765,3 +765,62 @@ sudo systemctl restart dcs-control.service
 Recarregue o navegador e reabra o atalho Android. Entre na conta, se solicitado.
 Para avaliar, peça um backup curto de horário comprovadamente disponível no app e
 copie os logs depois que o trabalho terminar. Não é necessário reiniciar a máquina.
+
+## Manter cada aparelho autorizado
+
+Na página `/access`, marque **Manter este aparelho autorizado por até 90 dias**.
+No login Yoosee, marque **Manter minha sessão Yoosee neste aparelho por até 90 dias**.
+Faça isso uma vez em cada navegador/aparelho de confiança. Os cookies são HttpOnly,
+SameSite=Strict e Secure no endereço HTTPS público. O navegador recebe apenas
+identificadores aleatórios; as senhas e os tokens Yoosee não ficam no JavaScript,
+localStorage ou nos diagnósticos. Este recurso não usa nem cadastra digital.
+
+O servidor salva os tokens de sessão Yoosee, nunca a senha. O armazenamento usa
+AES-256-GCM, com integridade vinculada ao tipo de sessão, aparelho, configuração
+de acesso e prazo. Banco e chave têm permissão 0600 dentro do armazenamento privado.
+A autorização do site guarda apenas o hash do identificador do cookie. O acesso
+temporário continua disponível ao desmarcar as opções. Para a persistência, instale
+`python3-cryptography` no Python que executa o serviço.
+
+Ao reiniciar o serviço, os aparelhos autorizados podem recuperar a conta e a última
+lista de câmeras consultada sem chamar o login da Yoosee novamente. O monitoramento
+configurado também pode retomar com esses tokens, preservando Economia/detecção.
+Use **Consultar câmeras** para atualizar a lista depois de adicionar equipamentos.
+O navegador recupera o CSRF após reinício do serviço; ele não envia a senha para
+recuperar transmissões. Limpar os cookies/dados do site ou usar outro navegador exige
+nova autorização. O prazo de 90 dias conta da autorização, não é renovado indefinidamente.
+
+Durante a execução do servidor, credenciais idênticas a um login já aceito podem
+reutilizar a sessão de conta, com comparação autenticada mantida somente em RAM.
+Credenciais diferentes continuam exigindo validação. Uma rejeição do provedor impõe
+espera de cinco minutos antes de nova tentativa; falhas de comunicação impõem espera
+curta. Quedas de vídeo não iniciam login por senha. Os diagnósticos incluem contadores
+de solicitações reais de login, reutilizações, restaurações de aparelhos e esperas
+aplicadas, somente para a conta e desde o início do serviço. Se houver rejeição explícita do
+token, os tokens correspondentes são invalidados e as tentativas de autenticação
+em segundo plano ficam suspensas até uma nova sessão válida.
+
+**Esquecer este aparelho**, na seção da conta, remove suas autorizações do site e
+Yoosee, mas mantém o monitoramento configurado no servidor e os outros aparelhos.
+Uma troca da senha de acesso do sistema com `python3 configure_access.py`, seguida
+de reinício do serviço, invalida as autorizações antigas. As sessões salvas só são
+criadas pelos novos logins com a opção marcada: sessões antigas de 20 minutos não
+podem ser migradas automaticamente.
+
+A Yoosee pode expirar/revogar seus tokens antes dos 90 dias. Nesse caso será preciso
+entrar novamente; o sistema não guarda a senha para tentar contornar essa decisão.
+A chave de criptografia é local ao servidor: perder a chave exige autorizar os
+aparelhos novamente. A proteção não substitui a segurança do usuário Linux do serviço.
+
+Atualização desta revisão (sem recompilar o adaptador de vídeo):
+
+```bash
+cd ~/maisprodutive
+git pull
+sudo apt install -y python3-cryptography
+sudo systemctl restart dcs-control.service
+```
+
+Depois recarregue o navegador ou reabra o atalho Android. Acesse `/access` e autorize
+uma vez o aparelho com a opção marcada; faça o mesmo no formulário Yoosee. Nenhuma
+alteração de configuração de câmera, FPS, qualidade ou cartão é necessária.

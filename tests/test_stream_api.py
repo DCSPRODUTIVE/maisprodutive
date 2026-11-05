@@ -69,6 +69,17 @@ class StreamApiTests(unittest.TestCase):
         self.assertNotIn(b'private-account-token',raw)
         return code,json.loads(raw)
 
+    def test_late_old_source_auth_failure_does_not_invalidate_new_account_token(self):
+        from background import Entry
+        old=DesktopAccount('id','old-private-session-token')
+        fresh=DesktopAccount('id','new-private-session-token')
+        entry=Entry('owner','cam',old,'Camera',False,time.monotonic())
+        stream=self.server.open_background(entry)
+        entry.account=fresh
+        stream.error=IntegrationError('authentication','Old session expired');stream.stop()
+        self.assertTrue(self.server.provider_sessions.rejected(types.SimpleNamespace(account=old)))
+        self.assertFalse(self.server.provider_sessions.rejected(types.SimpleNamespace(account=fresh)))
+
     def test_mosaic_capacity_camera_ownership_handles_and_stop_are_session_scoped(self):
         self.assertEqual(self.post('/api/video/start',{'device_id':'foreign'})[0],422)
         self.assertEqual(len(FakeStream.instances),0)

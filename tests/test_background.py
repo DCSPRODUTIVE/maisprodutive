@@ -145,3 +145,13 @@ class BackgroundTests(unittest.TestCase):
             result=view.metadata(0)
             self.assertIsNone(result['image']);self.assertEqual(result['state'],'receiving')
             encode.assert_not_called()
+
+    def test_authentication_rejection_waits_for_a_new_account_session(self):
+        self.configure(False);self.manager.tick();stream=self.created[0]
+        stream.error=IntegrationError('authentication','Rejected');stream.stop()
+        self.manager.tick();self.now+=600;self.manager.tick()
+        self.assertEqual(len(self.created),1)
+        frame=self.manager.frame('owner','a',0)
+        self.assertEqual(frame['retry_seconds'],0)
+        self.account=DesktopAccount('id','new-test-token')
+        self.configure(False);self.manager.tick();self.assertEqual(len(self.created),2)

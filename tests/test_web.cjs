@@ -108,7 +108,7 @@ test("login submits once, clears password, and displays the provider rejection",
   await attempt;
   const submissions = calls.filter((call) => call.url === "/api/login");
   assert.equal(submissions.length, 1);
-  assert.deepEqual(JSON.parse(submissions[0].options.body), { username: "test@example.invalid", password: "test-password", country_code: "55" });
+  assert.deepEqual(JSON.parse(submissions[0].options.body), { username: "test@example.invalid", password: "test-password", country_code: "55", remember:true });
   assert.match(get("message").textContent, /10901020/);
   assert.equal(get("refresh").disabled, true);
   assert.equal(get("connect").disabled, false);
@@ -552,4 +552,19 @@ test('confirmed HTTP2 allows all mosaic MJPEG streams without the HTTP1 connecti
   for(let i=0;i<8;i++)await runTimer();
   const requests=calls.filter(c=>c.url==='/api/video/frame').slice(0,8).map(c=>JSON.parse(c.options.body));
   assert.equal(requests.filter(c=>c.metadata_only).length,8);
+});
+
+test('remembered device recovers a fresh CSRF after service restart without submitting a password',async()=>{
+  let restarted=false;
+  const responses=liveResponses();
+  responses['/api/status']=()=>({ok:true,json:async()=>({...liveStatus,remembered:true,csrf:restarted?'fresh-csrf':'test-csrf'})});
+  const original=responses['/api/video/frame'];
+  responses['/api/video/frame']=options=>restarted&&options.headers['X-CSRF-Token']==='test-csrf'
+    ?{ok:false,status:403,json:async()=>({message:'Sessão inválida ou expirada.'})}:typeof original==='function'?original(options):original;
+  const {get,calls,runTimer}=await setup(null,{...liveStatus,remembered:true},null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();restarted=true;await runTimer();
+  const starts=calls.filter(call=>call.url==='/api/video/start');
+  assert.equal(starts.at(-1).options.headers['X-CSRF-Token'],'fresh-csrf');
+  assert.equal(calls.filter(call=>call.url==='/api/login').length,0);
+  assert.equal(get('login').hidden,true);
 });

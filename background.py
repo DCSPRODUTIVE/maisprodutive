@@ -27,6 +27,7 @@ class Entry:
         self.retry_at = 0
         self.attempts = 0
         self.stable_since = None
+        self.auth_blocked = False
         self.message = ''
         self.detection = True
         self.logged_state = None
@@ -111,8 +112,7 @@ class BackgroundMonitor:
                         entry.definition = getattr(existing, 'definition', 0)
                 if entry.account != account:
                     self._drop(entry)
-                    entry.account = account
-                    entry.retry_at = now
+                    entry.account=account;entry.retry_at=now;entry.attempts=0;entry.message='';entry.auth_blocked=False
                 entry.name = names[device_id]
                 entry.detection=device_id in detection
                 if entry.native is not None:entry.native.report_detect=entry.detection
@@ -137,7 +137,7 @@ class BackgroundMonitor:
             if (entry.width, entry.definition) != (width, definition):
                 self._drop(entry)
                 entry.width, entry.definition = width, definition
-                entry.retry_at = self.clock()
+                if not entry.auth_blocked:entry.retry_at = self.clock()
             return ManagedView(self, owner, device_id)
 
     def _capture(self, entry):
@@ -205,13 +205,15 @@ class BackgroundMonitor:
                     entry.stable_since = None
                     entry.retry_at = now + min(60, 2 * 2 ** min(entry.attempts, 5))
                     entry.attempts += 1
+                    if isinstance(error,IntegrationError) and error.kind=='authentication':
+                        entry.auth_blocked=True;entry.message='Sessão Yoosee rejeitada. Entre novamente; tentativas automáticas suspensas.'
                     if entry.attempts>=2 and entry.definition>0:
                         entry.definition-=1
                         entry.width=960 if entry.definition else 640
                         entry.message="Qualidade ajustada para recuperar a conexão. " + entry.message
                 if entry.native is not None:
                     entry.native.monitor_until = entry.active_until(now)
-                if entry.native is not None or now < entry.retry_at:
+                if entry.native is not None or entry.auth_blocked or now < entry.retry_at:
                     continue
                 try:
                     if self.event_sink:self.event_sink(entry.owner,entry.device_id,'connection_retry',attempt=entry.attempts+1)
@@ -245,7 +247,7 @@ class BackgroundMonitor:
                     'image': 'data:image/jpeg;base64,'+base64.b64encode(image).decode() if image else None,
                     'age_seconds': round(age, 2) if age is not None else None, 'state': state,
                     'next_open_seconds': round(entry.next_open(now)),
-                    'retry_seconds': max(0, round(entry.retry_at-now)), 'message': entry.message,
+                    'retry_seconds': 0 if entry.auth_blocked else max(0, round(entry.retry_at-now)), 'message': entry.message,
                     'background': True, 'health': health.snapshot(stream) if has_native else None}
 
     def jpeg_frame(self, owner, device_id, after):

@@ -22,6 +22,8 @@ from background import BackgroundMonitor
 from camera_archive import CameraArchive
 from diagnostics import Diagnostics
 from reports import EventStore, ReportMonitor
+from remembered import DeviceVault,TTL as REMEMBER_TTL
+from provider_sessions import ProviderSessions
 from access import Gate, TTL as ACCESS_TTL, origin as validate_origin
 
 ROOT = Path(__file__).parent
@@ -56,6 +58,9 @@ class Workbench(ThreadingHTTPServer):
         self.stream_guard = threading.Lock()
         self.reports = ReportMonitor(self, EventStore())
         self.diagnostics = Diagnostics(self.reports.store)
+        self.device_vault=access_gate.vault if access_gate else DeviceVault(self.reports.store.root)
+        self.device_scope=access_gate.scope if access_gate else 'loopback'
+        self.provider_sessions=ProviderSessions(self.device_vault,self.device_scope,current_config)
         self.archive = CameraArchive(self.reports.store,self.video_guard,event_sink=self.diagnostics.record)
         self.reports.recordings.archive=self.archive
         self.telegram = TelegramAlerts(self.reports.store, self.public_origin)
@@ -63,6 +68,14 @@ class Workbench(ThreadingHTTPServer):
         super().__init__(address, Handler)
         self.reports.start()
         self.background.start()
+        # Restore only previously authorized account sessions, with no password login.
+        restored=set()
+        for payload,expiry in self.device_vault.providers(self.device_scope):
+            decoded=self.provider_sessions.decode(payload)
+            if decoded:
+                client,owner,devices=decoded
+                if owner not in restored:
+                    self.background.configure(owner,client.account,devices,self.reports.store.preferences(owner));restored.add(owner)
 
     def stream_snapshot(self):
         with self.stream_guard:
@@ -72,14 +85,16 @@ class Workbench(ThreadingHTTPServer):
         if not self.video_guard.acquire(blocking=False):
             raise IntegrationError("video_busy", "Aguardando uma das 12 conexões disponíveis.")
         stream = None
+        account=entry.account
         def release():
             with self.stream_guard:
                 self.active_streams.discard(stream)
             self.video_guard.release()
+            if getattr(getattr(stream,'error',None),'kind',None)=='authentication':self.provider_sessions.reject_account(account)
             if stream is not None:self.diagnostics.record(entry.owner,entry.device_id,'source_closed',code=getattr(getattr(stream,'error',None),'kind','stopped'),frames=getattr(stream,'sequence',0),definition=getattr(stream,'definition',0),duration=round(max(0,time.monotonic()-getattr(stream,'started',time.monotonic())),2))
         try:
-            stream = LiveStream(entry.account, entry.device_id, float("inf"), release, preview_width=entry.width, definition=entry.definition,**({'local_device':True} if entry.device_id.startswith('webcam:') else {}))
-            if not entry.device_id.startswith('webcam:'):stream.archive_account=entry.account
+            stream = LiveStream(account, entry.device_id, float("inf"), release, preview_width=entry.width, definition=entry.definition,**({'local_device':True} if entry.device_id.startswith('webcam:') else {}))
+            if not entry.device_id.startswith('webcam:'):stream.archive_account=account
             stream.background = True
             stream.monitor_until = entry.active_until(self.background.clock())
             stream.report_owner, stream.report_name, stream.report_detect = entry.owner, entry.name, entry.detection
@@ -223,7 +238,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.public_origin if self.public_request() else "http://" + self.headers.get("Host", "")
 
     def gate_cookie(self, token):
-        return f"dcs_access={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ACCESS_TTL}" + ("; Secure" if self.public_request() else "")
+        ttl=self.server.access_gate.cookie_ttl(token) if self.server.access_gate else ACCESS_TTL
+        return f"dcs_access={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}" + ("; Secure" if self.public_request() else "")
 
     def gate_allowed(self):
         if self.server.access_gate is None:
@@ -257,11 +273,20 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, UnicodeError):
             return self.send(400, {"message": "Requisição inválida."})
-        token, code = self.server.access_gate.login(body.get("password"))
+        if body.get('remember') is True and not self.server.access_gate.vault.available:
+            return self.send(400,{'message':'O armazenamento protegido ainda não está preparado no servidor. Desmarque a opção para entrar temporariamente.'})
+        token, code = self.server.access_gate.login(body.get("password"),body.get("remember") is True)
         if not token:
             return self.send(code, {"message": "Aguarde um minuto antes de tentar novamente." if code == 429 else "Senha de acesso inválida."})
         self.access_cookie = self.gate_cookie(token)
         return self.send(200, {"message": "Acesso autorizado."})
+
+    def remember_provider(self,state):
+        sid=getattr(self,'session_id',None)
+        try:
+            if sid:return self.server.provider_sessions.save(sid,state)
+        except (OSError,ValueError,sqlite3.Error):pass
+        return False
 
     def session(self, create=False):
         cookies = SimpleCookie()
@@ -277,20 +302,33 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.stop_streams(state)
                     del self.server.sessions[key]
             state = self.server.sessions.get(sid)
+            if state is None and sid and len(self.server.sessions)<32:
+                restored=self.server.provider_sessions.restore(sid)
+                if restored:
+                    client,owner,devices,expiry=restored
+                    state={"csrf":secrets.token_urlsafe(32),"client":client,"devices":devices,"report_owner":owner,
+                        "expires":now+max(0,expiry-time.time()),"last_login":0,"last_probe":0,"streams":{},"lock":threading.Lock(),
+                        "remember":True,"remember_until":expiry}
+                    self.server.sessions[sid]=state
             if state:
+                self.session_id=sid
+                if self.server.provider_sessions.rejected(state['client']):
+                    self.server.provider_sessions.forget(sid);state['client']=None;state['devices']=[];state['remember']=False
                 # Sliding local session while the dashboard is actively used.
-                state["expires"] = now + SESSION_TTL
+                state["expires"] = now + (max(0,state["remember_until"]-time.time()) if state.get("remember") else SESSION_TTL)
                 for stream in list(state["streams"].values()):
                     stream.expires = state["expires"]
-                self.session_cookie=f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+                ttl=max(0,int(state["expires"]-now))
+                self.session_cookie=f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}"
                 return state,self.session_cookie
-            if not create or len(self.server.sessions) >= 16:
+            if not create or len(self.server.sessions) >= 32:
                 return None, None
             sid = secrets.token_urlsafe(32)
             state = {"csrf": secrets.token_urlsafe(32), "client": None, "devices": [],
                      "expires": now + SESSION_TTL, "last_login": 0,
                      "last_probe": 0, "streams": {}, "lock": threading.Lock()}
             self.server.sessions[sid] = state
+            self.session_id=sid
             return state, f"workbench={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
 
     @staticmethod
@@ -396,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "auth_mode": auth_mode,
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
+                                       "remember_available":self.server.device_vault.available,"remembered":bool(state.get("remember")),
                                        "devices": state["devices"], "video_available": False,
                                        "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message,
                                        "server_monitoring": True,"mjpeg_available":True,
@@ -442,7 +481,9 @@ class Handler(BaseHTTPRequestHandler):
                     data=stream.frame(body.get('after',0),wait=False)
                 if body.get('metadata_only') is True:data['image']=None
                 return self.send(200,data)
-            except IntegrationError as error:return self.send(422,{'error':error.kind,'message':str(error)})
+            except IntegrationError as error:
+                if error.kind=='authentication':self.server.provider_sessions.reject(state['client'])
+                return self.send(422,{'error':error.kind,'message':str(error)})
             except Exception:return self.send(500,{'message':'Falha na leitura da imagem; tente novamente.'})
         if self.path == '/api/diagnostics':
             with state['lock']:
@@ -540,36 +581,41 @@ class Handler(BaseHTTPRequestHandler):
                                            "detection_ready": self.server.reports.ready,
                                            "message": self.server.reports.message})
                 if self.path == "/api/logout":
-                    if isinstance(state["client"],DesktopClient):
-                        self.server.diagnostics.record(self.report_owner(state),'system','account_disconnected')
-                        self.server.archive.cancel(self.report_owner(state))
-                    if isinstance(state["client"], DesktopClient):
-                        self.server.background.remove(self.report_owner(state))
+                    self.server.provider_sessions.forget(self.session_id)
+                    state['remember']=False;state['expires']=time.monotonic()+SESSION_TTL
+                    self.session_cookie='workbench=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'
+                    if self.server.access_gate:
+                        cookies=SimpleCookie(self.headers.get('Cookie',''))
+                        token=cookies['dcs_access'].value if 'dcs_access' in cookies else None
+                        self.server.access_gate.revoke(token)
+                        self.access_cookie='dcs_access=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'+('; Secure' if self.public_request() else '')
                     self.server.stop_streams(state)
                     state["client"], state["devices"] = None, []
                     state["csrf"] = secrets.token_urlsafe(32)
-                    return self.send(200, {"message": "Sessão local apagada."})
+                    return self.send(200, {"message": "Aparelho desconectado. O monitoramento configurado continua no servidor."})
                 if self.path == "/api/login":
                     if time.monotonic() - state["last_login"] < 5:
                         return self.send(429, {"message": "Aguarde alguns segundos antes de tentar novamente."})
                     state["last_login"] = time.monotonic()
-                    self.server.stop_streams(state)
-                    state["client"], state["devices"] = None, []
+                    if body.get('remember') is True and not self.server.device_vault.available:
+                        raise IntegrationError('configuration','O armazenamento protegido ainda não está preparado no servidor. Desmarque a opção para uma sessão temporária.')
                     config = current_config()
-                    if config.auth_mode == "windows-experimental":
-                        client = DesktopClient(config)
-                        client.login(body.get("username"), body.get("password"), body.get("country_code", "55"))
-                    else:
-                        client = YooseeClient(config)
-                        client.login(body.get("username"), body.get("password"))
-                    # Separate authentication from device retrieval and video readiness.
-                    state["client"] = client
-                    identity = str(body.get("username", "")).strip().lower()
-                    if "@" not in identity:
-                        identity = str(body.get("country_code", "55")) + ":" + identity
-                    state["report_owner"] = hashlib.sha256(identity.encode()).hexdigest()
+                    client,owner=self.server.provider_sessions.login(config,body.get('username'),body.get('password'),body.get('country_code','55'),factory=DesktopClient if config.auth_mode=='windows-experimental' else YooseeClient)
+                    self.server.stop_streams(state)
+                    state['devices']=[]
+                    self.server.provider_sessions.forget(self.session_id)
+                    state['client']=client;state['report_owner']=owner
+                    state['remember']=body.get('remember') is True and self.server.device_vault.available and isinstance(client,DesktopClient)
+                    state['remember_until']=time.time()+REMEMBER_TTL
+                    state['expires']=time.monotonic()+SESSION_TTL
+                    self.session_cookie=f"workbench={self.session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+                    if state['remember']:
+                        state['expires']=time.monotonic()+REMEMBER_TTL
+                        if not self.remember_provider(state):
+                            state['remember']=False;state['expires']=time.monotonic()+SESSION_TTL
+                        self.session_cookie=f"workbench={self.session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={REMEMBER_TTL if state.get('remember') else SESSION_TTL}"
                     self.server.diagnostics.record(state["report_owner"],'system','account_connected')
-                    return self.send(200, {"message": "Login aceito pelo serviço. Consulte as câmeras para capturar uma imagem ou iniciar a transmissão experimental."})
+                    return self.send(200, {"message": "Conta conectada. Sessão protegida salva neste aparelho por até 90 dias." if state.get("remember") else "Conta conectada. Esta sessão é temporária."})
                 if self.path == "/api/video/stop":
                     device_id = body.get("device_id")
                     if device_id is not None and not isinstance(device_id, str):
@@ -616,6 +662,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.server.video_guard.release()
                         if stream is not None:
                             code=getattr(getattr(stream,'error',None),'kind','stopped')
+                            if code=='authentication':self.server.provider_sessions.reject(client)
                             self.server.diagnostics.record(owner,device_id,'source_closed',code=code,frames=getattr(stream,'sequence',0),definition=getattr(stream,'definition',0),duration=round(max(0,time.monotonic()-getattr(stream,'started',time.monotonic())),2))
                             if code in ('video_stale','video_timeout','video_native','video_decode','video_resources'):self.server.diagnostics.record(owner,device_id,'connection_lost' if getattr(stream,'sequence',0)>0 else 'connection_failed',code=code)
                     try:
@@ -682,6 +729,7 @@ class Handler(BaseHTTPRequestHandler):
                     state["devices"] = state["client"].devices()+webcam.cameras()
                     if isinstance(state["client"],DesktopClient):
                         self.server.background.configure(self.report_owner(state),state["client"].account,state["devices"],self.server.reports.store.preferences(self.report_owner(state)))
+                    self.remember_provider(state)
                     return self.send(200, {"devices": state["devices"]})
                 return self.send(404, {"message": "Recurso não encontrado."})
             except IntegrationError as exc:
