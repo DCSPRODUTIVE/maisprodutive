@@ -824,3 +824,12 @@ sudo systemctl restart dcs-control.service
 Depois recarregue o navegador ou reabra o atalho Android. Acesse `/access` e autorize
 uma vez o aparelho com a opção marcada; faça o mesmo no formulário Yoosee. Nenhuma
 alteração de configuração de câmera, FPS, qualidade ou cartão é necessária.
+
+## Ícone no Fire TV
+
+O aplicativo de acesso **Torre de Controle** e o APK assinado estão em
+[firetv/README.md](firetv/README.md). Ele abre o painel no Amazon Silk, aproveitando
+as sessões da TV. A instalação usa ADB no computador da mesma rede; não altera os
+serviços de câmeras. O comando de voz “Abrir Torre de Controle” depende também do
+reconhecimento da Alexa: um APK instalado fora da loja não é automaticamente
+registrado no catálogo da Amazon.

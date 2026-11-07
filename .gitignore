@@ -10,3 +10,6 @@ __pycache__/
 *.exe
 *.dll
 Yoosee-parte-*
+
+# Small first-party Fire TV launcher release (not vendor installers).
+!firetv/dist/torre-de-controle-firetv.apk
