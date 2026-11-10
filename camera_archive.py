@@ -15,6 +15,7 @@ import threading
 import time
 
 import video
+from frame_buffer import PRE_ROLL
 from runtime_policy import background_priority
 
 MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
@@ -261,7 +262,7 @@ class CameraArchive:
                     'received_seconds':round(sum(b-a for a,b in coverage),2),'requested_seconds':round(end-start,2)})
                 self.event(stream,'card_attempt',source='sd_frames' if getattr(stream,'archive_use_frames',False) else 'sd',attempt=attempt,max_attempts=MAX_CARD_ATTEMPTS,received_seconds=round(sum(b-a for a,b in coverage),2))
                 folder=Path(directory)/f'piece-{serial:02d}';serial+=1;folder.mkdir(mode=0o700)
-                stream.archive_piece=None;result=None
+                stream.archive_piece=None;stream.archive_has_coverage=bool(paths);result=None
                 try:
                     result=self.export_piece(stream,cursor,finish,folder,overall_deadline=deadline,file_bounds=(bounds['start'],bounds['end']))
                     if result is None:raise RuntimeError('invalid_video')
@@ -273,13 +274,13 @@ class CameraArchive:
                     if not signature or (signatures and signature!=signatures[0]):raise RuntimeError('invalid_video')
                     if coverage:
                         gap=piece['first']-coverage[-1][1]
-                        if gap<-.1 or gap+getattr(stream,'archive_gap_seconds',0)>1:raise RuntimeError('timestamp_unverified')
+                        if gap<-.1:raise ArchiveFailure('timestamp_unverified',{'stage':6,'clock_delta_ms':round(gap*1000)})
                     if sum(path.stat().st_size for path in paths)+result[0].stat().st_size>MAX_ARCHIVE_BYTES:raise RuntimeError('disk_space')
                     if not coverage:pre_roll=result[1]
                     paths.append(result[0]);signatures.append(signature);coverage.append((piece['first'],piece['last']))
                     stream.archive_actual_start=coverage[0][0];stream.archive_actual_end=coverage[-1][1]
                     stream.archive_gap_seconds=round(max(0,coverage[-1][1]-coverage[0][0]-sum(b-a for a,b in coverage)),3)
-                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3),record_setup_ms=piece.get('record_setup_ms',0),source=piece.get('method','sd'),frames=piece.get('frame_count',0))
+                    self.event(stream,'card_attempt_result',status='partial' if piece['partial'] else 'done',attempt=attempt,received_seconds=round(piece['last']-piece['first'],3),record_setup_ms=piece.get('record_setup_ms',0),source=piece.get('method','sd'),frames=piece.get('frame_count',0),clock_delta_ms=round((piece['first']-cursor)*1000))
                     cursor=min(finish,piece['last']+.001)
                     if not piece['partial']:cursor=finish
                 except RuntimeError as error:
@@ -294,9 +295,9 @@ class CameraArchive:
         if not paths:
             if last_error:raise last_error
             raise RuntimeError('unavailable')
-        stream.archive_partial=(coverage[0][0]>start+1 or coverage[-1][1]<end-1)
+        stream.archive_partial=(coverage[0][0]>start+1 or coverage[-1][1]<end-1 or getattr(stream,'archive_gap_seconds',0)>1)
         if len(paths)==1:return paths[0],pre_roll
-        # Join only verified contiguous pieces, never pad a missing section.
+        # Join verified pieces with hard cuts. Missing time remains explicit in partial metadata; never pad it.
         manifest=Path(directory)/'pieces.txt'
         manifest.write_text(''.join(f"file '{path.relative_to(Path(directory)).as_posix()}'\n" for path in paths))
         joined=Path(directory)/'archive.mp4'
@@ -350,7 +351,7 @@ class CameraArchive:
             first,last=int(match[2])/1000,int(match[3])/1000
             if not start<=first<end or not first<last<=end+5 or (not partial and (first>start+1 or last<end-3)):raise RuntimeError('timestamp_unverified')
             stream.archive_piece={'first':first,'last':last,'partial':partial,'record_setup_ms':int(match[5]) if match[5] else 0}
-            return output,round(max(0,min(5,start+5-first)),2)
+            return output,round(max(0,min(PRE_ROLL,start+PRE_ROLL-first)),2)
         finally:
             self.kill(process);process.wait(timeout=5)
             if process.stdin and not process.stdin.closed:process.stdin.close()
@@ -391,7 +392,7 @@ class CameraArchive:
                 destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
                 os.chmod(prepared,0o600);prepared.replace(destination)
                 status='partial' if partial or duration<desired_duration-1 else 'ready'
-                try:db.execute("UPDATE videos SET filename=?,duration=?,status=?,reason='',source=?,archive_status='ready',archive_diagnostic='{}',sd_gap_seconds=?,pre_roll=?,archive_start=?,archive_end=? WHERE id=? AND owner=?",(filename,round(duration,2),status,source_override or ('sd_backup' if allow_empty else 'sd'),gap_seconds,0 if allow_empty and source_override!='sd_partial' else pre_roll,confirmed_start,confirmed_end,record_id,owner))
+                try:db.execute("UPDATE videos SET filename=?,duration=?,status=?,reason='',source=?,archive_status='ready',archive_diagnostic=?,sd_gap_seconds=?,pre_roll=?,archive_start=?,archive_end=? WHERE id=? AND owner=?",(filename,round(duration,2),status,source_override or ('sd_backup' if allow_empty else 'sd'),json.dumps({'time_tolerance_seconds':5}),gap_seconds,0 if allow_empty and source_override!='sd_partial' else pre_roll,confirmed_start,confirmed_end,record_id,owner))
                 except Exception:destination.unlink(missing_ok=True);raise
             if target:target.unlink(missing_ok=True)
             return True

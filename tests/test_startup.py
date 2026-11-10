@@ -37,3 +37,11 @@ class StartupTests(unittest.TestCase):
             self.assertIn('test-id',validate_tunnel(path))
             path.write_text('unrelated: value')
             with self.assertRaises(ValueError):validate_tunnel(path)
+
+    def test_independent_watchdog_runs_unprivileged_and_recovery_is_a_fixed_command(self):
+        result=units('/home/test/project','/home/test','test','/usr/bin/python3','/usr/bin/cloudflared','https://cameras.example.test',8097)
+        watch=result['dcs-watchdog.service'];recover=result['dcs-recover.service']
+        self.assertIn('User=test',watch);self.assertIn('SuccessExitStatus=1',watch)
+        self.assertIn('OnFailure=dcs-recover.service',watch)
+        self.assertIn('ExecStart=/usr/bin/systemctl restart --no-block dcs-control.service',recover)
+        self.assertNotIn('python',recover);self.assertIn('StartLimitBurst=1',recover)

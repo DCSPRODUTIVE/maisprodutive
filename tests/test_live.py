@@ -268,3 +268,24 @@ class MetadataTests(unittest.TestCase):
             result=stream.metadata(0)
             self.assertIsNone(result['image']);self.assertEqual(result['state'],'receiving')
             encode.assert_not_called()
+
+class StartupRecoveryTests(unittest.TestCase):
+    def test_stop_releases_startup_slot_even_before_worker_cleanup(self):
+        with patch('live.video.readiness',return_value=(True,'')):
+            stream=LiveStream(DesktopAccount('id','private-test-token'),'camera',time.monotonic()+30,lambda:None)
+        stream.startup_gate=threading.BoundedSemaphore(1)
+        self.assertTrue(stream._enter_startup())
+        stream.stop(wait=False)
+        self.assertTrue(stream.startup_gate.acquire(blocking=False))
+        stream._release_startup() # no double-release
+
+    def test_pipe_with_live_silent_writer_is_interruptible(self):
+        import os
+        from live import InterruptiblePipe
+        read,write=os.pipe();stopped=threading.Event();results=[]
+        with os.fdopen(read,'rb') as pipe:
+            reader=InterruptiblePipe(pipe,stopped)
+            thread=threading.Thread(target=lambda:results.append(reader.read1(128)));thread.start()
+            stopped.set();thread.join(timeout=1)
+            self.assertFalse(thread.is_alive());self.assertEqual(results,[b''])
+        os.close(write)

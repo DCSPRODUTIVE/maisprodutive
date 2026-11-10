@@ -1,3 +1,4 @@
+from frame_buffer import PRE_ROLL
 """Bounded fallback: encode SD playback using the camera's per-frame clock.
 
 No inferred correction of a vendor MP4's missing seconds. Only validated, decoded
@@ -18,17 +19,21 @@ MIN_FREE=256*1024*1024
 HEADER=re.compile(rb'DCSYUV1 ([0-9]{2,4}) ([0-9]{2,4}) ([0-9]{13}) ([0-9]{3,8})\n')
 
 
-def read_frames(pipe,directory,start,end,convert):
+class FrameFailure(RuntimeError):
+    def __init__(self,stage,delta=0):
+        super().__init__('timestamp_unverified');self.diagnostic={'stage':stage,'clock_delta_ms':round(delta*1000)}
+
+def read_frames(pipe,directory,start,end,convert,boundary_tolerance=5):
     timeline=[];size=0;dimensions=None
     while len(timeline)<6000:
         line=pipe.readline(160)
         if not line:break
         match=HEADER.fullmatch(line)
-        if not match:raise RuntimeError('timestamp_unverified')
+        if not match:raise FrameFailure(7)
         width,height,stamp,length=(int(x) for x in match.groups());stamp/=1000
         if not (16<=width<=4096 and 16<=height<=4096 and width%2==height%2==0 and length==width*height*3//2 and length<=16*1024*1024):
             raise RuntimeError('invalid_video')
-        if not start<=stamp<end or (timeline and stamp<=timeline[-1][0]):raise RuntimeError('timestamp_unverified')
+        if stamp<start-60 or stamp>end+boundary_tolerance or (timeline and stamp<=timeline[-1][0]):raise FrameFailure(8,stamp-start)
         if dimensions is not None and dimensions!=(width,height):break
         if timeline and stamp-timeline[-1][0]>2:break # keep only a contiguous prefix
         raw=bytearray()
@@ -37,6 +42,7 @@ def read_frames(pipe,directory,start,end,convert):
             if not chunk:break
             raw.extend(chunk)
         if len(raw)!=length:break # interrupted final frame never enters the file
+        if stamp<start-boundary_tolerance:continue # discard overlapping preroll, never label it as requested footage
         jpeg=convert(bytes(raw),width,height)
         if not jpeg:raise RuntimeError('invalid_video')
         if size+len(jpeg)>MAX_STAGING or shutil.disk_usage(directory).free<MIN_FREE:break
@@ -100,7 +106,7 @@ def capture(archive,stream,start,end,directory,payload,env,deadline):
     try:
         process.stdin.write(payload.encode());process.stdin.close()
         pipe=BoundedPipe(process.stdout,archive,stream,deadline)
-        timeline=read_frames(pipe,directory,start,end,convert_frame)
+        timeline=read_frames(pipe,directory,start,end,convert_frame,boundary_tolerance=0 if getattr(stream,'archive_has_coverage',False) else 5)
     finally:
         archive.kill(process);process.wait(timeout=5)
         for pipe in (process.stdin,process.stdout,process.stderr):
@@ -131,4 +137,4 @@ def capture(archive,stream,start,end,directory,payload,env,deadline):
         if encoder:archive.kill(encoder);encoder.wait(timeout=5)
         if held:ENCODERS.release()
     stream.archive_piece={'first':first,'last':last,'partial':first>start+1 or last<end-1,'record_setup_ms':0,'frame_count':len(timeline),'method':'sd_frames'}
-    return output,round(max(0,min(5,start+5-first)),2)
+    return output,round(max(0,min(PRE_ROLL,start+PRE_ROLL-first)),2)

@@ -13,6 +13,7 @@ from access import CONFIG, Gate, origin
 
 ROOT = Path(__file__).resolve().parent
 SERVICES = ('dcs-control.service', 'dcs-tunnel.service')
+WATCH_FILES=('dcs-watchdog.service','dcs-watchdog.timer','dcs-recover.service')
 
 
 def quote(value):
@@ -67,7 +68,37 @@ ExecStart={quote(cloudflared)} tunnel --config {quote(Path(home)/'.cloudflared'/
 StandardOutput=null
 StandardError=null
 '''+common
-    return dict(zip(SERVICES,(app,tunnel)))
+    watchdog=f"""[Unit]
+Description=Verificacao independente da Torre DCS
+After=dcs-control.service
+OnFailure=dcs-recover.service
+[Service]
+Type=oneshot
+User={username}
+WorkingDirectory={directory}
+ExecStart={quote(python)} {quote(Path(root)/'watchdog.py')} --port {port} --restart --origin {quote(public_origin)}
+SuccessExitStatus=1
+TimeoutStartSec=90
+UMask=0077
+"""
+    timer="""[Unit]
+Description=Vigia periodico Torre DCS
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+Unit=dcs-watchdog.service
+[Install]
+WantedBy=timers.target
+"""
+    recovery="""[Unit]
+Description=Recuperacao limitada Torre DCS
+StartLimitIntervalSec=1800
+StartLimitBurst=1
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart --no-block dcs-control.service
+"""
+    return dict(zip(SERVICES+WATCH_FILES,(app,tunnel,watchdog,timer,recovery)))
 
 
 def run(command):
@@ -94,8 +125,8 @@ def main():
     if os.geteuid()==0:
         raise SystemExit('Execute com python3, sem sudo. O programa pedirá sudo somente para instalar os serviços.')
     if args.uninstall:
-        run(['sudo','systemctl','disable','--now',*SERVICES])
-        for service in SERVICES:run(['sudo','rm','-f','/etc/systemd/system/'+service])
+        run(['sudo','systemctl','disable','--now',*SERVICES,'dcs-watchdog.timer'])
+        for service in SERVICES+WATCH_FILES:run(['sudo','rm','-f','/etc/systemd/system/'+service])
         run(['sudo','systemctl','daemon-reload'])
         print('Inicialização automática removida. Configurações e Reports foram preservados.')
         return
@@ -127,17 +158,17 @@ def main():
     active=subprocess.run(['systemctl','is-active','--quiet',SERVICES[0]],capture_output=True).returncode==0
     if occupied and not active:
         raise SystemExit('Pare o servidor manual com Ctrl+C nos terminais antes de instalar. A porta está ocupada.')
-    for service in SERVICES:
+    for service in SERVICES+WATCH_FILES:
         run(['sudo','install','-m','644',str(destination/service),'/etc/systemd/system/'+service])
     run(['sudo','systemctl','daemon-reload'])
-    run(['sudo','systemctl','enable',*SERVICES])
-    run(['sudo','systemctl','restart',*SERVICES])
-    for service in SERVICES:
+    run(['sudo','systemctl','enable',*SERVICES,'dcs-watchdog.timer'])
+    run(['sudo','systemctl','restart',*SERVICES,'dcs-watchdog.timer'])
+    for service in SERVICES+('dcs-watchdog.timer',):
         result=subprocess.run(['systemctl','is-active','--quiet',service])
         if result.returncode:
             raise SystemExit('Um serviço não iniciou. Consulte systemctl status '+service+' --no-pager')
     print('Servidor e túnel ativos. Voltarão quando o Linux iniciar; não dependem de terminais abertos.')
-    print('O ChromeOS pode exigir abrir o Terminal para iniciar o Linux. O login Yoosee continua necessário após reiniciar.')
+    print('O ChromeOS pode exigir abrir o Terminal para iniciar o Linux. Sessões Yoosee lembradas podem retomar automaticamente enquanto forem válidas.')
     print('Endereço: '+public_origin)
 
 

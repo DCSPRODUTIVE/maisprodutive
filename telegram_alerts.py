@@ -63,12 +63,12 @@ class TelegramAlerts:
         config = self.config(owner)
         if not config['enabled'] or time.time()-created > 300:
             return
-        text = ('Torre de Controle DCS\nPessoa detectada: ' if jpeg else 'Torre de Controle DCS\n') + name[:150]
+        text = ('Torre de Controle DCS\nPessoa detectada: ' if jpeg else 'Torre de Controle DCS\n') + name[:150 if jpeg else 400]
         text += '\n' + time.strftime('%d/%m/%Y %H:%M:%S %Z', time.localtime(created))
         if confidence is not None:
             text += f'\nConfiança: {confidence:.0%}'
         if self.origin:
-            text += '\nVídeos no Reports (a gravação pode levar até 2 minutos):\n' + self.origin + '/reports#videos'
+            text += ('\nVídeos no Reports (a gravação pode levar até 2 minutos):\n' + self.origin + '/reports#videos') if jpeg else ('\nAbrir painel: '+self.origin+'/')
         else:
             text += '\nConsulte o Reports no painel. Configure o endereço público do servidor para receber um link acessível no celular.'
         fields = {'chat_id': config['chat_id'], 'caption' if jpeg else 'text': text}

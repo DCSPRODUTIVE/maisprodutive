@@ -315,7 +315,7 @@ int main(int argc, char **argv) {
         char begin_text[32],end_text[32],*tail;
         if (!line(begin_text,sizeof(begin_text)) || !line(end_text,sizeof(end_text))) ExitProcess(30);
         unsigned long long begin=strtoull(begin_text,&tail,10);if (*tail) ExitProcess(30);
-        unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:125000ULL)) ExitProcess(30);
+        unsigned long long end=strtoull(end_text,&tail,10);if (*tail || end<=begin || end-begin>(list_mode?3600000ULL:130000ULL)) ExitProcess(30);
         requested_begin=begin;requested_end=end;
         unsigned long long file_begin=0,file_end=0;
         ULONGLONG process_deadline=process_started+end-begin+60000;

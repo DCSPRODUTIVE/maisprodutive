@@ -1,6 +1,7 @@
 """One-frame experimental native adapter. No account credentials are persisted."""
 import base64
 import hashlib
+import threading
 import json
 import os
 from pathlib import Path
@@ -27,12 +28,25 @@ def checksum(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+_readiness_lock=threading.Lock()
+_readiness_verified=None
+
 def readiness():
+    with _readiness_lock:return _readiness()
+
+def _readiness():
+    global _readiness_verified
     if platform.system() != 'Linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
         return False, 'O adaptador experimental exige Linux x86_64.'
     if not (shutil.which('wine') or shutil.which('wine64')) or not shutil.which('ffmpeg'):
         return False, 'Prepare a captura no Terminal conforme o README: são necessários Wine, FFmpeg e o adaptador local.'
     try:
+        paths=[NATIVE/'manifest.json',ROOT/'native'/'yoosee_snapshot.c',*(NATIVE/name for name in DLL_HASHES),NATIVE/'yoosee_snapshot.exe']
+        stamps=[]
+        for path in paths:
+            stat=path.stat();stamps.append((str(path),stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns))
+        stamp=tuple(stamps)
+        if _readiness_verified==stamp:return True,'Adaptador preparado.'
         manifest = json.loads((NATIVE / 'manifest.json').read_text())
         expected = DLL_HASHES | {'yoosee_snapshot.exe': manifest['bridge_sha256']}
         if manifest['source_sha256'] != checksum(ROOT / 'native' / 'yoosee_snapshot.c'):
@@ -41,6 +55,7 @@ def readiness():
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         return False, 'Execute configure_video.py com o instalador 1.0.0.8 para preparar o adaptador de imagem.'
+    _readiness_verified=stamp
     return True, 'Adaptador preparado. Use Testar imagem em uma câmera para verificar a captura.'
 
 
@@ -62,7 +77,7 @@ def native_failure(code, raw=b''):
     details = ''
     if diagnostic and int(diagnostic[1]) == code:
         details = f' Diagnóstico: formato {int(diagnostic[2])}; dimensões {int(diagnostic[3])}x{int(diagnostic[4])}.'
-    return IntegrationError('video_native', reasons.get(code, 'O adaptador nativo não entregou uma imagem válida.') + details)
+    return IntegrationError('authentication' if code==14 else 'video_stale' if code==24 else 'video_timeout' if code==15 else 'video_native', reasons.get(code, 'O adaptador nativo não entregou uma imagem válida.') + details)
 
 
 def capture(account, device_id):

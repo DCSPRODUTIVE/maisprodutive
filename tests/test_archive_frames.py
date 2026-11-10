@@ -26,7 +26,7 @@ class FrameReaderTests(unittest.TestCase):
             self.assertEqual(len(list(Path(directory).glob('*.jpg'))),3)
 
     def test_wrong_dates_nonmonotonic_and_oversized_data_are_rejected(self):
-        for data in (packet(-10),packet(0)+packet(1)+packet(.5),b'DCSYUV1 4096 4096 1800000000000 25165824\n'):
+        for data in (packet(-86400),packet(0)+packet(1)+packet(.5),b'DCSYUV1 4096 4096 1800000000000 25165824\n'):
             with self.subTest(data=data[:70]),tempfile.TemporaryDirectory() as directory:
                 with self.assertRaisesRegex(RuntimeError,'timestamp_unverified|invalid_video'):
                     read_frames(io.BytesIO(data),directory,START,START+10,lambda *args:b'jpeg')
@@ -102,3 +102,17 @@ class DeadlineTests(unittest.TestCase):
                 self.assertEqual(bounded.readline(160),b'')
                 self.assertLess(time.monotonic()-before,1)
         finally:os.close(write)
+
+class ApproximateBoundariesTests(unittest.TestCase):
+    def test_five_second_margin_keeps_actual_clock_and_rejects_wrong_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            rows=read_frames(io.BytesIO(packet(-4)+packet(-3)+packet(0)+packet(1)),folder,START,START+3,lambda *args:b'jpeg')
+            self.assertEqual(rows[0][0],START-4)
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):
+                read_frames(io.BytesIO(packet(-86400)),folder,START,START+3,lambda *args:b'jpeg')
+
+    def test_resume_drops_overlapping_preroll_instead_of_rejecting_the_whole_video(self):
+        with tempfile.TemporaryDirectory() as folder:
+            rows=read_frames(io.BytesIO(packet(-4)+packet(0)+packet(1)),folder,START,START+3,lambda *args:b'jpeg',boundary_tolerance=0)
+            self.assertEqual([stamp for stamp,_ in rows],[START,START+1])

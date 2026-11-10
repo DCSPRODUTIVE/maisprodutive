@@ -20,6 +20,8 @@ from video import readiness as video_readiness
 from live import LiveStream
 from background import BackgroundMonitor
 from camera_archive import CameraArchive
+from system_health import SystemHealth
+from person_analysis import settings as analysis_settings
 from diagnostics import Diagnostics
 from reports import EventStore, ReportMonitor
 from remembered import DeviceVault,TTL as REMEMBER_TTL
@@ -69,6 +71,7 @@ class Workbench(ThreadingHTTPServer):
         self.reports.start()
         self.background.start()
         # Restore only previously authorized account sessions, with no password login.
+        self.health=SystemHealth(self);self.health.start()
         restored=set()
         for payload,expiry in self.device_vault.providers(self.device_scope):
             decoded=self.provider_sessions.decode(payload)
@@ -98,6 +101,7 @@ class Workbench(ThreadingHTTPServer):
             stream.background = True
             stream.monitor_until = entry.active_until(self.background.clock())
             stream.report_owner, stream.report_name, stream.report_detect = entry.owner, entry.name, entry.detection
+            stream.analysis_settings=analysis_settings(self.reports.store.preferences(entry.owner).get('analysis_settings',{}).get(entry.device_id))
             with self.stream_guard:
                 self.active_streams.add(stream)
             stream.start()
@@ -146,6 +150,7 @@ class Workbench(ThreadingHTTPServer):
             stream.stop()
 
     def server_close(self):
+        self.health.close()
         self.background.close()
         self.reports.close()
         self.archive.close()
@@ -313,7 +318,9 @@ class Handler(BaseHTTPRequestHandler):
             if state:
                 self.session_id=sid
                 if self.server.provider_sessions.rejected(state['client']):
-                    self.server.provider_sessions.forget(sid);state['client']=None;state['devices']=[];state['remember']=False
+                    renewed=self.server.provider_sessions.restore(sid)
+                    if renewed:state['client'],state['report_owner'],state['devices'],state['remember_until']=renewed
+                    else:state['client']=None;state['devices']=[]
                 # Sliding local session while the dashboard is actively used.
                 state["expires"] = now + (max(0,state["remember_until"]-time.time()) if state.get("remember") else SESSION_TTL)
                 for stream in list(state["streams"].values()):
@@ -374,6 +381,10 @@ class Handler(BaseHTTPRequestHandler):
         finally:self.server.viewer_guard.release()
 
     def do_GET(self):
+        if self.path=='/internal/health':
+            local=self.headers.get('Host') in (f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}')
+            if not local or self.headers.get('X-Forwarded-For') or self.public_request():return self.send(403,{'message':'Somente verificação local.'})
+            value=self.server.health.status();return self.send(200 if value['ok'] else 503,value)
         if not self.valid_host():
             return self.send(403, {"message": "Host não permitido."})
         if not self.gate_allowed():
@@ -435,6 +446,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "configuration_message": reason,
                                        "authenticated": state["client"] is not None,
                                        "remember_available":self.server.device_vault.available,"remembered":bool(state.get("remember")),
+                                       "image_health":self.server.health.snapshot.get(self.report_owner(state),{}) if state["client"] else {},
                                        "devices": state["devices"], "video_available": False,
                                        "detection_ready": self.server.reports.ready, "detection_message": self.server.reports.message,
                                        "server_monitoring": True,"mjpeg_available":True,
@@ -493,6 +505,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:return self.send(503,{'message':'Não foi possível reunir o diagnóstico agora. Tente novamente.'})
         with state["lock"]:
             try:
+                if self.path=='/api/account/renew':
+                    self.server.provider_sessions.reject(state['client'])
+                    self.server.stop_streams(state)
+                    state['client']=None;state['devices']=[]
+                    return self.send(200,{'message':'Entre novamente na Yoosee para renovar a sessão. A autorização deste aparelho no site foi mantida.'})
+                if self.path=='/api/analysis/settings':
+                    if not isinstance(state['client'],DesktopClient):raise IntegrationError('authentication','Entre na conta.')
+                    device=body.get('device_id')
+                    if not any(c['id']==device for c in state['devices']):raise IntegrationError('input','Câmera inválida.')
+                    try:config=analysis_settings(body.get('settings'))
+                    except ValueError as error:raise IntegrationError('input',str(error))
+                    prefs=self.server.reports.store.preferences(self.report_owner(state))
+                    prefs.setdefault('analysis_settings',{})[device]=config
+                    self.server.reports.store.preferences(self.report_owner(state),prefs)
+                    self.server.reports.settings_cache.pop((self.report_owner(state),device),None)
+                    for source in self.server.stream_snapshot():
+                        if getattr(source,'report_owner',None)==self.report_owner(state) and source.device_id==device:source.analysis_settings=config
+                    return self.send(200,{'settings':config,'message':'Análise local configurada.'})
                 if self.path in ('/api/card/start','/api/card/status'):
                     client=state['client']
                     if not isinstance(client,DesktopClient):raise IntegrationError('authentication','Entre na conta e consulte as câmeras.')
@@ -563,6 +593,8 @@ class Handler(BaseHTTPRequestHandler):
                             or not isinstance(webcam_ids,list) or len(webcam_ids)>2 or any(not isinstance(i,str) or i not in allowed_ids or not i.startswith('webcam:') for i in webcam_ids)):
                         raise IntegrationError("input", "Preferências de câmera inválidas.")
                     values={"economy_ids":sorted(set(ids)), "detection_ids":sorted(set(detection_ids)), "mosaic_limit":limit,"webcam_enabled_ids":sorted(set(webcam_ids))}
+                    previous=self.server.reports.store.preferences(self.report_owner(state))
+                    if 'analysis_settings' in previous:values['analysis_settings']=previous['analysis_settings']
                     self.server.reports.store.preferences(self.report_owner(state),values)
                     with self.server.stream_guard:
                         for stream in self.server.active_streams:
@@ -677,6 +709,7 @@ class Handler(BaseHTTPRequestHandler):
                         with self.server.stream_guard:
                             self.server.active_streams.add(stream)
                         stream.archive_account=client.account
+                        stream.analysis_settings=analysis_settings(prefs.get('analysis_settings',{}).get(device_id))
                         stream.report_owner = self.report_owner(state)
                         stream.report_detect = device_id in self.server.reports.store.preferences(stream.report_owner).get("detection_ids",[])
                         stream.report_name = next((item["name"] for item in state["devices"] if item["id"] == device_id), device_id)

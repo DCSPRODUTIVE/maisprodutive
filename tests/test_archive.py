@@ -18,7 +18,7 @@ class BufferTests(unittest.TestCase):
     def test_time_and_memory_bounds_and_order(self):
         buffer=FrameBuffer()
         for stamp in range(10):buffer.append(stamp,b'frame')
-        self.assertEqual([s for s,_ in buffer.snapshot(9)],list(range(4,10)))
+        self.assertEqual([s for s,_ in buffer.snapshot(9)],list(range(0,10)))
         with patch('frame_buffer.MAX_BYTES',12):
             buffer=FrameBuffer()
             for stamp in range(4):buffer.append(stamp,b'12345')
@@ -95,7 +95,7 @@ class ArchiveTimestampTests(unittest.TestCase):
             try:
                 with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=process(b'SDTIME 1800000001000 1800000125000\n')) as launch:
                     path,pre_roll=archive.export_piece(stream,start,end,directory)
-                    self.assertEqual(path.name,'archive.mp4');self.assertEqual(pre_roll,4)
+                    self.assertEqual(path.name,'archive.mp4');self.assertEqual(pre_roll,9)
                     self.assertNotIn('private-test-token',repr(launch.call_args))
                 with patch('camera_archive.video.readiness',return_value=(True,'')),patch.object(archive,'launch',return_value=process(b'SDTIME 1700000000000 1700000125000\n')):
                     with self.assertRaisesRegex(RuntimeError,'timestamp_unverified'):archive.export_piece(stream,start,end,directory)
@@ -348,4 +348,26 @@ class PartialStorageTests(unittest.TestCase):
                 self.assertEqual(saved['archive_start'],1800000000);self.assertEqual(saved['archive_end'],1800000002)
                 self.assertIsNotNone(store.video('owner',saved['id']))
                 self.assertEqual(next(r for r in rows if r['id']==record)['archive_status'],'partial_saved')
+            finally:archive.close()
+
+@unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'),'FFmpeg required')
+class GapPreservationTests(unittest.TestCase):
+    def test_valid_segments_with_missing_time_are_joined_as_partial_without_padding(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            archive=CameraArchive(EventStore(folder),threading.BoundedSemaphore(1));base=1800000000
+            stream=SimpleNamespace(report_detect=True,monitor_until=float('inf'));count=0
+            def piece(source,start,end,directory,**kwargs):
+                nonlocal count
+                count+=1;first,last=(base,base+2) if count==1 else (base+6,base+8)
+                output=directory/'archive.mp4'
+                subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=blue:s=160x120:r=25','-t','2','-c:v','libx264','-threads','1',str(output)],check=True,timeout=10)
+                source.archive_piece={'first':first,'last':last,'partial':True}
+                return output,0
+            try:
+                with patch.object(archive,'list_records',return_value=[{'start':base,'end':base+8}]),patch.object(archive,'export_piece',side_effect=piece):
+                    result=archive.export(stream,base,base+8,Path(folder))
+                self.assertTrue(stream.archive_partial);self.assertAlmostEqual(stream.archive_gap_seconds,4)
+                data=json.loads(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','json',str(result[0])],capture_output=True,check=True,timeout=10).stdout)
+                self.assertAlmostEqual(float(data['format']['duration']),4,delta=.15)
             finally:archive.close()

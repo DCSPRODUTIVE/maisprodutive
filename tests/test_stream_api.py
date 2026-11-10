@@ -354,3 +354,18 @@ class StreamApiTests(unittest.TestCase):
         self.assertEqual(self.post('/api/diagnostics',{},csrf='wrong')[0],403)
         cookie,csrf,_=self.new_session()
         self.assertEqual(self.post('/api/diagnostics',{},cookie,csrf)[0],403)
+
+    def test_analysis_settings_are_account_scoped_and_survive_other_preferences(self):
+        code,value=self.post('/api/analysis/settings',{'device_id':'0','settings':{'confidence':.6,'line_enabled':True}})
+        self.assertEqual(code,200);self.assertEqual(value['settings']['confidence'],.6)
+        self.assertEqual(self.post('/api/analysis/settings',{'device_id':'foreign','settings':{}})[0],422)
+        self.assertEqual(self.post('/api/analysis/settings',{'device_id':'0','settings':{'confidence':float('nan')}})[0],422)
+        self.assertEqual(self.post('/api/preferences',{'economy_ids':[],'detection_ids':[],'mosaic_limit':8})[0],200)
+        owner=__import__('hashlib').sha256(b'123').hexdigest()
+        self.assertTrue(self.server.reports.store.preferences(owner)['analysis_settings']['0']['line_enabled'])
+
+    def test_local_health_cannot_be_fetched_with_public_host(self):
+        import http.client
+        connection=http.client.HTTPConnection('127.0.0.1',self.server.server_port)
+        connection.request('GET','/internal/health',headers={'Host':'attacker.example'})
+        response=connection.getresponse();self.assertEqual(response.status,403);response.read();connection.close()

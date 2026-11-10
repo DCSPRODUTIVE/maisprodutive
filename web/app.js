@@ -11,6 +11,7 @@ let mosaicLimit = 8;
 let preferenceKey = null;
 let preferenceSave = Promise.resolve();
 let sessionRecovery=null;
+let analysisCamera=null;
 const preferredEconomy = new Set();
 const detectionIds = new Set();
 const webcamEnabled = new Set();
@@ -40,6 +41,11 @@ function updateMetrics() {
   $("camera-count").textContent = String(currentStatus?.devices.length || 0);
   $("live-count").textContent = String([...feeds.values()].filter((f) => isFresh(f)).length);
   $("capture-count").textContent = String(snapshots.size);
+  if(currentStatus?.authenticated&&feeds.size){
+    const active=[...feeds.values()].filter(f=>f.state!=='paused'&&!economy.get(f.id)?.paused);
+    const live=[...feeds.values()].filter(isFresh).length;
+    $('session-label').textContent=live?`Conta conectada · ${live} ao vivo`:active.length?'Conta conectada · aguardando imagens':'Conta conectada · Economia pausada';
+  }
 }
 function buttons() {
   const auth = !!currentStatus?.authenticated;
@@ -49,6 +55,7 @@ function buttons() {
   $("credentials").disabled = busy || bulk || !currentStatus?.configured;
   $("connect").disabled = busy || bulk || !currentStatus?.configured;
   $("refresh").disabled = busy || bulk || !auth;
+  $("renew-session").disabled=busy||bulk||!auth;
   $("logout").disabled = busy || !auth;
   $("watch-all").disabled = busy || bulk || !ready || !currentStatus?.devices.length;
   $("stop-all").disabled = busy || (!feeds.size && !desired.size && !economy.size && !bulk);
@@ -266,7 +273,10 @@ function render() {
     detector.setAttribute?.("aria-pressed",String(detectionIds.has(camera.id)));
     detector.title="Salvar fotos e vídeos de até 2 minutos quando detectar pessoas";
     detector.addEventListener("click",()=>toggleDetection(camera.id));
-    controls.append(group, saver, detector);
+    const analysis=element('button','secondary','Ajustar análise');
+    analysis.disabled=!currentStatus?.authenticated;
+    analysis.addEventListener('click',()=>openAnalysis(camera));
+    controls.append(group,saver,detector,analysis);
     media.append(quality);
     card.append(header, media, caption, controls);
     views.set(camera.id, { card, img, still, placeholder, badge, caption, overlay });
@@ -315,7 +325,7 @@ async function status() {
   }
   if (!data.authenticated) { cancelAll(); snapshots.clear(); $("account-panel").open = true; const output=$("diagnostics-output");if(output){output.value="";output.hidden=true;} }
   if (data.authenticated && !wasAuthenticated) $("account-panel").open = false;
-  $("session-label").textContent = data.authenticated ? "Conta conectada" : "Conta desconectada";
+  $("session-label").textContent = data.authenticated ? data.image_health?.expected>0&&data.image_health?.fresh===0?"Conta conectada · sem imagens atuais":"Conta conectada" : "Conta desconectada";
   $("session-dot").className = data.authenticated ? "status-dot connected" : "status-dot";
   $("connect").textContent = "Entrar";
   $("remember-device").disabled=data.remember_available===false;
@@ -609,6 +619,10 @@ if (typeof setInterval !== "undefined") setInterval(() => {
   fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(12000) })
     .then(response => response.ok ? readResponse(response) : null)
     .then(data => {
+      if(data?.authenticated){
+        currentStatus.image_health=data.image_health;
+        $('session-label').textContent=data.image_health?.expected>0&&data.image_health?.fresh===0?'Conta conectada · sem imagens atuais':'Conta conectada';
+      }
       if(data?.authenticated&&currentStatus?.remembered&&data.csrf!==csrf)restoreDeviceSession().catch(()=>{});
       if (data && currentStatus?.authenticated && !data.authenticated) {
         cancelAll(); snapshots.clear();
@@ -633,6 +647,27 @@ $("login").addEventListener("submit", (event) => {
   form.elements.password.value = "";
   return action("/api/login", { username, password, country_code,remember:$("remember-device").checked!==false&&!$("remember-device").disabled });
 });
+function openAnalysis(camera){
+  analysisCamera=camera.id;
+  const c={confidence:.55,min_height:.01,night_auto:true,night_confidence:.5,dwell_enabled:true,dwell_seconds:60,line_enabled:false,line_axis:'x',line_position:.5,line_direction:'both',...(currentStatus?.preferences?.analysis_settings?.[camera.id]||{})};
+  $('analysis-title').textContent='Análise · '+camera.name;
+  for(const [id,value] of [['confidence',c.confidence*100],['min-height',c.min_height*100],['night-confidence',c.night_confidence*100],['dwell-seconds',c.dwell_seconds],['axis',c.line_axis],['position',c.line_position*100],['direction',c.line_direction]])$('analysis-'+id).value=String(typeof value==='number'?Math.round(value):value);
+  for(const [id,value] of [['night',c.night_auto],['dwell',c.dwell_enabled],['line',c.line_enabled]])$('analysis-'+id).checked=value;
+  $('analysis-message').textContent='';$('analysis-panel').hidden=false;$('analysis-confidence').focus?.();
+}
+$('analysis-close').addEventListener('click',()=>{$('analysis-panel').hidden=true;});
+$('analysis-form').addEventListener('submit',async event=>{
+  event.preventDefault();$('analysis-save').disabled=true;
+  const settings={confidence:Number($('analysis-confidence').value)/100,min_height:Number($('analysis-min-height').value)/100,night_auto:$('analysis-night').checked,night_confidence:Number($('analysis-night-confidence').value)/100,dwell_enabled:$('analysis-dwell').checked,dwell_seconds:Number($('analysis-dwell-seconds').value),line_enabled:$('analysis-line').checked,line_axis:$('analysis-axis').value,line_position:Number($('analysis-position').value)/100,line_direction:$('analysis-direction').value};
+  try{
+    const result=await post('/api/analysis/settings',{device_id:analysisCamera,settings});
+    currentStatus.preferences=currentStatus.preferences||{};currentStatus.preferences.analysis_settings=currentStatus.preferences.analysis_settings||{};
+    currentStatus.preferences.analysis_settings[analysisCamera]=result.settings;$('analysis-panel').hidden=true;
+    $('message').textContent=result.message;
+  }catch(error){$('analysis-message').textContent=error.message;}
+  finally{$('analysis-save').disabled=false;}
+});
+$('renew-session').addEventListener('click',()=>action('/api/account/renew',{}));
 $("refresh").addEventListener("click", () => action("/api/devices", {}));
 $("network").addEventListener("click", () => action("/api/connectivity", {}));
 $("logout").addEventListener("click", () => { $("login").reset(); action("/api/logout", {}); });
@@ -702,6 +737,6 @@ async function closeExpanded(){
   render();
 }
 document.addEventListener?.('fullscreenchange',()=>{if(!document.fullscreenElement){if(expandedCamera)closeExpanded();if(focusUsesFullscreen)setFocus(false);}fitMosaic();});
-document.addEventListener?.('keydown',event=>{if(event.key==='Escape'){if(expandedCamera)closeExpanded();else if(focused)setFocus(false);}});
+document.addEventListener?.('keydown',event=>{if(event.key==='Escape'){if(!$('analysis-panel').hidden){$('analysis-panel').hidden=true;return;}if(expandedCamera)closeExpanded();else if(focused)setFocus(false);}});
 
 if(typeof window!=='undefined')window.dcsClientDiagnostics=()=>({cameras:[...(currentStatus?.devices||[])].slice(0,14).map(camera=>({id:camera.id,state:feeds.get(camera.id)?.state||(desired.has(camera.id)?'retrying':'stopped'),mjpeg:!!feeds.get(camera.id)?.mjpeg,error:errors.has(camera.id),reconnecting:!!desired.get(camera.id)?.timer}))});

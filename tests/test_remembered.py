@@ -67,6 +67,19 @@ class RememberedTests(unittest.TestCase):
         self.auth.reject(state['client'])
         self.assertIsNone(ProviderSessions(DeviceVault(self.root),'scope',lambda:PROFILE).restore(token))
 
+    def test_renewed_session_recovers_only_previously_bound_devices_of_same_owner(self):
+        first='x'*43;second='y'*43;foreign='z'*43
+        state=self.state();self.auth.save(first,state)
+        other=self.state();other['report_owner']='b'*64;self.auth.save(foreign,other)
+        self.auth.reject(state['client'])
+        renewed=self.state();renewed['client'].account=DesktopAccount('owner-id','renewed-provider-token')
+        self.auth.save(second,renewed)
+        restored=ProviderSessions(DeviceVault(self.root),'scope',lambda:PROFILE)
+        self.assertEqual(restored.restore(first)[0].account.access_token,'renewed-provider-token')
+        self.assertIsNone(restored.restore(foreign))
+        self.assertIsNone(restored.restore('q'*43))
+        self.auth.forget(first);self.assertIsNone(restored.restore(first))
+
     def test_gate_remembers_restart_and_password_change_revokes_old_device(self):
         path=self.root/'access.json';configure('test-password-123',path)
         gate=Gate(path);token,code=gate.login('test-password-123',remember=True)

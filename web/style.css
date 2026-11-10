@@ -818,3 +818,6 @@ body:has(.focus-mode) .topbar-inner { min-height:60px; }
 
 .remember-choice{display:flex;align-items:center;gap:10px;margin:14px 0;font-size:14px;}
 .remember-choice input[type=checkbox]{width:20px;min-width:20px;height:20px;margin:0;}
+
+.analysis-panel{position:fixed;inset:5vh max(12px,calc((100vw - 720px)/2));z-index:2000;overflow:auto;padding:24px;border:1px solid #42d8bb;border-radius:16px;background:#101b28;box-shadow:0 0 0 100vmax #000b;}
+.analysis-panel[hidden]{display:none;}.analysis-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;}.analysis-fields input[type=checkbox]{width:20px;height:20px;}.analysis-fields label{min-width:0;}.analysis-panel input,.analysis-panel select{max-width:100%;}@media(max-width:600px){.analysis-fields{grid-template-columns:1fr;}}

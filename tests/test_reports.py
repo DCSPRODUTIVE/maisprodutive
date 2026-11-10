@@ -114,3 +114,21 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.list('mine')[0]['camera'],'good')
         self.assertTrue(bad.detection_health['error'])
         self.assertTrue(monitor.ready)
+
+    def test_better_photo_replaces_same_event_and_telegram_waits_for_selection(self):
+        from unittest.mock import MagicMock
+        stream=SimpleNamespace(report_owner='mine',report_name='Camera',device_id='id',report_detect=True,
+            condition=threading.Condition(),image=b'photo-one',last_frame=100.,stopped=threading.Event())
+        alerts=MagicMock();server=SimpleNamespace(telegram=alerts)
+        detector=MagicMock();detector.detect.return_value=([{'kind':'person','confidence':.9,'box':[.1,.1,.8,.9]}],None)
+        with patch('reports.readiness',return_value=(True,'ready')),patch('reports.RecordingService'):
+            monitor=ReportMonitor(server,self.store)
+            with patch('reports.time.monotonic',return_value=100):monitor.process(stream,detector)
+            self.assertEqual(len(self.store.list('mine')),1);alerts.enqueue.assert_not_called()
+            stream.image=b'photo-better';stream.last_frame=101.
+            detector.detect.return_value=([{'kind':'person','confidence':.98,'box':[.1,.1,.8,.9]}],None)
+            with patch('reports.time.monotonic',return_value=101):monitor.process(stream,detector)
+            event=self.store.list('mine')[0];self.assertEqual(self.store.image('mine',event['id']),b'photo-better')
+            with patch('reports.time.monotonic',return_value=104):monitor.flush_photos()
+            self.assertEqual(alerts.enqueue.call_args.args[2],b'photo-better')
+            self.assertEqual(len(self.store.list('mine')),1)

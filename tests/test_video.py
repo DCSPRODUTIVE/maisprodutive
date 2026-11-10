@@ -164,3 +164,25 @@ class VideoUpdateTests(unittest.TestCase):
             self.assertEqual((native/'keep.txt').read_text(),'keep this')
             self.assertEqual((native/'yoosee_snapshot.exe').read_bytes(),b'old-bridge')
             self.assertFalse(list(Path(directory).glob('video-backup-*')))
+
+class SessionClassificationTests(unittest.TestCase):
+    def test_rejected_sdk_session_is_not_retried_as_an_ordinary_frame_failure(self):
+        from video import native_failure
+        self.assertEqual(native_failure(14).kind,'authentication')
+        self.assertEqual(native_failure(15).kind,'video_timeout')
+        self.assertEqual(native_failure(24).kind,'video_stale')
+
+class ReadinessCacheTests(unittest.TestCase):
+    def test_unchanged_verified_libraries_are_not_rehashed_but_changes_invalidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);native=root/'bridge';native.mkdir();(root/'native').mkdir()
+            (root/'native'/'yoosee_snapshot.c').write_bytes(b'source')
+            (native/'sdk.dll').write_bytes(b'dll');(native/'yoosee_snapshot.exe').write_bytes(b'exe')
+            manifest={'source_sha256':video.checksum(root/'native'/'yoosee_snapshot.c'),'bridge_sha256':video.checksum(native/'yoosee_snapshot.exe')}
+            (native/'manifest.json').write_text(json.dumps(manifest))
+            expected={'sdk.dll':video.checksum(native/'sdk.dll')}
+            with patch.object(video,'ROOT',root),patch.object(video,'NATIVE',native),patch.object(video,'DLL_HASHES',expected),patch('video.shutil.which',return_value='/fake/tool'),patch('video.platform.system',return_value='Linux'),patch('video.platform.machine',return_value='x86_64'),patch('video.checksum',wraps=video.checksum) as hash_file:
+                self.assertTrue(video.readiness()[0]);count=hash_file.call_count
+                self.assertTrue(video.readiness()[0]);self.assertEqual(hash_file.call_count,count)
+                (native/'sdk.dll').write_bytes(b'changed')
+                self.assertFalse(video.readiness()[0]);self.assertGreater(hash_file.call_count,count)

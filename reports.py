@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 
+from person_analysis import Tracker,settings as analysis_settings,photo_score
 from clips import RecordingService
 
 ROOT = Path(__file__).parent / '.local' / 'reports'
@@ -52,6 +53,10 @@ class EventStore:
                 try:conn.execute('ALTER TABLE videos ADD COLUMN '+column+' '+definition)
                 except sqlite3.OperationalError:
                     if column not in {row[1] for row in conn.execute('PRAGMA table_info(videos)')}:raise
+        event_columns={r[1] for r in conn.execute('PRAGMA table_info(events)')}
+        if 'analysis' not in event_columns:
+            try:conn.execute("ALTER TABLE events ADD COLUMN analysis TEXT NOT NULL DEFAULT '{}'")
+            except sqlite3.OperationalError:pass
         try:
             with conn:
                 self._cleanup(conn)
@@ -59,21 +64,28 @@ class EventStore:
         finally:
             conn.close()
 
-    def add(self, owner, camera, name, kind, image=None, confidence=None, boxes=()):
+    def add(self, owner, camera, name, kind, image=None, confidence=None, boxes=(), analysis=None):
         if kind != 'person':
             raise ValueError('Apenas pessoas detectadas são registradas.')
         with self.guard, self.connect() as db:
-            db.execute('INSERT INTO events(owner,camera,name,created,kind,confidence,plate,boxes,image) VALUES (?,?,?,?,?,?,?,?,?)',
-                       (owner, camera, name, time.time(), kind, confidence, None, json.dumps(boxes), image))
+            cursor=db.execute('INSERT INTO events(owner,camera,name,created,kind,confidence,plate,boxes,image,analysis) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                       (owner,camera,name,time.time(),kind,confidence,None,json.dumps(boxes),image,json.dumps(analysis or {})))
+            event_id=cursor.lastrowid
             # Keep at most 1,000 images/events per account and 30 days of history.
             db.execute('DELETE FROM events WHERE created < ?', (time.time()-30*86400,))
             db.execute('DELETE FROM events WHERE owner=? AND id NOT IN (SELECT id FROM events WHERE owner=? ORDER BY id DESC LIMIT 1000)', (owner, owner))
 
+            return event_id
+
+    def improve_photo(self,owner,event,image,confidence,boxes,analysis):
+        with self.guard,self.connect() as db:
+            db.execute("UPDATE events SET image=?,confidence=?,boxes=?,analysis=? WHERE owner=? AND id=? AND kind='person'",(image,confidence,json.dumps(boxes),json.dumps(analysis),owner,event))
+
     def list(self, owner, before=None):
         with self.guard, self.connect() as db:
-            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind='person' AND id<? ORDER BY id DESC LIMIT 24",
+            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,analysis,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind='person' AND id<? ORDER BY id DESC LIMIT 24",
                               (owner, before or 9223372036854775807)).fetchall()
-            return [dict(row, boxes=json.loads(row['boxes'])) for row in rows]
+            return [dict(row, boxes=json.loads(row['boxes']),analysis=json.loads(row['analysis'])) for row in rows]
 
     def image(self, owner, event_id):
         with self.guard, self.connect() as db:
@@ -161,12 +173,20 @@ class Detector:
         cv2.setNumThreads(1)
         self.net = cv2.dnn.readNetFromCaffe(str(MODEL_ROOT/'deploy.prototxt'), str(MODEL_ROOT/'mobilenet_iter_73000.caffemodel'))
 
-    def detect(self, jpeg):
+    def detect(self, jpeg, config=None):
+        config=analysis_settings(config)
         import numpy as np
         frame = self.cv.imdecode(np.frombuffer(jpeg, np.uint8), self.cv.IMREAD_COLOR)
         if frame is None:
             return [], None
         height, width = frame.shape[:2]
+        self.night=config['night_auto'] and float(frame.mean())<55
+        threshold=config['night_confidence'] if self.night else config['confidence']
+        input_frame=frame
+        if self.night:
+            lab=self.cv.cvtColor(frame,self.cv.COLOR_BGR2LAB);l,a,b=self.cv.split(lab)
+            l=self.cv.createCLAHE(clipLimit=2,tileGridSize=(8,8)).apply(l)
+            input_frame=self.cv.cvtColor(self.cv.merge((l,a,b)),self.cv.COLOR_LAB2BGR)
         rows=[]
         def infer(image, region):
             self.net.setInput(self.cv.dnn.blobFromImage(image,0.007843,(300,300),127.5))
@@ -174,19 +194,20 @@ class Detector:
             ox,oy,rw,rh=region
             for row in detections:
                 confidence=float(row[2])
-                if int(row[1])!=15 or confidence<.55:continue
+                if int(row[1])!=15 or confidence<threshold:continue
                 x1,y1,x2,y2=row[3:7].clip(0,1).tolist()
                 if x2<=x1 or y2<=y1:continue
                 box=[(ox+x1*rw)/width,(oy+y1*rh)/height,(ox+x2*rw)/width,(oy+y2*rh)/height]
+                if box[3]-box[1]<config['min_height']:continue
                 rows.append({'kind':'person','confidence':round(confidence,3),'box':box})
-        infer(frame,(0,0,width,height))
+        infer(input_frame,(0,0,width,height))
         # A second scale preserves small-person detail that a whole-frame 300px input loses.
         if width>=960 and not rows:
             span=width*2//3
-            for left in (0,width-span):infer(frame[:,left:left+span],(left,0,span,height))
+            for left in (0,width-span):infer(input_frame[:,left:left+span],(left,0,span,height))
         if rows:
             boxes=[[int(r['box'][0]*width),int(r['box'][1]*height),int((r['box'][2]-r['box'][0])*width),int((r['box'][3]-r['box'][1])*height)] for r in rows]
-            indices=self.cv.dnn.NMSBoxes(boxes,[r['confidence'] for r in rows],.55,.4)
+            indices=self.cv.dnn.NMSBoxes(boxes,[r['confidence'] for r in rows],threshold,.4)
             rows=[rows[int(i)] for i in indices.flatten()] if len(indices) else []
         return rows, frame
 
@@ -202,6 +223,7 @@ class ReportMonitor:
         self.last={}
         self.saved={}
         self.presence={}
+        self.trackers={};self.pending={};self.settings_cache={};self.heartbeat=time.monotonic()
         self.ready,self.message=readiness()
         self.recordings=RecordingService(self.store)
 
@@ -226,25 +248,53 @@ class ReportMonitor:
         self.last[key]=now
         stream.report_sample_stamp=stamp
         started=time.monotonic()
-        rows,frame=detector.detect(jpeg)
+        config=getattr(stream,'analysis_settings',None)
+        if config is None:
+            if key not in self.settings_cache:self.settings_cache[key]=analysis_settings(self.store.preferences(owner).get('analysis_settings',{}).get(stream.device_id))
+            config=self.settings_cache[key]
+        rows,frame=detector.detect(jpeg,config) if type(detector).__name__=='Detector' else detector.detect(jpeg)
         if not getattr(stream,'report_detect',False) or time.monotonic()>=getattr(stream,'monitor_until',float('inf')):return
         matches=[row for row in rows if row['kind']=='person']
         stream.detection_health={'people':len(matches),'analysis_ms':round((time.monotonic()-started)*1000),
                                  'analyzed_at':time.monotonic(),'error':False}
-        if not matches:return
-        previous=self.presence.get(key,0)
-        self.presence[key]=now
+        tracker=self.trackers.setdefault(key,Tracker())
+        info=tracker.update(matches,now,config)
+        stream.detection_health.update(tracks=len(info['track_ids']),night=bool(getattr(detector,'night',False)))
+        pending=self.pending.get(key)
+        if pending and now-pending['at']<=3 and matches:
+            score=photo_score(frame,matches)
+            if score>pending['score']:
+                pending.update(score=score,jpeg=jpeg,rows=matches)
+                self.store.improve_photo(owner,pending['id'],jpeg,max(r['confidence'] for r in matches),[r['box'] for r in matches],pending['info'])
+        if not matches or not info['reasons']:return
         self.recordings.trigger(stream)
-        event_key=key+('person',)
-        elapsed=now-self.saved.get(event_key,0)
-        if elapsed>=30 or (now-previous>=3 and elapsed>=5):
-            self.store.add(owner,stream.device_id,stream.report_name,'person',jpeg,
-                           max(row['confidence'] for row in matches),boxes=[row['box'] for row in matches])
-            self.saved[event_key]=now
-            log=getattr(self.server,'diagnostics',None)
-            if log:log.record(owner,stream.device_id,'person_detected',people=len(matches))
+        # One event per new track/crossing/permanence, bounded per camera.
+        if now-self.saved.get(key+('person',),0)<3 and pending:
+            pending['info']['reasons']=sorted(set(pending['info']['reasons']+info['reasons']))
+            pending['info']['track_ids']=sorted(set(pending['info']['track_ids']+info['track_ids']))
+            self.store.improve_photo(owner,pending['id'],pending['jpeg'],max(r['confidence'] for r in pending['rows']),[r['box'] for r in pending['rows']],pending['info'])
+            return
+        confidence=max(row['confidence'] for row in matches)
+        event=self.store.add(owner,stream.device_id,stream.report_name,'person',jpeg,confidence,
+                             boxes=[row['box'] for row in matches],analysis=info)
+        self.saved[key+('person',)]=now
+        self.pending[key]={'at':now,'id':event,'jpeg':jpeg,'rows':matches,'score':photo_score(frame,matches),
+                           'info':info,'name':stream.report_name,'stream':stream}
+        log=getattr(self.server,'diagnostics',None)
+        if log:log.record(owner,stream.device_id,'person_detected',people=len(matches))
+
+    def flush_photos(self,force=False):
+        now=time.monotonic()
+        for key,item in list(self.pending.items()):
+            if not force and now-item['at']<3:continue
+            self.pending.pop(key,None)
+            stream=item['stream']
+            if not getattr(stream,'report_detect',False):continue
             alerts=getattr(self.server,'telegram',None)
-            if alerts:alerts.enqueue(owner,stream.report_name,jpeg,max(row['confidence'] for row in matches))
+            if alerts:
+                labels={'presence':'Pessoa detectada','dwell':'Permanência prolongada','line_positive':'Cruzamento de linha','line_negative':'Cruzamento de linha'}
+                name=item['name']+' · '+', '.join(labels[r] for r in item['info']['reasons'])
+                alerts.enqueue(key[0],name,item['jpeg'],max(r['confidence'] for r in item['rows']))
 
     def run(self):
         try:
@@ -252,6 +302,7 @@ class ReportMonitor:
             detector=Detector() if self.ready else None
             last_cleanup=0
             while not self.stopped.wait(.1):
+                self.heartbeat=time.monotonic();self.flush_photos()
                 if time.monotonic()-last_cleanup>=60:
                     self.store.cleanup();last_cleanup=time.monotonic()
                 if detector is None:continue
@@ -275,4 +326,5 @@ class ReportMonitor:
     def close(self):
         self.stopped.set()
         if self.thread:self.thread.join(timeout=7)
+        self.flush_photos(force=True)
         self.recordings.close()

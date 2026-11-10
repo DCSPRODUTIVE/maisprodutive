@@ -78,14 +78,14 @@ class EncoderTests(unittest.TestCase):
         red,blue=jpeg('red'),jpeg('blue')
         with tempfile.TemporaryDirectory() as directory:
             store=EventStore(directory);now=time.monotonic();history=FrameBuffer()
-            history.append(now-4.9,red);history.append(now-.1,red)
+            history.append(now-9.9,red);history.append(now-.1,red)
             stream=SimpleNamespace(report_owner='owner',device_id='id',report_name='Camera',report_detect=True,
                 stopped=threading.Event(),condition=threading.Condition(),image=blue,last_frame=now,history=history)
             with patch('clips.DURATION',1):
                 recorder=Recorder(store,stream,lambda:None);recorder.start();recorder.thread.join(timeout=8)
             row=store.videos('owner')[0]
-            self.assertGreater(row['pre_roll'],4.7);self.assertGreater(row['duration'],5.5)
-            self.assertGreater(row['max_gap'],4.7)
+            self.assertGreater(row['pre_roll'],9.7);self.assertGreater(row['duration'],10.5)
+            self.assertGreater(row['max_gap'],9.7)
             self.assertLessEqual(row['frame_count'],2)
             path=store.video('owner',row['id'])
             first=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-frames:v','1','-threads','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],capture_output=True,check=True,timeout=5).stdout

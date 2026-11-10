@@ -102,4 +102,7 @@ class DeviceVault:
                     value=json.loads(self.cipher.decrypt(payload[:12],payload[12:],self.aad('provider',scope,token,expiry)))
                     candidate=hashlib.sha256(value['access_token'].encode()).hexdigest()
                 except Exception:continue
-                if secrets.compare_digest(candidate,fingerprint):db.execute("DELETE FROM devices WHERE kind='provider' AND scope=? AND token=?",(scope,token))
+                if secrets.compare_digest(candidate,fingerprint):
+                    value['access_token']=''
+                    nonce=secrets.token_bytes(12);sealed=nonce+self.cipher.encrypt(nonce,json.dumps(value).encode(),self.aad('provider',scope,token,expiry))
+                    db.execute("UPDATE devices SET payload=? WHERE kind='provider' AND scope=? AND token=?",(sealed,scope,token))

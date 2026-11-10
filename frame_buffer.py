@@ -1,7 +1,7 @@
-"""Five seconds of timestamped JPEGs, bounded in time and memory per camera."""
+"""Ten seconds of timestamped JPEGs, bounded in time and memory per camera."""
 from collections import deque
 
-PRE_ROLL = 5
+PRE_ROLL = 10
 MAX_BYTES = 12 * 1024 * 1024
 
 

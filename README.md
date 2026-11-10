@@ -833,3 +833,58 @@ as sessões da TV. A instalação usa ADB no computador da mesma rede; não alte
 serviços de câmeras. O comando de voz “Abrir Torre de Controle” depende também do
 reconhecimento da Alexa: um APK instalado fora da loja não é automaticamente
 registrado no catálogo da Amazon.
+
+## Análises locais, recuperação e antecipação de vídeo
+
+Esta revisão mantém o detector local atual e adiciona ajustes em **Ajustar análise**,
+por câmera: confiança, tamanho mínimo da pessoa, análise noturna, permanência e
+cruzamento de uma linha. O rastreador associa pessoas entre quadros próximos para
+reduzir avisos repetidos; seus números são temporários, não identificam indivíduos.
+Não há reconhecimento facial nem zonas de interesse. A foto do evento é escolhida
+entre os primeiros três segundos e o aviso aguarda essa seleção; a gravação começa
+imediatamente. A melhoria noturna afeta a análise, não altera as fotos originais.
+
+O vídeo local preserva **até 10 segundos anteriores** e até 120 segundos posteriores
+à detecção. O buffer continua limitado a 12 MiB por câmera: duração disponível depende
+da recepção e do tamanho dos quadros. Durante Economia ou falhas não são inventadas
+imagens; a recuperação pelo cartão depende da disponibilidade da câmera.
+
+A busca no cartão aceita diferença de até **5 segundos** nas bordas, mantendo o
+horário realmente recebido. Não aceita vídeos de outro dia nem deslocamentos grandes
+de relógio. Trechos válidos de tentativas sucessivas são aproveitados; intervalos
+sem imagens aparecem como lacunas, com cortes entre os trechos, sem repetir quadros
+para simular continuidade. O resultado fica marcado como parcial e o vídeo local
+original é preservado. Os diagnósticos registram a diferença de horário e a etapa
+que falhou. A compatibilidade ainda precisa ser confirmada nas câmeras físicas.
+
+A conta conectada passa a ser diferenciada de imagens recentes. Quando a sessão
+Yoosee for rejeitada, use **Renovar sessão Yoosee** e entre novamente, sem esquecer o
+aparelho. Aparelhos já autorizados da mesma conta podem reutilizar a nova sessão;
+senhas Yoosee não são armazenadas nem repetidas automaticamente.
+
+Com os alertas Telegram habilitados nos Reports, câmeras ativas acumulando cinco
+minutos sem quadros geram um aviso e outro ao recuperar. Pausas programadas de Economia
+não contam como falha. Um vigia independente verifica o serviço a cada minuto;
+após três verificações malsucedidas, avisa e solicita recuperação uma vez por incidente,
+com intervalo mínimo de 30 minutos. Ele roda como o usuário Linux; a unidade de
+recuperação privilegiada executa somente o comando fixo de reiniciar o DCS.
+O vigia depende do próprio computador e da rede: não consegue avisar durante falta
+de energia, travamento completo do Linux ou ausência de internet.
+
+Atualize no servidor para instalar também o vigia e recompilar o adaptador:
+
+```bash
+cd ~/maisprodutive
+git pull
+python3 configure_video.py ~/Yoosee-1.0.0.8.exe --update
+python3 configure_startup.py --install
+```
+
+O instalador reinicia os serviços e ativa `dcs-watchdog.timer`. Reabra o painel após
+concluir. O aplicativo de acesso do Fire TV não precisa ser reinstalado.
+
+Para comparar outro detector sem alterar a produção, `python3 benchmark_people.py
+--help` explica o teste local com um modelo ONNX fornecido pelo operador e imagens
+representativas. Use imagens anotadas para medir precisão e erros; sem anotações o
+teste mede somente tempo e quantidade de detecções. Nenhum modelo novo é baixado
+ou ativado automaticamente. Compare no servidor real antes de substituir o atual.

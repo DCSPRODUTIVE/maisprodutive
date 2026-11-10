@@ -69,5 +69,5 @@ test('confirmed SD partial has a download and is never labeled complete',async()
   get('videos-tab').handlers.click();await new Promise(setImmediate);
   const texts=el=>[el.textContent||'',...el.children.flatMap(texts)];const rendered=texts(get('report-list')).join(' ');
   assert.match(rendered,/Trecho parcial do cartão/);assert.match(rendered,/vídeo local original mantido/);
-  assert.match(rendered,/Horário confirmado/);assert.doesNotMatch(rendered,/concluído/);
+  assert.match(rendered,/Horário recebido/);assert.doesNotMatch(rendered,/concluído/);
 });

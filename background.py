@@ -76,6 +76,7 @@ class BackgroundMonitor:
         self.entries = {}
         self.stopped = threading.Event()
         self.thread = None
+        self.heartbeat=self.clock()
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -279,6 +280,7 @@ class BackgroundMonitor:
         while not self.stopped.wait(.25):
             try:
                 self.tick()
+                self.heartbeat=self.clock()
             except Exception:
                 # Do not leak provider credentials through background exception logs.
                 continue

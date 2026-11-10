@@ -7,6 +7,7 @@ import os
 import secrets
 import shutil
 import signal
+import select
 import subprocess
 import tempfile
 import threading
@@ -47,6 +48,21 @@ def jpeg_frames(pipe):
                 raise IntegrationError('video_decode', 'Um quadro excedeu o tamanho permitido.')
             yield bytes(pending[:end+2])
             del pending[:end+2]
+
+
+class InterruptiblePipe:
+    """A dead grandchild holding a pipe must not trap a worker or startup slot."""
+    def __init__(self,pipe,stopped):
+        self.fd=pipe.fileno();self.stopped=stopped
+        os.set_blocking(self.fd,False)
+
+    def read1(self,size):
+        while not self.stopped.is_set():
+            ready,_,_=select.select([self.fd],[],[],.2)
+            if ready:
+                try:return os.read(self.fd,size)
+                except BlockingIOError:continue
+        return b''
 
 
 class LiveStream:
@@ -155,9 +171,10 @@ class LiveStream:
     def _read_encoder_errors(self, pipe):
         # Classify only. Never retain or forward vendor messages or raw stderr.
         tail = b''
+        reader=InterruptiblePipe(pipe,self.stopped) if hasattr(pipe,'fileno') else pipe
         while True:
             try:
-                chunk = pipe.read1(4096)
+                chunk = reader.read1(4096)
             except (OSError, ValueError):
                 return
             if not chunk:
@@ -186,7 +203,7 @@ class LiveStream:
             if not ffmpeg:raise IntegrationError('video_configuration','Instale FFmpeg no servidor.')
             encoder=self._launch([ffmpeg,'-v','error','-threads','1','-filter_threads','1','-f','v4l2','-framerate','10',
                 '-video_size','640x480','-i',self.local_device,'-an','-vf','fps=10','-threads','1','-q:v','4','-f','image2pipe','-vcodec','mjpeg','-flush_packets','1','pipe:1'],stdout=subprocess.PIPE)
-            for image in jpeg_frames(encoder.stdout):
+            for image in jpeg_frames(InterruptiblePipe(encoder.stdout,self.stopped)):
                 if self.stopped.is_set():break
                 with self.condition:
                     self.image=image;self.sequence+=1;self.last_frame=time.monotonic();self.frame_times.append(self.last_frame)
@@ -223,10 +240,16 @@ class LiveStream:
                     self.error_reader = threading.Thread(target=self._read_encoder_errors, args=(encoder.stderr,), daemon=True)
                     self.error_reader.start()
                     native.stdout.close()
-                    native.stdin.write(self._payload)
+                    fd=native.stdin.fileno();os.set_blocking(fd,False)
+                    payload=memoryview(self._payload)
+                    while payload and not self.stopped.is_set():
+                        _,ready,_=select.select([],[fd],[],.2)
+                        if ready:
+                            try:payload=payload[os.write(fd,payload):]
+                            except BlockingIOError:continue
                     native.stdin.close()
                     self._payload = None
-                    for image in jpeg_frames(encoder.stdout):
+                    for image in jpeg_frames(InterruptiblePipe(encoder.stdout,self.stopped)):
                         if self.stopped.is_set():
                             break
                         self._release_startup()
@@ -294,12 +317,13 @@ class LiveStream:
             self.image = None
             self.history.clear()
             self.condition.notify_all()
-        with self.process_guard:
-            for process in reversed(self.processes):
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        try:
+            with self.process_guard:
+                for process in reversed(self.processes):
+                    try:os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:pass
+        finally:
+            self._release_startup()
         if wait and self.worker.ident is not None and threading.current_thread() is not self.worker:
             self.done.wait(3)
 

@@ -568,3 +568,32 @@ test('remembered device recovers a fresh CSRF after service restart without subm
   assert.equal(calls.filter(call=>call.url==='/api/login').length,0);
   assert.equal(get('login').hidden,true);
 });
+
+test('camera analysis saves independent settings and keeps other preferences',async()=>{
+  let saved;
+  const responses=liveResponses();
+  responses['/api/analysis/settings']=async options=>{
+    saved=JSON.parse(options.body);
+    return {ok:true,json:async()=>({settings:saved.settings,message:'Configuração salva'})};
+  };
+  const {get}=await setup(null,liveStatus,null,null,responses);
+  await cardButton(get,0,'Ajustar análise').handlers.click();
+  assert.equal(get('analysis-panel').hidden,false);
+  assert.equal(get('analysis-confidence').value,'55');
+  get('analysis-confidence').value='60';get('analysis-line').checked=true;
+  await get('analysis-form').handlers.submit({preventDefault(){}});
+  assert.equal(saved.device_id,'a');assert.equal(saved.settings.confidence,.6);
+  assert.equal(saved.settings.line_enabled,true);
+  assert.equal(get('analysis-panel').hidden,true);
+  await cardButton(get,0,'Ajustar análise').handlers.click();
+  assert.equal(get('analysis-confidence').value,'60');
+});
+
+test('renew provider session requests renewal without automatically submitting credentials',async()=>{
+  const responses=liveResponses();
+  responses['/api/account/renew']={ok:true,json:async()=>({message:'Entre novamente na conta Yoosee.'})};
+  const {get,calls}=await setup(null,liveStatus,null,null,responses);
+  await get('renew-session').handlers.click();
+  assert.equal(calls.filter(c=>c.url==='/api/account/renew').length,1);
+  assert.equal(calls.filter(c=>c.url==='/api/login').length,0);
+});

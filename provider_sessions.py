@@ -87,7 +87,14 @@ class ProviderSessions:
     def restore(self,sid):
         row=self.vault.load('provider',self.scope,sid)
         if not row:return None
-        decoded=self.decode(row[0])
+        bound=row[0]
+        decoded=self.decode(bound)
+        # A previously authorized device may reuse a newer accepted session of the same owner.
+        if not decoded:
+            for candidate,expiry in self.vault.providers(self.scope):
+                if candidate.get('owner')==bound.get('owner'):
+                    decoded=self.decode(candidate)
+                    if decoded:break
         if decoded:self.count(decoded[1],'device_restores')
         return (*decoded,row[1]) if decoded else None
 
