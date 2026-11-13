@@ -126,6 +126,31 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(api.call_count,1)
         self.assertIn('webhook',self.ai.status('owner')['message'])
 
+    def test_failure_from_old_model_cannot_pause_newly_saved_configuration(self):
+        def failed_old_request(*args):
+            self.ai.config('owner',{'model':'gemini-flash-latest'})
+            raise AIError('Falha do modelo anterior')
+        with patch('ai_assistant.generate',side_effect=failed_old_request):
+            self.ai.process('owner','chat','/status')
+        status=self.ai.status('owner')
+        self.assertEqual(status['retry_after_seconds'],0)
+        self.assertFalse(status['last_failure'])
+        self.assertIn('Configuração salva',status['message'])
+
+    @patch('ai_assistant.generate',return_value='Conexão funcionando.')
+    def test_explicit_diagnostic_uses_saved_settings_without_photos_or_chat_requirement(self, google):
+        self.ai.config('owner',{'conversation':False,'event_descriptions':False,'model':'gemini-flash-latest'})
+        self.ai.cooldown['owner']=time.monotonic()+300
+        self.ai.failures['owner']='Falha anterior'
+        self.ai.process('owner','test','')
+        self.assertEqual(google.call_args.args[0],KEY)
+        self.assertEqual(google.call_args.args[1],'gemini-flash-latest')
+        self.assertEqual(google.call_args.args[4],[])
+        self.assertIn('Teste concluído',self.ai.status('owner')['message'])
+        self.assertEqual(self.ai.status('owner')['retry_after_seconds'],0)
+        self.assertFalse(self.ai.status('owner')['last_failure'])
+        self.telegram.send_text.assert_not_called()
+
 
 class GeminiTests(unittest.TestCase):
     @patch('google_ai.urllib.request.build_opener')
@@ -148,3 +173,14 @@ class GeminiTests(unittest.TestCase):
             generate(KEY,'gemini-2.5-flash','pergunta',{})
         self.assertNotIn(KEY,str(error.exception))
         self.assertIn('recusou',str(error.exception))
+
+    @patch('google_ai.urllib.request.build_opener')
+    def test_timeout_and_missing_model_are_distinguished_and_network_wait_is_bounded(self, opener):
+        from google_ai import REQUEST_TIMEOUT
+        for failure,expected in ((TimeoutError(),'espera esgotado'),
+            (urllib.error.URLError(TimeoutError()),'conexão com o Google esgotado'),
+            (urllib.error.HTTPError('https://example.test',404,'missing',{},None),'HTTP 404')):
+            opener.return_value.open.side_effect=failure
+            with self.assertRaises(AIError) as error:generate(KEY,'gemini-flash-latest','teste',{})
+            self.assertIn(expected,str(error.exception))
+            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'],REQUEST_TIMEOUT)

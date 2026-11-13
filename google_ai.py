@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from telegram_alerts import NoRedirect
 
+REQUEST_TIMEOUT = 60
 
 class AIError(Exception):
     pass
@@ -41,7 +42,7 @@ def generate(key, model, question, context, images=()):
         data=json.dumps(body).encode(),
         headers={'Content-Type': 'application/json', 'x-goog-api-key': key})
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=25) as response:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=REQUEST_TIMEOUT) as response:
             raw = response.read(256 * 1024 + 1)
         if len(raw) > 256 * 1024:
             raise AIError('Resposta da IA excedeu o limite.')
@@ -53,10 +54,18 @@ def generate(key, model, question, context, images=()):
         # Do not let an echoed secret reach Telegram or logs.
         return text.strip().replace(key, '[chave omitida]')[:3000]
     except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise AIError(f'Modelo {model} não disponível neste endpoint (HTTP 404). Confira o modelo e o acesso à geração de respostas.') from None
         if error.code in (400, 401, 403):
-            raise AIError('Google recusou a solicitação. Confira chave, modelo e permissões da API.') from None
+            raise AIError(f'Google recusou a solicitação (HTTP {error.code}). Confira chave, modelo e permissões da API.') from None
         if error.code == 429:
-            raise AIError('Limite ou cota do Google atingido. Aguarde antes de tentar novamente.') from None
-        raise AIError('Google indisponível neste momento.') from None
+            raise AIError('Limite ou cota do Google atingido (HTTP 429). Aguarde antes de tentar novamente.') from None
+        raise AIError(f'Google retornou HTTP {error.code}. A consulta não foi concluída.') from None
+    except TimeoutError:
+        raise AIError(f'Tempo de espera esgotado ao consultar o Google ({REQUEST_TIMEOUT}s de espera de rede). Não confirma chave inválida.') from None
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            raise AIError(f'Tempo de conexão com o Google esgotado ({REQUEST_TIMEOUT}s de espera de rede).') from None
+        raise AIError('Falha de conexão com o Google: confira rede, DNS e HTTPS. Não confirma chave inválida.') from None
     except (OSError, ValueError):
         raise AIError('Não foi possível consultar o Google. O monitoramento local continua ativo.') from None

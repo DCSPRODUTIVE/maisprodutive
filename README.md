@@ -895,7 +895,7 @@ Nos **Reports → Assistente Google IA e conversa no Telegram**, configure uma c
 Google, o modelo e as opções da conta. A chave é de escrita: não volta nas respostas
 da API nem nos logs. Chaves por conta ficam criptografadas no armazenamento local
 já usado pelos aparelhos autorizados (`python3-cryptography`). A IA fica desativada
-por padrão. O modelo inicial é `gemini-2.5-flash`, editável conforme os modelos
+por padrão. O modelo inicial é `gemini-flash-latest`, editável conforme os modelos
 habilitados na sua conta Google. Não é feita troca automática de modelo.
 
 Antes, salve e ative o Telegram. Para conversar, configure seu **chat privado** e
@@ -964,3 +964,21 @@ Chaves privadas não acompanham `git pull`: devem existir no próprio servidor.
 A integração foi validada com respostas simuladas e testes de navegador. A rede
 do ambiente de desenvolvimento não permite acesso ao endpoint Google Gemini;
 a chave fornecida e as descrições reais precisam ser validadas no servidor instalado.
+
+### Diagnóstico da conexão com o Google
+
+O botão **Testar IA sem fotos** nos Reports usa a chave e o modelo já salvos,
+sem precisar colar credenciais em comandos. Ele faz uma consulta curta, sem
+imagens, dentro da mesma fila independente e do limite diário. Funciona mesmo
+com descrições automáticas e conversa desmarcadas, desde que IA e Telegram estejam
+ativados. Cada sessão pode solicitar um teste por minuto. O teste explícito pode
+verificar a conexão durante a pausa automática; não habilita tentativas automáticas
+em sequência. Aguarde e use **Atualizar status da IA** para ler o resultado.
+
+A espera de rede é de 60 segundos. Os resultados distinguem tempo esgotado,
+conexão, modelo indisponível (HTTP 404), recusa de acesso e cota (HTTP 429).
+Durante a pausa, o Telegram informa também a última falha e os segundos restantes.
+O modelo padrão de novas configurações é `gemini-flash-latest`, conforme o início
+rápido informado pelo operador; configurações existentes são preservadas e precisam
+ser editadas nos Reports. O alias pode mudar de versão e condições no Google.
+Listar modelos não confirma que uma chamada de geração conseguirá concluir.

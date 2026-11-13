@@ -4,13 +4,13 @@
 <p>A IA consulta o estado das câmeras e as detecções recentes. Quando habilitada, envia fotos de eventos ao Google para descrição. Não reconhece identidades, não executa alterações e não substitui os alertas locais. Descrições podem conter erros. O uso pode gerar cobrança na sua conta Google.</p>
 <form id="ai-form">
 <label>Chave da API Google<input id="ai-key" type="password" autocomplete="new-password" placeholder="Cole a chave; deixe vazio para manter a salva"></label>
-<label>Modelo Gemini<input id="ai-model" value="gemini-2.5-flash" required pattern="gemini-[a-zA-Z0-9._-]+"></label>
+<label>Modelo Gemini<input id="ai-model" value="gemini-flash-latest" required pattern="gemini-[a-zA-Z0-9._-]+"></label>
 <label>Limite de consultas por dia (UTC)<input id="ai-limit" type="number" min="1" max="300" value="60" required></label>
 <label class="ai-toggle"><input id="ai-enabled" type="checkbox"> Ativar IA Google</label>
 <label class="ai-toggle"><input id="ai-events" type="checkbox"> Descrever fotos das novas detecções no Telegram</label>
 <label class="ai-toggle"><input id="ai-conversation" type="checkbox"> Responder perguntas no meu chat privado do Telegram</label>
 <p class="hint">Configure o Telegram acima primeiro. Use um bot exclusivo para o DCS. O limite soma descrições e perguntas, incluindo tentativas; não é um teto de cobrança do Google. Ao ativar a conversa pela primeira vez, mensagens antigas são ignoradas.</p>
-<button type="submit">Salvar IA</button> <button id="ai-refresh" type="button" class="secondary">Atualizar status da IA</button>
+<button type="submit">Salvar IA</button> <button id="ai-test" type="button" class="secondary">Testar IA sem fotos</button> <button id="ai-refresh" type="button" class="secondary">Atualizar status da IA</button>
 </form><p id="ai-status" role="status">Carregando configuração…</p>
 <p>No Telegram: /ajuda, /status, /eventos ou /resumo. Você também pode perguntar “O que aconteceu nas últimas detecções?”. São consultadas até 6 detecções e enviadas até 3 fotos por pergunta; isso não é análise contínua nem reprodução dos vídeos.</p>
 </details></main></body></html>

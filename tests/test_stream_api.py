@@ -83,6 +83,17 @@ class StreamApiTests(unittest.TestCase):
         code,data=self.post('/api/ai/status',{},cookie=cookie,csrf=csrf)
         self.assertEqual(code,200);self.assertEqual(data['daily_limit'],60)
 
+    def test_ai_diagnostic_queues_only_the_authenticated_owner_and_is_rate_limited(self):
+        self.state['report_owner']='ai-test-owner'
+        self.server.telegram.config('ai-test-owner',{'enabled':True,'token':'123456789:'+'B'*35,'chat_id':'12345'})
+        code,_=self.post('/api/ai/save',{'api_key':'fake-google-key-'+'x'*25,'enabled':True,'model':'gemini-flash-latest'})
+        self.assertEqual(code,200)
+        with patch.object(self.server.ai,'enqueue',return_value=True) as enqueue:
+            code,data=self.post('/api/ai/test',{})
+            self.assertEqual(code,200);enqueue.assert_called_once_with(('ai-test-owner','test',''))
+            self.assertIn('Sem fotos',data['message'])
+            self.assertEqual(self.post('/api/ai/test',{})[0],429)
+
     def test_late_old_source_auth_failure_does_not_invalidate_new_account_token(self):
         from background import Entry
         old=DesktopAccount('id','old-private-session-token')

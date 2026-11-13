@@ -10,7 +10,7 @@ from google_ai import AIError, generate
 def main():
     parser=argparse.ArgumentParser(description='Configurar chave Google somente neste servidor; sem alterar câmeras.')
     parser.add_argument('--check',action='store_true',help='Testar chave salva com uma pergunta curta, sem imagens; pode consumir cota.')
-    parser.add_argument('--model',default='gemini-2.5-flash')
+    parser.add_argument('--model',default='gemini-flash-latest')
     args=parser.parse_args()
     path=Path(__file__).parent/'.local'/'google-ai.key'
     if args.check:

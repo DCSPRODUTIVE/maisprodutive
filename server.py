@@ -553,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:key=self.server.archive.submit(owner,client.account,camera,float(start),float(end),action,deadline)
                     except RuntimeError:return self.send(429,{'message':'Fila de cartões cheia. Aguarde uma solicitação terminar.'})
                     return self.send(200,{'job_id':key,'message':'Solicitação enfileirada.'})
-                if self.path in ('/api/ai/status', '/api/ai/save'):
+                if self.path in ('/api/ai/status', '/api/ai/save', '/api/ai/test'):
                     if not isinstance(state['client'], DesktopClient):
                         return self.send(401, {'message':'Entre na conta para configurar IA.', 'error':'authentication'})
                     owner = self.report_owner(state)
@@ -562,6 +562,16 @@ class Handler(BaseHTTPRequestHandler):
                             self.server.ai.config(owner, body)
                         except ValueError as error:
                             return self.send(400, {'message':str(error)})
+                    if self.path.endswith('/test'):
+                        if time.monotonic()-state.get('last_ai_test',-1000)<60:
+                            return self.send(429,{'message':'Aguarde um minuto entre testes de IA.'})
+                        config=self.server.ai.config(owner)
+                        if not config['enabled'] or not self.server.ai.key(owner) or not self.server.telegram.config(owner)['enabled']:
+                            return self.send(400,{'message':'Salve e ative a IA e o Telegram antes do teste.'})
+                        state['last_ai_test']=time.monotonic()
+                        if not self.server.ai.enqueue((owner,'test','')):
+                            return self.send(429,{'message':'Fila de IA cheia. Aguarde ou pause as descrições automáticas.'})
+                        return self.send(200,{'message':'Teste enfileirado com a chave e o modelo salvos. Sem fotos; pode consumir cota. Aguarde a resposta e clique em Atualizar status da IA.'})
                     return self.send(200, self.server.ai.status(owner))
                 if self.path in ("/api/telegram/status", "/api/telegram/save", "/api/telegram/test"):
                     if not isinstance(state["client"], DesktopClient):

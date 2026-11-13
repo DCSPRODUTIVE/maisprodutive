@@ -12,7 +12,7 @@ from google_ai import AIError, generate
 from telegram_alerts import NoRedirect
 
 DEFAULTS = {'enabled': False, 'event_descriptions': False, 'conversation': False,
-            'model': 'gemini-2.5-flash', 'daily_limit': 60}
+            'model': 'gemini-flash-latest', 'daily_limit': 60}
 
 
 class AIAssistant:
@@ -25,6 +25,8 @@ class AIAssistant:
         self.results, self.cooldown, self.last_question = {}, {}, {}
         self.history = {}
         self.poll_retry = {}
+        self.failures = {}
+        self.revisions = {}
         self.lock = threading.RLock()
         with self.store.guard, self.store.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS ai_settings(owner TEXT PRIMARY KEY,value TEXT NOT NULL)')
@@ -90,7 +92,9 @@ class AIAssistant:
                 self.key(owner, key)
             with self.store.guard, self.store.connect() as db:
                 db.execute('INSERT OR REPLACE INTO ai_settings VALUES (?,?)', (owner, json.dumps(updated)))
+            self.revisions[owner] = self.revisions.get(owner,0)+1
             self.cooldown.pop(owner, None)
+            self.failures.pop(owner, None)
             self.history.pop(owner, None)
             self.results[owner] = 'Configuração salva. Envie /ajuda ao seu bot no Telegram.'
             return updated
@@ -100,6 +104,8 @@ class AIAssistant:
         with self.store.guard, self.store.connect() as db:
             row = db.execute('SELECT used FROM ai_usage WHERE owner=? AND day=?', (owner, self.day())).fetchone()
         return {**config, 'configured': bool(self.key(owner)), 'used_today': row[0] if row else 0,
+                'retry_after_seconds': max(0, round(self.cooldown.get(owner, 0)-time.monotonic())),
+                'last_failure': self.failures.get(owner, ''),
                 'message': self.results.get(owner, 'IA desativada até ser configurada.')}
 
     @staticmethod
@@ -196,8 +202,11 @@ class AIAssistant:
     def process(self, owner, kind, value):
         if self.stopped.is_set():
             return
-        config = self.config(owner)
-        if not config['enabled'] or not config['event_descriptions' if kind == 'event' else 'conversation']:
+        with self.lock:
+            config = self.config(owner)
+            revision = self.revisions.get(owner,0)
+            key = self.key(owner)
+        if not config['enabled'] or (kind != 'test' and not config['event_descriptions' if kind == 'event' else 'conversation']):
             return
         tg = self.server.telegram.config(owner)
         if not tg['enabled']:
@@ -209,26 +218,40 @@ class AIAssistant:
                 'com até 3 fotos. Mensagens comuns também consultam as últimas detecções. '
                 'As fotos são enviadas ao Google; não analiso vídeo contínuo nem executo alterações. '
                 'Para interromper, desative Conversa no Reports.')
-        if time.monotonic() < self.cooldown.get(owner, 0):
+        if kind != 'test' and time.monotonic() < self.cooldown.get(owner, 0):
             if kind == 'chat':
-                self.server.telegram.send_text(owner, 'IA temporariamente em espera após uma falha. Tente novamente em alguns minutos.')
+                remaining=max(1,round(self.cooldown[owner]-time.monotonic()))
+                self.server.telegram.send_text(owner, f'IA temporariamente em espera por mais {remaining}s. Última falha: '+self.failures.get(owner,'Consulte o status nos Reports.'))
             return
-        context, images = self.context(owner, value if kind == 'event' else None,
-                                       include_images=kind == 'event' or value.strip().lower() != '/status')
+        if kind == 'test':
+            context, images = {}, []
+            self.results[owner] = f'Testando {config["model"]}, sem fotos. Aguardando resposta do Google…'
+        else:
+            context, images = self.context(owner, value if kind == 'event' else None,
+                                           include_images=kind == 'event' or value.strip().lower() != '/status')
         if kind == 'chat':
             previous = self.history.get(owner, (0, []))
             context['conversa_anterior'] = previous[1] if time.monotonic()-previous[0] < 900 else []
         if kind == 'event' and not context['eventos_recentes']:
             return
         self.reserve(owner)
-        question = ('Descreva somente o que está visível na foto deste evento e indique limitações.'
+        question = ('Responda somente: conexão funcionando.' if kind == 'test' else
+                    'Descreva somente o que está visível na foto deste evento e indique limitações.'
                     if kind == 'event' else value)
         try:
-            answer = generate(self.key(owner), config['model'], question, context, images)
-        except AIError:
-            self.cooldown[owner] = time.monotonic()+300
+            answer = generate(key, config['model'], question, context, images)
+        except AIError as error:
+            with self.lock:
+                if revision != self.revisions.get(owner,0):
+                    return # an old request must not pause a newly saved configuration
+                self.cooldown[owner] = time.monotonic()+300
+                self.failures[owner] = str(error)
             raise
-        if self.stopped.is_set() or not self.config(owner)['enabled']:
+        if self.stopped.is_set() or revision != self.revisions.get(owner,0) or not self.config(owner)['enabled']:
+            return
+        self.cooldown.pop(owner,None);self.failures.pop(owner,None)
+        if kind == 'test':
+            self.results[owner] = f'Teste concluído com {config["model"]}: '+answer[:500]
             return
         if kind == 'event':
             with self.store.guard, self.store.connect() as db:
