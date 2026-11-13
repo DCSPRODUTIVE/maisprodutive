@@ -43,6 +43,7 @@ async function load(reset=false) {
         card.append(media);
       }
       const info=node('div',null,'report-info');
+      if(view==='photos')info.append(node('p','Evento '+event.id));
       info.append(node('h2',view==='videos'?(event.source==='sd_partial'?'Trecho parcial do cartão':['sd_requested','sd_backup'].includes(event.source)?'Backup do cartão':'Vídeo registrado'):'Pessoa detectada'));
       if(view==='videos'){
         const label=event.status==='recording'?'Gravando · até 2 minutos':event.status==='failed'?'Não foi possível gravar':`${Math.round(event.duration)} segundos · ${event.status==='partial'?'trecho parcial':'concluído'} · sem áudio`;
@@ -61,12 +62,15 @@ async function load(reset=false) {
       }
       info.append(node('p',`${event.name} · ${new Date(event.created*1000).toLocaleString('pt-BR')}`));
       if(event.analysis){
+        if(event.analysis.notification_group)info.append(node('p','Aviso agrupado com o evento '+event.analysis.notification_group+' por cena quase igual. Registro preservado; isso não identifica a pessoa.'));
         const labels={presence:'Pessoa detectada',dwell:'Permanência prolongada',line_positive:'Cruzamento de linha →',line_negative:'Cruzamento de linha ←'};
         const reasons=(event.analysis.reasons||[]).map(r=>labels[r]).filter(Boolean);
         if(reasons.length)info.append(node('p',reasons.join(' · ')));
         if(event.analysis.track_ids?.length)info.append(node('p','Rastros temporários: '+event.analysis.track_ids.join(', ')+' · presença observada: '+(event.analysis.duration_seconds||0)+'s'));
       }
       if(event.confidence)info.append(node('p',`Confiança do detector: ${Math.round(event.confidence*100)}%`));
+      if(event.user_annotation)info.append(node('p','Anotação do usuário: '+event.user_annotation+' · não verificada automaticamente'));
+      if(event.sample_count)info.append(node('p',`${event.sample_count} foto(s) diferente(s) do evento disponíveis para análise; o alerta envia somente a melhor.`));
       card.append(info);$("report-list").append(card);before=event.id;
     }
     $("older-reports").hidden=data.events.length<24;

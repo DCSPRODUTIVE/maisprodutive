@@ -1,5 +1,6 @@
 """One authenticated, bounded, persistent native connection and latest JPEG only."""
 import base64
+import hashlib
 from collections import deque
 import health
 from frame_buffer import FrameBuffer
@@ -102,6 +103,9 @@ class LiveStream:
         self.processes = []
         self.started = self.last_seen = time.monotonic()
         self.last_frame = None
+        self.last_received = None
+        self.image_digest = None
+        self.duplicate_frames = 0
         self.image = None
         self.sequence = 0
         self.frame_times = deque(maxlen=60)
@@ -127,6 +131,7 @@ class LiveStream:
             now = time.monotonic()
             with self.condition:
                 last_seen, last_frame = self.last_seen, self.last_frame
+                last_received = self.last_received
             if self.background and now >= self.monitor_until:
                 self._fail("video_stopped", "Câmera na pausa programada de economia de dados.")
             elif not self.background and now >= self.expires:
@@ -137,8 +142,23 @@ class LiveStream:
                 self._fail('video_timeout','A fila de abertura expirou; preparando nova tentativa.')
             elif last_frame is None and self.connect_started is not None and now - self.connect_started > FIRST_FRAME_TIMEOUT:
                 self._fail('video_timeout', 'A câmera não entregou o primeiro quadro no tempo esperado.')
-            elif last_frame is not None and now - last_frame > STALE_TIMEOUT:
+            elif last_frame is not None and now - (last_received if last_received is not None else last_frame) > STALE_TIMEOUT:
                 self._fail('video_stale', 'A câmera parou de entregar novos quadros. A transmissão foi encerrada.')
+
+    def _accept_image(self, image):
+        """Exact duplicate packets aren't new images. Never infer identity or motion."""
+        stamp=time.monotonic();digest=hashlib.blake2s(image,digest_size=16).digest()
+        with self.condition:
+            self.last_received=stamp
+            if digest==self.image_digest:
+                self.duplicate_frames+=1
+                return False
+            self.image_digest=digest;self.image=image;self.sequence+=1;self.last_frame=stamp
+            self.frame_times.append(stamp);self.resolution=health.jpeg_size(image)
+            if getattr(self,'report_detect',False):self.history.append(stamp,image)
+            else:self.history.clear()
+            self.condition.notify_all()
+        return True
 
     def _launch(self, args, **kwargs):
         with self.process_guard:
@@ -205,12 +225,7 @@ class LiveStream:
                 '-video_size','640x480','-i',self.local_device,'-an','-vf','fps=10','-threads','1','-q:v','4','-f','image2pipe','-vcodec','mjpeg','-flush_packets','1','pipe:1'],stdout=subprocess.PIPE)
             for image in jpeg_frames(InterruptiblePipe(encoder.stdout,self.stopped)):
                 if self.stopped.is_set():break
-                with self.condition:
-                    self.image=image;self.sequence+=1;self.last_frame=time.monotonic();self.frame_times.append(self.last_frame)
-                    self.resolution=health.jpeg_size(image)
-                    if getattr(self,'report_detect',False):self.history.append(self.last_frame,image)
-                    else:self.history.clear()
-                    self.condition.notify_all()
+                self._accept_image(image)
             if not self.stopped.is_set():self._fail('video_native','Webcam desconectada ou formato de captura não suportado.')
         except Exception:
             if not self.stopped.is_set():self._fail('video_native','Não foi possível abrir a webcam no Linux. Confira permissão e se outro programa está usando a câmera.')
@@ -253,15 +268,7 @@ class LiveStream:
                         if self.stopped.is_set():
                             break
                         self._release_startup()
-                        with self.condition:
-                            self.image = image
-                            self.sequence += 1
-                            self.last_frame = time.monotonic()
-                            self.frame_times.append(self.last_frame)
-                            if getattr(self, "report_detect", False):self.history.append(self.last_frame,image)
-                            else:self.history.clear()
-                            self.resolution = health.jpeg_size(image)
-                            self.condition.notify_all()
+                        self._accept_image(image)
                     if not self.stopped.is_set():
                         try:
                             native.wait(timeout=.5)
@@ -354,4 +361,4 @@ class LiveStream:
                     'image': 'data:image/jpeg;base64,'+base64.b64encode(image).decode() if image else None,
                     'age_seconds': round(age, 2) if age is not None else None,
                     'health': health.snapshot(self),
-                    'state': 'receiving' if self.sequence > after else 'waiting' if self.sequence else 'connecting' if self.connect_started is not None else 'queued'}
+                    'state': 'image_still' if age is not None and age>3 else 'receiving' if self.sequence > after else 'waiting' if self.sequence else 'connecting' if self.connect_started is not None else 'queued'}

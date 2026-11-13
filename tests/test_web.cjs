@@ -343,11 +343,11 @@ test("economy choices and mosaic size are saved for the account", async () => {
   const {get,calls}=await setup(null,liveStatus,null,null,liveResponses());
   await cardButton(get,0,'Economia de dados').handlers.click();
   let saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
-  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:8,webcam_enabled_ids:[]});
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:8,webcam_enabled_ids:[],expected_chat_detection_revision:0});
   get('mosaic-limit').value='12';
   await get('mosaic-limit').handlers.change();
   saved=calls.filter(c=>c.url==='/api/preferences').map(c=>JSON.parse(c.options.body));
-  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:12,webcam_enabled_ids:[]});
+  assert.deepEqual(saved.at(-1),{economy_ids:['a'],detection_ids:[],mosaic_limit:12,webcam_enabled_ids:[],expected_chat_detection_revision:0});
 });
 
 
@@ -596,4 +596,28 @@ test('renew provider session requests renewal without automatically submitting c
   await get('renew-session').handlers.click();
   assert.equal(calls.filter(c=>c.url==='/api/account/renew').length,1);
   assert.equal(calls.filter(c=>c.url==='/api/login').length,0);
+});
+
+test('unchanged-image state keeps the last picture and never displays a live badge',async()=>{
+  const responses=liveResponses();
+  responses['/api/video/frame']=async options=>{const body=JSON.parse(options.body);return {ok:true,json:async()=>({device_id:body.device_id,image:'data:image/jpeg;base64,last',sequence:1,age_seconds:12,state:'image_still'})};};
+  const {get,runTimer}=await setup(null,liveStatus,null,null,responses);
+  await cardButton(get,0,'Assistir').handlers.click();await runTimer();
+  const elements=descendants(get('cameras').children[0]);
+  assert.ok(elements.some(el=>el.textContent==='IMAGEM PARADA'));
+  assert.ok(elements.some(el=>el.tagName==='img'&&el.src==='data:image/jpeg;base64,last'));
+  assert.equal(get('live-count').textContent,'0');
+});
+
+test('chat detection changes update buttons without rebuilding or reconnecting camera images',async()=>{
+  let remote={...liveStatus,csrf:'test-csrf',configured:true,preferences_key:'owner',preferences:{economy_ids:[],detection_ids:[],chat_detection_revision:0}};
+  const responses=liveResponses();responses['/api/status']=()=>({ok:true,json:async()=>JSON.parse(JSON.stringify(remote))});
+  const {get,calls,advance}=await setup(null,remote,null,null,responses);
+  const image=descendants(get('cameras').children[0]).find(el=>el.tagName==='img');
+  const starts=calls.filter(c=>c.url==='/api/video/start').length;
+  remote.preferences={...remote.preferences,detection_ids:['a'],chat_detection_revision:1};
+  advance(15000);await new Promise(setImmediate);
+  assert.match(cardButton(get,0,'Detectar pessoas').className,/selected/);
+  assert.equal(descendants(get('cameras').children[0]).find(el=>el.tagName==='img'),image);
+  assert.equal(calls.filter(c=>c.url==='/api/video/start').length,starts);
 });

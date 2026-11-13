@@ -70,6 +70,8 @@ class ManagedView:
 
 class BackgroundMonitor:
     def __init__(self, factory, streams, clock=time.monotonic,event_sink=None):
+        self.catalogues={}
+        self.accounts={}
         self.factory, self.streams, self.clock = factory, streams, clock
         self.event_sink=event_sink
         self.lock = threading.RLock()
@@ -90,6 +92,8 @@ class BackgroundMonitor:
         economy = set(preferences.get('economy_ids', []))
         now = self.clock()
         with self.lock:
+            self.catalogues[owner]=dict(names)
+            self.accounts[owner]=account
             for key in list(self.entries):
                 if key[0] == owner and key[1] not in wanted:
                     self._drop(self.entries.pop(key))
@@ -188,9 +192,10 @@ class BackgroundMonitor:
                 stream = entry.native
                 if stream is not None and not stream.stopped.is_set() and getattr(stream,'managed_watchdog',False):
                     stamp=getattr(stream,'last_frame',None)
+                    received=getattr(stream,'last_received',None) or stamp
                     connect=getattr(stream,'connect_started',None)
                     started=getattr(stream,'started',now)
-                    if ((stamp is not None and now-stamp>STALE_TIMEOUT) or
+                    if ((stamp is not None and now-received>STALE_TIMEOUT) or
                         (stamp is None and connect is not None and now-connect>FIRST_FRAME_TIMEOUT) or
                         (stamp is None and connect is None and now-started>QUEUE_TIMEOUT)):
                         kind='video_stale' if stamp is not None else 'video_timeout'
@@ -242,6 +247,7 @@ class BackgroundMonitor:
             image = entry.image if include_image and entry.sequence > after else None
             native_stamp=getattr(stream,'last_frame',None) if has_native else None
             state = ('paused' if paused else 'retrying' if not has_native and entry.message else
+                     'image_still' if has_native and age is not None and age>3 else
                      'receiving' if native_stamp is not None and now-native_stamp<=3 else
                      'queued' if has_native and getattr(stream, 'connect_started', None) is None else 'connecting')
             return {'device_id': device_id, 'sequence': entry.sequence,
@@ -272,6 +278,7 @@ class BackgroundMonitor:
 
     def remove(self, owner):
         with self.lock:
+            self.catalogues.pop(owner,None);self.accounts.pop(owner,None)
             for key in list(self.entries):
                 if key[0] == owner:
                     self._drop(self.entries.pop(key))

@@ -29,4 +29,5 @@ def snapshot(stream):
     detection=dict(getattr(stream,'detection_health',{}))
     if 'analyzed_at' in detection:detection['age_seconds']=round(max(0,now-detection.pop('analyzed_at')),1)
     return {'resolution':getattr(stream,'resolution',None),'fps':round(fps,1),
+            'duplicate_frames':getattr(stream,'duplicate_frames',0),
             'target_fps':10,'definition':getattr(stream,'definition',0),'detection':detection}

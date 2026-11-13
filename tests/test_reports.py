@@ -23,6 +23,42 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.image('other',1),b'private')
         self.assertEqual(rows[0]['boxes'],[[0,0,.5,.5]])
 
+    def test_grouping_preserves_each_event_but_sends_only_one_presence_notification(self):
+        from unittest.mock import MagicMock
+        server=SimpleNamespace(telegram=MagicMock(),ai=MagicMock())
+        with patch('reports.readiness',return_value=(False,'')),patch('reports.RecordingService'):
+            monitor=ReportMonitor(server,self.store)
+            ids=[]
+            for _ in range(2):
+                event=self.store.add('mine','id','Camera','person',b'same-photo',.9);ids.append(event)
+                monitor.pending[('mine','id')]={'at':time.monotonic()-5,'id':event,'jpeg':b'same-photo',
+                    'rows':[{'confidence':.9,'box':[.1,.1,.8,.9]}],'name':'Camera','info':{'reasons':['presence']},
+                    'stream':SimpleNamespace(report_detect=True)}
+                monitor.flush_photos(force=True)
+        self.assertEqual(len(self.store.list('mine')),2)
+        self.assertEqual(server.telegram.enqueue.call_count,1);self.assertEqual(server.ai.enqueue_event.call_count,1)
+        self.assertEqual(self.store.list('mine')[0]['analysis']['notification_group'],ids[0])
+
+    def test_five_distinct_event_photos_choose_one_best_telegram_photo(self):
+        from unittest.mock import MagicMock
+        stream=SimpleNamespace(report_owner='mine',report_name='Portão Fundo',device_id='camera',report_detect=True,
+            condition=threading.Condition(),image=None,last_frame=None,stopped=threading.Event())
+        server=SimpleNamespace(telegram=MagicMock(),ai=MagicMock());detector=MagicMock()
+        with patch('reports.readiness',return_value=(True,'')),patch('reports.RecordingService'):
+            monitor=ReportMonitor(server,self.store)
+            for i,confidence in enumerate((.86,.88,.98,.9,.89)):
+                stream.image=f'photo-{i}'.encode();stream.last_frame=100+i
+                detector.detect.return_value=([{'kind':'person','confidence':confidence,'box':[.1,.1,.8,.9]}],None)
+                with patch('reports.time.monotonic',return_value=100+i):monitor.process(stream,detector)
+            server.telegram.enqueue.assert_not_called()
+            with patch('reports.time.monotonic',return_value=106):monitor.flush_photos()
+        event=self.store.list('mine')[0]
+        self.assertEqual(event['sample_count'],5)
+        self.assertEqual(len(self.store.samples('mine',event['id'])),5)
+        self.assertEqual(server.telegram.enqueue.call_count,1)
+        self.assertEqual(server.telegram.enqueue.call_args.args[2],b'photo-2')
+        self.assertEqual(server.ai.enqueue_event.call_count,1)
+
     def test_retention_age_and_account_limit(self):
         with patch('reports.time.time',return_value=1):self.store.add('mine','id','Old','person')
         self.store.add('mine','id','New','person')
@@ -129,6 +165,6 @@ class StoreTests(unittest.TestCase):
             detector.detect.return_value=([{'kind':'person','confidence':.98,'box':[.1,.1,.8,.9]}],None)
             with patch('reports.time.monotonic',return_value=101):monitor.process(stream,detector)
             event=self.store.list('mine')[0];self.assertEqual(self.store.image('mine',event['id']),b'photo-better')
-            with patch('reports.time.monotonic',return_value=104):monitor.flush_photos()
+            with patch('reports.time.monotonic',return_value=106):monitor.flush_photos()
             self.assertEqual(alerts.enqueue.call_args.args[2],b'photo-better')
             self.assertEqual(len(self.store.list('mine')),1)

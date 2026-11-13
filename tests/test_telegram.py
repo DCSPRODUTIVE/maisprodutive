@@ -57,3 +57,13 @@ class TelegramTests(unittest.TestCase):
         self.assertIn('falhou',status['message'])
         self.assertNotIn(TOKEN,json.dumps(status))
         self.assertTrue(self.alerts.thread.is_alive())
+
+    @patch('telegram_alerts.urllib.request.build_opener')
+    def test_sent_event_photo_can_be_replied_to_after_restart(self, opener):
+        import time
+        self.config()
+        event=self.alerts.store.add('owner','1','Camera','person',b'jpeg')
+        opener.return_value.open.return_value.__enter__.return_value.read.return_value=b'{"ok":true,"result":{"message_id":55}}'
+        self.alerts.deliver('owner','Portão',b'jpeg',.93,time.time(),event_id=event)
+        self.assertEqual(self.alerts.notes.resolve(TOKEN,'12345',55,'owner'),event)
+        self.assertIsNone(self.alerts.notes.resolve(TOKEN,'12345',55,'other'))

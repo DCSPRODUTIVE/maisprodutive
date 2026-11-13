@@ -11,6 +11,9 @@ import time
 
 from person_analysis import Tracker,settings as analysis_settings,photo_score
 from clips import RecordingService
+from event_grouping import EventGrouping
+from camera_names import display_name
+from event_photos import WINDOW as PHOTO_WINDOW,collect as collect_photo,thumbnail,MAX_PHOTOS
 
 ROOT = Path(__file__).parent / '.local' / 'reports'
 MODEL_ROOT = Path(__file__).parent / '.local' / 'detection'
@@ -45,6 +48,8 @@ class EventStore:
         conn = sqlite3.connect(self.root / 'events.sqlite3', timeout=10)
         os.chmod(self.root / 'events.sqlite3', 0o600)
         conn.row_factory = sqlite3.Row
+        conn.execute('CREATE TABLE IF NOT EXISTS event_annotations(owner TEXT,event INTEGER,name TEXT,normalized TEXT,created REAL,PRIMARY KEY(owner,event))')
+        conn.execute('CREATE TABLE IF NOT EXISTS event_samples(owner TEXT,event INTEGER,captured REAL,image BLOB,PRIMARY KEY(owner,event,captured))')
         conn.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, kind TEXT NOT NULL, confidence REAL, plate TEXT, boxes TEXT NOT NULL, image BLOB)')
         conn.execute('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, camera TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, filename TEXT NOT NULL, status TEXT NOT NULL, duration REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT "")')
         columns={row[1] for row in conn.execute('PRAGMA table_info(videos)')}
@@ -83,14 +88,33 @@ class EventStore:
 
     def list(self, owner, before=None):
         with self.guard, self.connect() as db:
-            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,analysis,image IS NOT NULL AS has_image FROM events WHERE owner=? AND kind='person' AND id<? ORDER BY id DESC LIMIT 24",
+            rows = db.execute("SELECT id,camera,name,created,kind,confidence,boxes,analysis,image IS NOT NULL AS has_image,(SELECT COUNT(*) FROM event_samples s WHERE s.owner=events.owner AND s.event=events.id) AS sample_count FROM events WHERE owner=? AND kind='person' AND id<? ORDER BY id DESC LIMIT 24",
                               (owner, before or 9223372036854775807)).fetchall()
-            return [dict(row, boxes=json.loads(row['boxes']),analysis=json.loads(row['analysis'])) for row in rows]
+            annotations={r[0]:r[1] for r in db.execute('SELECT event,name FROM event_annotations WHERE owner=?',(owner,))}
+            return [dict(row, boxes=json.loads(row['boxes']),analysis=json.loads(row['analysis']),user_annotation=annotations.get(row['id'],'')) for row in rows]
 
     def image(self, owner, event_id):
         with self.guard, self.connect() as db:
             row = db.execute("SELECT image FROM events WHERE owner=? AND id=? AND kind='person'", (owner, event_id)).fetchone()
             return bytes(row[0]) if row and row[0] is not None else None
+
+    def save_samples(self,owner,event,samples):
+        prepared=[]
+        for stamp,jpeg in samples[:MAX_PHOTOS]:
+            image=thumbnail(jpeg)
+            if image:prepared.append((owner,event,stamp,image))
+        with self.guard,self.connect() as db:
+            if not db.execute('SELECT 1 FROM events WHERE owner=? AND id=?',(owner,event)).fetchone():return
+            db.execute('DELETE FROM event_samples WHERE owner=? AND event=?',(owner,event))
+            db.executemany('INSERT OR REPLACE INTO event_samples VALUES (?,?,?,?)',prepared)
+            # Secondary frames cannot grow without bound on a small server.
+            db.execute('DELETE FROM event_samples WHERE rowid IN (SELECT rowid FROM event_samples ORDER BY event DESC,captured DESC LIMIT -1 OFFSET 1000)')
+            while db.execute('SELECT COALESCE(SUM(length(image)),0) FROM event_samples').fetchone()[0]>128*1024*1024:
+                db.execute('DELETE FROM event_samples WHERE rowid IN (SELECT rowid FROM event_samples ORDER BY event,captured LIMIT 100)')
+
+    def samples(self,owner,event):
+        with self.guard,self.connect() as db:
+            return [(row[0],bytes(row[1])) for row in db.execute('SELECT s.captured,s.image FROM event_samples s JOIN events e ON e.owner=s.owner AND e.id=s.event WHERE s.owner=? AND s.event=? ORDER BY s.captured LIMIT 5',(owner,event))]
 
     def preferences(self, owner, values=None):
         with self.guard, self.connect() as db:
@@ -108,6 +132,8 @@ class EventStore:
     def _cleanup(self, db):
         now=time.time()
         db.execute('DELETE FROM events WHERE created<?',(now-30*86400,))
+        db.execute('DELETE FROM event_annotations WHERE NOT EXISTS (SELECT 1 FROM events WHERE events.owner=event_annotations.owner AND events.id=event_annotations.event)')
+        db.execute('DELETE FROM event_samples WHERE NOT EXISTS (SELECT 1 FROM events WHERE events.owner=event_samples.owner AND events.id=event_samples.event)')
         expired=db.execute('SELECT filename FROM videos WHERE created<?',(now-15*86400,)).fetchall()
         for row in expired:
             self._video_path(row[0]).unlink(missing_ok=True)
@@ -224,6 +250,7 @@ class ReportMonitor:
         self.saved={}
         self.presence={}
         self.trackers={};self.pending={};self.settings_cache={};self.heartbeat=time.monotonic()
+        self.notification_groups=EventGrouping()
         self.ready,self.message=readiness()
         self.recordings=RecordingService(self.store)
 
@@ -261,7 +288,9 @@ class ReportMonitor:
         info=tracker.update(matches,now,config)
         stream.detection_health.update(tracks=len(info['track_ids']),night=bool(getattr(detector,'night',False)))
         pending=self.pending.get(key)
-        if pending and now-pending['at']<=3 and matches:
+        if pending and now-pending['at']<=PHOTO_WINDOW:
+            collect_photo(pending,jpeg)
+        if pending and now-pending['at']<=PHOTO_WINDOW and matches:
             score=photo_score(frame,matches)
             if score>pending['score']:
                 pending.update(score=score,jpeg=jpeg,rows=matches)
@@ -269,7 +298,7 @@ class ReportMonitor:
         if not matches or not info['reasons']:return
         self.recordings.trigger(stream)
         # One event per new track/crossing/permanence, bounded per camera.
-        if now-self.saved.get(key+('person',),0)<3 and pending:
+        if now-self.saved.get(key+('person',),0)<PHOTO_WINDOW and pending:
             pending['info']['reasons']=sorted(set(pending['info']['reasons']+info['reasons']))
             pending['info']['track_ids']=sorted(set(pending['info']['track_ids']+info['track_ids']))
             self.store.improve_photo(owner,pending['id'],pending['jpeg'],max(r['confidence'] for r in pending['rows']),[r['box'] for r in pending['rows']],pending['info'])
@@ -280,21 +309,29 @@ class ReportMonitor:
         self.saved[key+('person',)]=now
         self.pending[key]={'at':now,'id':event,'jpeg':jpeg,'rows':matches,'score':photo_score(frame,matches),
                            'info':info,'name':stream.report_name,'stream':stream}
+        collect_photo(self.pending[key],jpeg)
         log=getattr(self.server,'diagnostics',None)
         if log:log.record(owner,stream.device_id,'person_detected',people=len(matches))
 
     def flush_photos(self,force=False):
         now=time.monotonic()
         for key,item in list(self.pending.items()):
-            if not force and now-item['at']<3:continue
+            if not force and now-item['at']<PHOTO_WINDOW:continue
             self.pending.pop(key,None)
             stream=item['stream']
             if not getattr(stream,'report_detect',False):continue
+            try:self.store.save_samples(key[0],item['id'],item.get('samples',[(time.time(),item['jpeg'])]))
+            except (OSError,sqlite3.Error):pass # original alert must survive secondary-photo storage failure
+            grouped=self.notification_groups.group(key,item['id'],item['jpeg'],item['info']['reasons'])
+            if grouped is not None:
+                item['info']['notification_group']=grouped
+                self.store.improve_photo(key[0],item['id'],item['jpeg'],max(r['confidence'] for r in item['rows']),[r['box'] for r in item['rows']],item['info'])
+                continue # all local events and recordings remain; avoid repeated API and alerts
             alerts=getattr(self.server,'telegram',None)
             if alerts:
                 labels={'presence':'Pessoa detectada','dwell':'Permanência prolongada','line_positive':'Cruzamento de linha','line_negative':'Cruzamento de linha'}
-                name=item['name']+' · '+', '.join(labels[r] for r in item['info']['reasons'])
-                alerts.enqueue(key[0],name,item['jpeg'],max(r['confidence'] for r in item['rows']))
+                name=display_name(item['name'],getattr(stream,'device_id',None))+' · '+', '.join(labels[r] for r in item['info']['reasons'])
+                alerts.enqueue(key[0],name,item['jpeg'],max(r['confidence'] for r in item['rows']),event_id=item['id'])
             assistant=getattr(self.server,'ai',None)
             if assistant:
                 try:assistant.enqueue_event(key[0],item['id'])

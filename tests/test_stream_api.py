@@ -94,6 +94,25 @@ class StreamApiTests(unittest.TestCase):
             self.assertIn('Sem fotos',data['message'])
             self.assertEqual(self.post('/api/ai/test',{})[0],429)
 
+    def test_chat_detection_control_preserves_preferences_and_rejects_stale_browser_saves(self):
+        owner='control-owner';self.state['report_owner']=owner
+        self.state['devices']=[{'id':'0','name':'Portão Fundo'},{'id':'1','name':'Frente 1'},{'id':'2','name':'Frente 2'}]
+        values={'detection_ids':[],'economy_ids':['0'],'mosaic_limit':12,'analysis_settings':{'0':{'confidence':.6}}}
+        self.server.reports.store.preferences(owner,values)
+        self.server.background.configure(owner,self.state['client'].account,self.state['devices'],values)
+        answer=self.server.set_detection(owner,'portao fundo',True)
+        self.assertIn('Portão Fundo',answer);self.assertNotIn('secret',answer)
+        saved=self.server.reports.store.preferences(owner)
+        self.assertEqual(saved['detection_ids'],['0']);self.assertEqual(saved['economy_ids'],['0'])
+        self.assertEqual(saved['analysis_settings'],values['analysis_settings'])
+        self.assertTrue(self.server.background.entries[(owner,'0')].detection)
+        code,_=self.post('/api/preferences',{'economy_ids':['0'],'detection_ids':[],'mosaic_limit':8,'expected_chat_detection_revision':0})
+        self.assertNotEqual(code,200);self.assertEqual(self.server.reports.store.preferences(owner)['detection_ids'],['0'])
+        with self.assertRaises(ValueError):self.server.set_detection(owner,'frente',True)
+        with self.assertRaises(ValueError):self.server.set_detection('foreign','Portão Fundo',True)
+        self.server.set_detection(owner,'Portão Fundo',False)
+        self.assertEqual(self.server.reports.store.preferences(owner)['detection_ids'],[])
+
     def test_late_old_source_auth_failure_does_not_invalidate_new_account_token(self):
         from background import Entry
         old=DesktopAccount('id','old-private-session-token')

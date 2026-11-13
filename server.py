@@ -40,6 +40,8 @@ def current_config():
 
 from telegram_alerts import TelegramAlerts
 from ai_assistant import AIAssistant
+from camera_commands import select_names
+from camera_names import display_name
 
 
 class Workbench(ThreadingHTTPServer):
@@ -54,6 +56,7 @@ class Workbench(ThreadingHTTPServer):
             raise ValueError('Acesso externo exige configurar a senha do sistema.')
         self.sessions = {}
         self.guard = threading.Lock()
+        self.preference_guard = threading.RLock()
         self.request_guard = threading.BoundedSemaphore(48)
         self.video_guard = threading.BoundedSemaphore(12)
         self.viewer_guard = threading.BoundedSemaphore(16)
@@ -85,6 +88,45 @@ class Workbench(ThreadingHTTPServer):
     def stream_snapshot(self):
         with self.stream_guard:
             return list(self.active_streams)
+
+    def apply_preferences(self,owner,account,devices,values,expected_chat_revision=None):
+        """Same persisted state for browser and explicit chat actions."""
+        with self.preference_guard:
+            previous=self.reports.store.preferences(owner)
+            if expected_chat_revision is not None and expected_chat_revision!=previous.get('chat_detection_revision',0):
+                raise IntegrationError('preferences_changed','A detecção mudou pelo chat. Atualize o painel antes de salvar novamente.')
+            values={**previous,**values}
+            self.reports.store.preferences(owner,values)
+            with self.stream_guard:
+                for stream in self.active_streams:
+                    if getattr(stream,'report_owner',None)==owner:
+                        stream.report_detect=stream.device_id in values.get('detection_ids',[])
+            self.background.configure(owner,account,devices,values)
+            self.archive.configure_economy(owner,values.get('economy_ids',[]),self.background)
+            return values
+
+    def set_detection(self,owner,selector,enabled):
+        from types import SimpleNamespace
+        with self.preference_guard:
+            with self.background.lock:
+                catalogue={device:display_name(name,device) for device,name in self.background.catalogues.get(owner,{}).items()}
+                account=self.background.accounts.get(owner)
+            if not catalogue or account is None:
+                raise ValueError('Entre na conta Yoosee no painel para disponibilizar as câmeras para controle pelo chat.')
+            selected=select_names(catalogue,selector)
+            if type(enabled) is not bool:raise ValueError('Comando de detecção inválido.')
+            if enabled and self.provider_sessions.rejected(SimpleNamespace(account=account)):
+                raise ValueError('A sessão Yoosee foi rejeitada. Renove a sessão no painel antes de ativar detecção.')
+            values=self.reports.store.preferences(owner)
+            if enabled and any(device.startswith('webcam:') and device not in values.get('webcam_enabled_ids',[]) for device in selected):
+                raise ValueError('Uma webcam está desativada. Ative-a no painel antes de habilitar sua detecção.')
+            current=set(values.get('detection_ids',[]))
+            if enabled:current.update(selected)
+            else:current.difference_update(selected)
+            values['detection_ids']=sorted(current)
+            values['chat_detection_revision']=values.get('chat_detection_revision',0)+1
+            values=self.apply_preferences(owner,account,[{'id':d,'name':n} for d,n in catalogue.items()],values)
+            return ('Detecção ativada: ' if enabled else 'Detecção desativada: ')+', '.join(catalogue[d] for d in selected)+'. Configuração salva no servidor. A programação de Economia foi preservada.'
 
     def open_background(self, entry):
         if not self.video_guard.acquire(blocking=False):
@@ -617,15 +659,10 @@ class Handler(BaseHTTPRequestHandler):
                             or not isinstance(webcam_ids,list) or len(webcam_ids)>2 or any(not isinstance(i,str) or i not in allowed_ids or not i.startswith('webcam:') for i in webcam_ids)):
                         raise IntegrationError("input", "Preferências de câmera inválidas.")
                     values={"economy_ids":sorted(set(ids)), "detection_ids":sorted(set(detection_ids)), "mosaic_limit":limit,"webcam_enabled_ids":sorted(set(webcam_ids))}
-                    previous=self.server.reports.store.preferences(self.report_owner(state))
-                    if 'analysis_settings' in previous:values['analysis_settings']=previous['analysis_settings']
-                    self.server.reports.store.preferences(self.report_owner(state),values)
-                    with self.server.stream_guard:
-                        for stream in self.server.active_streams:
-                            if getattr(stream,"report_owner",None)==self.report_owner(state):
-                                stream.report_detect=stream.device_id in values["detection_ids"]
-                    self.server.background.configure(self.report_owner(state), state["client"].account, state["devices"], values)
-                    self.server.archive.configure_economy(self.report_owner(state),values["economy_ids"],self.server.background)
+                    expected=body.get('expected_chat_detection_revision')
+                    if expected is not None and (type(expected) is not int or expected<0):
+                        raise IntegrationError('input','Revisão de preferências inválida.')
+                    values=self.server.apply_preferences(self.report_owner(state),state['client'].account,state['devices'],values,expected_chat_revision=expected)
                     return self.send(200, {"message":"Preferências salvas. Monitoramento habilitado continua com a página fechada.","preferences":values,"background_status":self.server.background.status(self.report_owner(state))})
                 if self.path in ("/api/reports", "/api/reports/videos"):
                     if not isinstance(state["client"], DesktopClient):

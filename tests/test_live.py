@@ -19,6 +19,20 @@ class ChunkPipe:
 
 
 class JpegTests(unittest.TestCase):
+    def test_identical_packets_do_not_refresh_frame_age_or_repeat_detection_history(self):
+        with patch('live.video.readiness',return_value=(True,'')):
+            stream=LiveStream(DesktopAccount('123','test-token'),'owned',time.monotonic()+60,lambda:None)
+        stream.report_detect=True
+        with patch('live.time.monotonic',return_value=100):self.assertTrue(stream._accept_image(b'jpeg-a'))
+        with patch('live.time.monotonic',return_value=110):self.assertFalse(stream._accept_image(b'jpeg-a'))
+        self.assertEqual(stream.sequence,1);self.assertEqual(stream.last_frame,100)
+        self.assertEqual(stream.last_received,110);self.assertEqual(stream.duplicate_frames,1)
+        with patch('live.time.monotonic',return_value=110):
+            result=stream.frame(0,wait=False)
+        self.assertEqual(result['state'],'image_still');self.assertIsNotNone(result['image'])
+        with patch('live.time.monotonic',return_value=111):self.assertTrue(stream._accept_image(b'jpeg-b'))
+        self.assertEqual(stream.sequence,2);self.assertEqual(stream.last_frame,111)
+
     def test_split_markers_and_multiple_frames(self):
         frames = list(jpeg_frames(ChunkPipe([b'\xff', b'\xd8one\xff', b'\xd9\xff\xd8two\xff\xd9'])))
         self.assertEqual(frames, [b'\xff\xd8one\xff\xd9', b'\xff\xd8two\xff\xd9'])

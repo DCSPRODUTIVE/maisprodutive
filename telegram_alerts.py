@@ -6,6 +6,7 @@ import secrets
 import threading
 import time
 import urllib.request
+from event_notes import EventNotes
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -16,6 +17,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class TelegramAlerts:
     def __init__(self, store, public_origin=None):
         self.store, self.origin = store, public_origin
+        self.notes = EventNotes(store)
         self.jobs = queue.Queue(maxsize=24)
         self.lock = threading.Lock()
         self.results = {}
@@ -48,18 +50,18 @@ class TelegramAlerts:
         return {'enabled': config['enabled'], 'configured': bool(config['token']),
                 'chat_id': config['chat_id'], 'message': result}
 
-    def enqueue(self, owner, name='Teste de conexão', jpeg=None, confidence=None):
+    def enqueue(self, owner, name='Teste de conexão', jpeg=None, confidence=None, event_id=None):
         if not self.config(owner)['enabled']:
             return False
         try:
-            self.jobs.put_nowait((owner, name, jpeg, confidence, time.time()))
+            self.jobs.put_nowait((owner, name, jpeg, confidence, time.time(),event_id))
             return True
         except queue.Full:
             with self.lock:
                 self.results[owner] = 'Fila de alertas cheia; este alerta não foi enviado.'
             return False
 
-    def send_text(self, owner, text):
+    def send_text(self, owner, text, event_id=None):
         """Plain text to the configured chat only; never accepts a destination from AI."""
         config = self.config(owner)
         if not config['enabled']:
@@ -68,15 +70,20 @@ class TelegramAlerts:
             data=json.dumps({'chat_id':config['chat_id'], 'text':text[:3900]}).encode(),
             headers={'Content-Type':'application/json'})
         with urllib.request.build_opener(NoRedirect()).open(request,timeout=15) as response:
-            if not json.loads(response.read(65536)).get('ok'):
+            result=json.loads(response.read(65536))
+            if not result.get('ok'):
                 raise ValueError('delivery')
+        if event_id is not None:
+            self.notes.bind(config['token'],config['chat_id'],result.get('result',{}).get('message_id'),owner,event_id)
 
-    def deliver(self, owner, name, jpeg, confidence, created):
+    def deliver(self, owner, name, jpeg, confidence, created, event_id=None):
         config = self.config(owner)
         if not config['enabled'] or time.time()-created > 300:
             return
         text = ('Torre de Controle DCS\nPessoa detectada: ' if jpeg else 'Torre de Controle DCS\n') + name[:150 if jpeg else 400]
         text += '\n' + time.strftime('%d/%m/%Y %H:%M:%S %Z', time.localtime(created))
+        if event_id is not None:
+            text+=f'\nEvento {event_id}. Para anotar, responda: nome: João'
         if confidence is not None:
             text += f'\nConfiança: {confidence:.0%}'
         if self.origin:
@@ -97,6 +104,8 @@ class TelegramAlerts:
             result = json.loads(response.read(65536))
             if not result.get('ok'):
                 raise ValueError('delivery')
+        if event_id is not None:
+            self.notes.bind(config['token'],config['chat_id'],result.get('result',{}).get('message_id'),owner,event_id)
         with self.lock:
             self.results[owner] = 'Último alerta enviado ao Telegram.'
 

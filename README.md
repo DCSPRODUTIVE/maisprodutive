@@ -841,7 +841,7 @@ por câmera: confiança, tamanho mínimo da pessoa, análise noturna, permanênc
 cruzamento de uma linha. O rastreador associa pessoas entre quadros próximos para
 reduzir avisos repetidos; seus números são temporários, não identificam indivíduos.
 Não há reconhecimento facial nem zonas de interesse. A foto do evento é escolhida
-entre os primeiros três segundos e o aviso aguarda essa seleção; a gravação começa
+entre os primeiros cinco segundos e o aviso aguarda essa seleção; a gravação começa
 imediatamente. A melhoria noturna afeta a análise, não altera as fotos originais.
 
 O vídeo local preserva **até 10 segundos anteriores** e até 120 segundos posteriores
@@ -982,3 +982,126 @@ O modelo padrão de novas configurações é `gemini-flash-latest`, conforme o i
 rápido informado pelo operador; configurações existentes são preservadas e precisam
 ser editadas nos Reports. O alias pode mudar de versão e condições no Google.
 Listar modelos não confirma que uma chamada de geração conseguirá concluir.
+
+## Consulta atual pelo chat e cadastro de anotações
+
+A consulta atual é **sob demanda**: `/cameras` lista as câmeras desta conta;
+`/ao_vivo Portão Fundo` seleciona uma câmera pelo nome exato; `/ao_vivo todas`
+consulta até 12 câmeras. Frases como “veja todas as câmeras ao vivo” também são
+aceitas. Nomes ambíguos não são adivinhados: o bot lista as opções.
+
+O Python coleta quadros por uma janela compartilhada de até seis segundos, de
+fontes já abertas, amostrando até um quadro por segundo. Cada trecho é convertido
+em MP4 temporário, com proporção preservada e sem áudio, e enviado ao Google para
+descrição. Não é transmissão contínua para a IA e não representa todo o intervalo
+entre os quadros. Horário de recepção, número de quadros e lacunas acompanham a
+consulta. Pausas de Economia, câmeras desabilitadas, imagens antigas ou idênticas
+sem vídeo atual confirmado são informadas; a consulta não abre outra sessão P2P,
+não altera a programação nem liga webcams desativadas.
+
+As câmeras são analisadas em lotes de até três: cada lote consome uma tentativa do
+limite diário da IA. Uma consulta de 12 câmeras disponíveis pode consumir quatro
+tentativas, além do custo/cota de vídeo do provedor. Trechos e JPEGs temporários são
+apagados ao terminar a conversão; não são novas gravações do histórico. A conversão
+usa um único processo de baixa resolução por vez e compartilha o limite de encoders
+das gravações: se o servidor estiver ocupado, informa que não conseguiu converter,
+sem competir abrindo mais encoders. É necessário FFmpeg com libx264 e suporte a
+vídeo no modelo Google escolhido. A compatibilidade real depende do modelo e da
+conectividade do servidor; falha não interfere nas gravações locais.
+
+### Nomes informados pelo usuário
+
+Ao responder a **um novo alerta** do bot com `nome: João`, `é João` ou
+`esta pessoa é João`, o Python registra uma anotação naquele evento. O vínculo usa
+os IDs da mensagem, do bot, da conversa e da conta, não um número extraído de texto
+arbitrário. Alertas antigos sem esse vínculo podem ser anotados pelo comando:
+
+```text
+/anotar 123 João
+/cadastro
+/cadastro João
+/esquecer_anotacoes João
+```
+
+`/cadastro João` consulta os eventos anotados com esse nome; `/cadastro` e `/pessoas`
+listam nomes e contagens. Essas operações são locais, não consultam o Google e
+continuam disponíveis durante a espera após uma falha da API (com a conversa
+habilitada). As anotações também aparecem nas fotos dos Reports, como informação
+fornecida pelo usuário e não verificada. Persistem após reiniciar o servidor e
+acompanham a retenção do evento, de até 30 dias. Apagar anotações não apaga fotos ou
+vídeos. Responder a um alerta com uma pergunta consulta a foto daquele evento.
+
+Este cadastro **não faz reconhecimento facial nem identificação pela imagem
+inteira**. Nenhum nome é atribuído automaticamente a futuras detecções e nenhum
+banco de identidades é fornecido ao modelo para comparar pessoas. Não são criados
+embeddings de identidade. O detector Python continua detectando presença e movimento;
+a IA descreve trechos/eventos, sem determinar quem é a pessoa.
+
+### Quadros repetidos e notificações agrupadas
+
+Pacotes JPEG exatamente iguais não avançam a sequência nem o horário do último
+quadro diferente. O painel preserva a última imagem e mostra **IMAGEM PARADA** após
+três segundos sem quadro diferente, em vez de mantê-la como ao vivo. Recebimento de
+dados e mudança de imagem são contabilizados separadamente. Uma cena estática pode
+ser legítima: esse estado sozinho não provoca reinícios sucessivos da conexão.
+Ausência de dados continua usando a recuperação já existente. A detecção de repetição
+exata não identifica todos os congelamentos possíveis, como um relógio sobreposto
+que continua mudando enquanto parte da cena congela.
+
+Novos registros de presença com cenas praticamente iguais podem compartilhar um
+aviso por até 30 segundos na mesma câmera/conta. Fotos, eventos e gravações continuam
+preservados e o agrupamento aparece nos Reports. Permanência prolongada e cruzamento
+de linha não são suprimidos por esse agrupamento. Trata-se de reduzir notificações
+e consultas repetidas da mesma cena, não de identificar ou reconhecer indivíduos.
+
+Atualize com `git pull` e reinicie `dcs-control.service`. Não é necessário recompilar
+o adaptador nem reinstalar o aplicativo do Fire TV. Recarregue o painel. Mantenha a
+chave e o modelo Flash Lite que já funcionaram; esta atualização não os substitui.
+
+## Detecção pelo nome no Telegram e cinco fotos para a IA
+
+Com a conversa habilitada no seu chat privado, use comandos explícitos:
+
+```text
+Ativar detecção da câmera Portão Fundo
+Desativar detecção da câmera Frente 1
+/deteccao ativar Portão Fundo
+/deteccao desativar Frente 1
+/deteccao status
+```
+
+O Python interpreta a ação antes de consultar a IA. Google indisponível ou em
+espera não impede esses comandos, a consulta do cadastro e as anotações: são
+executados pelo leitor do Telegram, sem aguardar a fila de inferência. Nomes são
+comparados sem distinguir maiúsculas e acentos. Nomes ambíguos são recusados,
+com uma lista das opções. Há também a seleção explícita `todas`; isso não liga
+uma webcam que esteja desativada. Para ativar detecção é necessária uma sessão
+Yoosee disponível e não rejeitada. O comando não tenta descobrir senhas nem faz
+login automático. Desativar a detecção não apaga eventos já registrados.
+
+A ação salva as mesmas preferências do painel, preservando Economia, mosaico e
+ajustes de análise. O painel aberto sincroniza o botão de detecção a cada 15
+segundos, sem recriar as imagens. Uma aba antiga não pode sobrescrever uma mudança
+do chat sem atualizar sua revisão de preferências. Nomes das câmeras são usados
+nas respostas, nos comandos e no contexto enviado à IA; IDs ficam internos.
+
+Cada novo evento coleta **até cinco JPEGs diferentes durante os primeiros cinco
+segundos**, com horário individual. O Python mantém a escolha da melhor foto
+por confiança, tamanho e nitidez; envia **uma só foto ao Telegram**. O início da
+gravação continua imediato, com a antecipação existente. O alerta aguarda a
+janela de seleção de cinco segundos. Quando a IA está habilitada para descrever
+o evento, recebe até cinco fotos em ordem temporal na mesma consulta. Se a fonte
+entregar menos quadros novos, envia somente os disponíveis. Resumos gerais
+continuam com até três fotos; responder a um evento consulta sua sequência de até
+cinco. A foto principal original é preservada com sua qualidade.
+
+As fotos auxiliares são privadas, limitadas a 256 KiB cada, no máximo cinco por
+evento, até 1.000 imagens e 128 MiB de dados no conjunto do servidor. As mais antigas
+são descartadas para manter esse limite, ou expiram com o evento em até 30 dias.
+A foto principal e o vídeo não são apagados por essa limpeza auxiliar. O limite
+é de dados lógicos; o SQLite pode reutilizar páginas já alocadas em disco.
+
+As descrições focam na cena, ações, mudanças visíveis e riscos concretos. Não
+acrescentam avisos genéricos sobre limitações nem pedem que o usuário assista ao
+vídeo. Não inventam intenções, crimes ou riscos com base na aparência; detalhes
+indefinidos e câmeras sem imagens atuais são informados de forma breve.

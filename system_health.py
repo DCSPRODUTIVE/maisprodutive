@@ -1,6 +1,7 @@
 """Cheap camera outage detection; inactivity during Economy never counts as failure."""
 import threading
 import time
+from camera_names import display_name
 
 class Outage:
     def __init__(self):self.rows={}
@@ -33,6 +34,7 @@ class SystemHealth:
                 rows[key]=(entry.window(now),entry.last_frame,entry.name)
         summary={}
         for key,(active,stamp,name) in rows.items():
+            name=display_name(name,key[1])
             fresh=active and stamp is not None and now-stamp<15
             record=summary.setdefault(key[0],{'expected':0,'fresh':0,'stalled':[]})
             record['expected']+=int(active);record['fresh']+=int(fresh)

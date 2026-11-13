@@ -10,6 +10,9 @@ import urllib.request
 
 from google_ai import AIError, generate
 from telegram_alerts import NoRedirect
+from live_review import LiveReview,live_selector,normalized
+from camera_commands import detection_command
+from camera_names import display_name
 
 DEFAULTS = {'enabled': False, 'event_descriptions': False, 'conversation': False,
             'model': 'gemini-flash-latest', 'daily_limit': 60}
@@ -20,6 +23,8 @@ class AIAssistant:
         self.server = server
         self.store = server.reports.store
         self.vault = server.device_vault
+        self.notes = server.telegram.notes
+        self.live = LiveReview(server,self.preview)
         self.jobs = queue.Queue(maxsize=12)
         self.stopped = threading.Event()
         self.results, self.cooldown, self.last_question = {}, {}, {}
@@ -139,6 +144,7 @@ class AIAssistant:
             return False
 
     def context(self, owner, event=None, include_images=True):
+        names={r['id']:r['name'] for r in self.live.sources(owner).values()}
         with self.store.guard, self.store.connect() as db:
             if event is None:
                 rows = db.execute('SELECT id,name,camera,created,confidence,image FROM events WHERE owner=? ORDER BY id DESC LIMIT 6', (owner,)).fetchall()
@@ -148,38 +154,52 @@ class AIAssistant:
         events, images = [], []
         for row in rows:
             item = {k: row[k] for k in ('id', 'name', 'camera', 'confidence')}
+            item['name']=display_name(row['name'],row['camera']);item['camera']=item['name']
+            names.setdefault(row['camera'],item['name'])
             item['horario_utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(row['created']))
             if row['id'] in descriptions:
                 item['descricao_ia_anterior'] = descriptions[row['id']]
-            if include_images and len(images) < 3 and row['image']:
+            event_samples=self.store.samples(owner,row['id']) if event is not None else []
+            if include_images and event_samples:
+                for stamp,jpeg in event_samples[:5]:
+                    image=self.preview(jpeg)
+                    if image:
+                        label=f"Evento {row['id']} · {item['name']} · {time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp))}"
+                        images.append((label,image))
+                item['fotos_enviadas']=len(images)
+                item['limite_fotos']=5
+                item['sequencia_incompleta']=len(images)<5
+            elif include_images and len(images) < 3 and row['image']:
                 image = self.preview(bytes(row['image']))
                 if image:
                     images.append((f"Foto do evento {row['id']} · {item['horario_utc']}", image))
                     item['foto_enviada'] = True
             events.append(item)
         health = getattr(self.server, 'health', None)
+        health_status=dict(getattr(health,'snapshot',{}).get(owner,{}))
+        health_status['stalled']=[names.get(camera,'Câmera sem nome cadastrado') for camera in health_status.get('stalled',[])]
         context = {'agora_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                    'eventos_recentes': events, 'fotos_sao_instantes_nao_video': True,
-                   'saude_cameras': getattr(health, 'snapshot', {}).get(owner, {}), 'cameras': []}
-        context['videos_recentes'] = [{k: row[k] for k in ('id','name','created','status','duration','source','archive_status')}
+                   'saude_cameras': health_status, 'cameras': []}
+        context['videos_recentes'] = [dict({k: row[k] for k in ('id','created','status','duration','source','archive_status')},name=display_name(row['name'],row.get('camera')))
                                      for row in self.store.videos(owner)[:6]]
         for stream in self.server.stream_snapshot():
             if getattr(stream, 'report_owner', None) != owner or stream.stopped.is_set():
                 continue
             last = getattr(stream, 'last_frame', None)
-            context['cameras'].append({'nome': getattr(stream, 'report_name', '')[:100],
+            context['cameras'].append({'nome':display_name(getattr(stream,'report_name',None),stream.device_id),
                 'segundos_sem_quadro': round(max(0, time.monotonic()-last)) if last else None})
         background = getattr(self.server, 'background', None)
         if background:
             with background.lock:
                 context['monitoramento_programado'] = [
-                    {'nome':entry.name[:100], 'economia':entry.economy,
+                    {'nome':display_name(entry.name,entry.device_id), 'economia':entry.economy,
                      'janela_ativa':entry.window(time.monotonic()),
                      'sessao_rejeitada':entry.auth_blocked, 'detectar_pessoas':entry.detection}
                     for entry in background.entries.values() if entry.owner == owner][:100]
         diagnostics = getattr(self.server, 'diagnostics', None)
         if diagnostics:
-            context['ultimos_logs_sanitizados'] = diagnostics.history(owner)[0][:12]
+            context['ultimos_logs_sanitizados'] = [dict(row,camera=names.get(row['camera'],'Sistema' if row['camera']=='system' else 'Câmera sem nome cadastrado')) for row in diagnostics.history(owner)[0][:12]]
         return context, images
 
     @staticmethod
@@ -202,6 +222,9 @@ class AIAssistant:
     def process(self, owner, kind, value):
         if self.stopped.is_set():
             return
+        reply_event=None
+        if kind=='reply':
+            reply_event=value['event'];value=value['question'];kind='chat'
         with self.lock:
             config = self.config(owner)
             revision = self.revisions.get(owner,0)
@@ -211,23 +234,64 @@ class AIAssistant:
         tg = self.server.telegram.config(owner)
         if not tg['enabled']:
             return
+        control=detection_command(value) if kind=='chat' else None
+        if control:
+            action,selector=control
+            if action=='status':
+                enabled=set(self.store.preferences(owner).get('detection_ids',[]))
+                answer='Detecção por câmera:\n'+'\n'.join(r['name']+': '+('ativada' if r['id'] in enabled else 'desativada') for r in self.live.sources(owner).values())
+            else:
+                try:answer=self.server.set_detection(owner,selector,action)
+                except (ValueError,AIError) as error:answer=str(error)
+            return self.server.telegram.send_text(owner,answer)
+        if kind=='note':
+            try:answer=self.notes.annotate(owner,value['event'],value['name'])
+            except ValueError as error:answer=str(error)
+            return self.server.telegram.send_text(owner,answer)
+        if kind=='chat' and value.strip().lower()=='/cameras':
+            rows=list(self.live.sources(owner).values())[:12]
+            detection=set(self.store.preferences(owner).get('detection_ids',[]))
+            answer='Câmeras desta conta (sem consulta ao Google):\n'+('\n'.join(
+                r['name']+' · detecção '+('ativada' if r['id'] in detection else 'desativada')+' · '+('pausa de Economia' if r.get('economy_paused') else 'monitoramento ativo' if r.get('active') else 'sem fonte aberta') for r in rows) or 'Nenhuma câmera disponível.')
+            return self.server.telegram.send_text(owner,answer+'\nPara analisar: /ao_vivo NOME ou /ao_vivo todas')
+        if kind=='chat' and value.strip().split(' ',1)[0].lower() in ('/cadastro','/pessoas','/anotar','/esquecer_anotacoes'):
+            command,_,argument=value.strip().partition(' ')
+            try:
+                if command.lower()=='/anotar':
+                    event,_,name=argument.partition(' ')
+                    if not event.isdigit() or not name:raise ValueError('Use /anotar NÚMERO_DO_EVENTO nome da pessoa.')
+                    answer=self.notes.annotate(owner,int(event),name)
+                elif command.lower()=='/esquecer_anotacoes':
+                    if not argument:raise ValueError('Use /esquecer_anotacoes NOME para apagar as anotações desse nome.')
+                    answer=self.notes.forget(owner,argument)
+                else:answer=self.notes.lookup(owner,argument)
+            except ValueError as error:answer=str(error)
+            return self.server.telegram.send_text(owner,answer)
         if kind == 'chat' and value.strip().lower() in ('/start', '/ajuda', '/help'):
             return self.server.telegram.send_text(owner,
-                'Assistente Torre de Controle (somente leitura). Pergunte sobre câmeras, quedas ou detecções. '
+                'Assistente Torre de Controle. Pergunte sobre câmeras, quedas ou detecções. '
                 '/status: estado das câmeras, sem fotos. /eventos ou /resumo: últimas detecções, '
                 'com até 3 fotos. Mensagens comuns também consultam as últimas detecções. '
-                'As fotos são enviadas ao Google; não analiso vídeo contínuo nem executo alterações. '
+                '/cameras: lista câmeras. /ao_vivo todas ou /ao_vivo NOME: trechos atuais de até 6s, amostrados até 1 quadro/s. '
+                '/deteccao ativar NOME, /deteccao desativar NOME ou /deteccao status: controla detecção pelo Python, sem consultar Google. '
+                'Pausas de Economia são respeitadas. Para anotar um nome, responda ao alerta: nome: João. '
+                '/cadastro João: consulta anotações históricas; /anotar EVENTO NOME: cadastra anotação. '
+                'Nomes são informados por você, não reconhecidos em novas imagens. '
+                'Imagens e trechos são enviados ao Google; não mantenho vídeo contínuo nem altero câmeras. '
                 'Para interromper, desative Conversa no Reports.')
         if kind != 'test' and time.monotonic() < self.cooldown.get(owner, 0):
             if kind == 'chat':
                 remaining=max(1,round(self.cooldown[owner]-time.monotonic()))
                 self.server.telegram.send_text(owner, f'IA temporariamente em espera por mais {remaining}s. Última falha: '+self.failures.get(owner,'Consulte o status nos Reports.'))
             return
+        selector=live_selector(value) if kind=='chat' else None
+        if selector is not None:
+            return self.review_live(owner,selector,config,key,revision)
         if kind == 'test':
             context, images = {}, []
             self.results[owner] = f'Testando {config["model"]}, sem fotos. Aguardando resposta do Google…'
         else:
-            context, images = self.context(owner, value if kind == 'event' else None,
+            context, images = self.context(owner, value if kind == 'event' else reply_event,
                                            include_images=kind == 'event' or value.strip().lower() != '/status')
         if kind == 'chat':
             previous = self.history.get(owner, (0, []))
@@ -236,7 +300,7 @@ class AIAssistant:
             return
         self.reserve(owner)
         question = ('Responda somente: conexão funcionando.' if kind == 'test' else
-                    'Descreva somente o que está visível na foto deste evento e indique limitações.'
+                    'Descreva a cena, as ações e mudanças visíveis nas fotos em ordem temporal e riscos concretos visíveis, sem avisos genéricos nem pedir para assistir ao vídeo.'
                     if kind == 'event' else value)
         try:
             answer = generate(key, config['model'], question, context, images)
@@ -263,8 +327,31 @@ class AIAssistant:
             prefix = 'Assistente IA · consulta aos registros recentes\n'
             self.history[owner] = (time.monotonic(), (context['conversa_anterior'] + [
                 {'pergunta':value[:1000], 'resposta':answer[:1000]}])[-3:])
-        self.server.telegram.send_text(owner, prefix+answer)
+        self.server.telegram.send_text(owner, prefix+answer,**({'event_id':value} if kind=='event' else {}))
         self.results[owner] = 'Última consulta de IA concluída. Descrições podem conter erros.'
+
+    def review_live(self,owner,selector,config,key,revision):
+        self.server.telegram.send_text(owner,'Consultando as câmeras disponíveis agora. Em instantes envio a descrição das cenas.')
+        rows=self.live.capture(owner,selector,self.stopped)
+        available=[r for r in rows if r.get('clip')]
+        unavailable=[r for r in rows if not r.get('clip')]
+        if unavailable:
+            self.server.telegram.send_text(owner,'Sem vídeo atual confirmado:\n'+'\n'.join(
+                r['nome']+': '+('pausa de Economia' if r['status']=='pausa_economia' else 'imagem parada, sem quadros recentes ou conversão indisponível') for r in unavailable))
+        for offset in range(0,len(available),3):
+            if self.stopped.is_set() or self.revisions.get(owner,0)!=revision:return
+            batch=available[offset:offset+3];self.reserve(owner)
+            context={'consulta_atual':[dict({k:v for k,v in r.items() if k not in ('clip','camera')},camera=r['nome']) for r in batch],
+                     'limite':'Trechos de até 6 segundos, até 1 quadro/s. Não inferir identidade, continuidade além do trecho ou outras câmeras.'}
+            videos=[(r['nome']+' · '+r['inicio_utc'],r['clip']) for r in batch]
+            try:answer=generate(key,config['model'],'Descreva separadamente cada câmera: cena, ações e riscos concretos visíveis. Não acrescente avisos genéricos nem peça para assistir ao vídeo.',context,(),videos=videos)
+            except AIError as error:
+                if self.revisions.get(owner,0)!=revision:return
+                self.cooldown[owner]=time.monotonic()+300;self.failures[owner]=str(error)
+                raise
+            if self.stopped.is_set() or self.revisions.get(owner,0)!=revision:return
+            self.server.telegram.send_text(owner,', '.join(r['nome'] for r in batch)+'\n'+answer)
+        self.results[owner]='Consulta atual concluída. Somente os trechos informados foram analisados.'
 
     def run(self):
         while not self.stopped.is_set():
@@ -338,10 +425,19 @@ class AIAssistant:
                             or not 0 < len(text) <= 2000 or time.time()-message.get('date', 0) > 120):
                         continue
                     owner = matches[0]
+                    reply=message.get('reply_to_message',{})
+                    event=self.notes.resolve(token,str(chat.get('id')),reply.get('message_id'),owner) if reply else None
+                    name=re.match(r'^(?:nome\s*:\s*|/nome\s+|(?:esta|essa|esse)\s+(?:pessoa\s+)?[ée]\s+|[ée]\s+)(.{1,80})$',text.strip(),re.I)
+                    if event is not None and name:
+                        self.process(owner,'note',{'event':event,'name':name[1]});continue
+                    local_command=detection_command(text) is not None or text.strip().split(' ',1)[0].lower() in (
+                        '/cameras','/cadastro','/pessoas','/anotar','/esquecer_anotacoes','/ajuda','/help','/start')
+                    if local_command:
+                        self.process(owner,'chat',text);continue
                     if time.monotonic()-self.last_question.get(owner, -1000) < 10:
                         continue
                     self.last_question[owner] = time.monotonic()
-                    self.enqueue((owner, 'chat', text))
+                    self.enqueue((owner,'reply',{'event':event,'question':text}) if event is not None else (owner,'chat',text))
                 with self.store.guard, self.store.connect() as db:
                     db.execute('INSERT OR REPLACE INTO ai_poll VALUES (?,?)', (bot, offset))
             except Exception:

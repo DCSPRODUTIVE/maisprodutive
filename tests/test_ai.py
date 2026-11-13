@@ -126,6 +126,57 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(api.call_count,1)
         self.assertIn('webhook',self.ai.status('owner')['message'])
 
+    @patch('ai_assistant.generate')
+    def test_detection_command_is_explicit_local_and_not_blocked_by_google_cooldown(self, google):
+        self.server.set_detection=MagicMock(return_value='Detecção ativada: Portão Fundo.')
+        self.ai.cooldown['owner']=time.monotonic()+300
+        self.ai.process('owner','chat','Ativar detecção da câmera Portão Fundo')
+        self.server.set_detection.assert_called_once_with('owner','portao fundo',True)
+        self.assertIn('Portão Fundo',self.telegram.send_text.call_args.args[1]);google.assert_not_called()
+
+    @patch('ai_assistant.generate',return_value='Cinco instantes observados.')
+    def test_event_analysis_sends_five_distinct_photos_in_time_order(self, google):
+        event=self.store.add('owner','839466636','Portão Fundo','person',b'best')
+        self.store.save_samples('owner',event,[(100+i,b'photo-'+str(i).encode()) for i in range(5)])
+        with patch.object(self.ai,'preview',side_effect=lambda image:image):self.ai.process('owner','event',event)
+        images=google.call_args.args[4]
+        self.assertEqual(len(images),5);self.assertEqual([img for label,img in images],[b'photo-'+str(i).encode() for i in range(5)])
+        self.assertNotIn('839466636',json.dumps(google.call_args.args[3]))
+        self.assertEqual(self.telegram.send_text.call_count,1)
+
+    @patch('ai_assistant.generate')
+    def test_registry_queries_are_local_and_never_injected_into_new_image_analysis(self, google):
+        event=self.store.add('owner','1','Portão','person',b'jpeg')
+        self.ai.process('owner','note',{'event':event,'name':'João'})
+        self.ai.process('owner','chat','/cadastro João')
+        self.assertIn('Portão',self.telegram.send_text.call_args.args[1])
+        google.assert_not_called()
+        self.assertNotIn('João',json.dumps(self.ai.context('owner',include_images=False)[0]))
+        self.ai.cooldown['owner']=time.monotonic()+300
+        self.ai.process('owner','chat','/cadastro')
+        self.assertIn('João',self.telegram.send_text.call_args.args[1]);google.assert_not_called()
+
+    @patch('ai_assistant.generate',return_value='Descrição dos trechos.')
+    def test_live_all_is_batched_and_charged_per_three_clips(self, google):
+        rows=[{'camera':str(i),'nome':f'Câmera {i}','inicio_utc':'2026-11-13T12:00:00Z','clip':b'mp4'} for i in range(7)]
+        with patch.object(self.ai.live,'capture',return_value=rows) as capture:
+            self.ai.process('owner','chat','/ao_vivo todas')
+        self.assertEqual(capture.call_args.args[:2],('owner','todas'))
+        self.assertEqual(google.call_count,3)
+        self.assertTrue(all(len(call.kwargs['videos'])<=3 for call in google.call_args_list))
+        self.assertEqual(self.ai.status('owner')['used_today'],3)
+
+    def test_authenticated_reply_annotation_resolves_only_a_bound_bot_message(self):
+        event=self.store.add('owner','1','Portão','person',b'jpeg')
+        self.ai.notes.bind(BOT,'12345',70,'owner',event)
+        with self.store.guard,self.store.connect() as db:
+            db.execute('INSERT INTO ai_poll VALUES (?,?)',(self.ai.notes.bot(BOT),1))
+        update={'update_id':1,'message':{'date':time.time(),'chat':{'id':12345,'type':'private'},
+            'from':{'id':12345,'is_bot':False},'text':'nome: João','reply_to_message':{'message_id':70}}}
+        with patch.object(self.ai,'telegram_request',return_value=[update]):self.ai.poll_once()
+        self.assertTrue(self.ai.jobs.empty())
+        self.assertEqual(self.store.list('owner')[0]['user_annotation'],'João')
+
     def test_failure_from_old_model_cannot_pause_newly_saved_configuration(self):
         def failed_old_request(*args):
             self.ai.config('owner',{'model':'gemini-flash-latest'})
@@ -173,6 +224,15 @@ class GeminiTests(unittest.TestCase):
             generate(KEY,'gemini-2.5-flash','pergunta',{})
         self.assertNotIn(KEY,str(error.exception))
         self.assertIn('recusou',str(error.exception))
+
+    @patch('google_ai.urllib.request.build_opener')
+    def test_live_clips_use_video_mime_and_are_bounded(self, opener):
+        response=opener.return_value.open.return_value.__enter__.return_value
+        response.read.return_value=b'{"candidates":[{"content":{"parts":[{"text":"Trecho visto."}]}}]}'
+        generate(KEY,'gemini-flash-latest','descreva',{},videos=[('cam',b'mp4')]*4)
+        body=json.loads(opener.return_value.open.call_args.args[0].data)
+        parts=body['contents'][0]['parts']
+        self.assertEqual(sum(1 for p in parts if p.get('inline_data',{}).get('mime_type')=='video/mp4'),3)
 
     @patch('google_ai.urllib.request.build_opener')
     def test_timeout_and_missing_model_are_distinguished_and_network_wait_is_bounded(self, opener):

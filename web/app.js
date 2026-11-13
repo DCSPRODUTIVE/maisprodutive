@@ -10,6 +10,8 @@ let expandedPrevious = null;
 let mosaicLimit = 8;
 let preferenceKey = null;
 let preferenceSave = Promise.resolve();
+let preferenceSavesPending=0;
+let detectionSyncing=false;
 let sessionRecovery=null;
 let analysisCamera=null;
 const preferredEconomy = new Set();
@@ -35,7 +37,7 @@ function displayed(feed){
   return !!feed?.image && (!feed.mjpeg || !!views.get(feed.id)?.img.naturalWidth);
 }
 function isFresh(feed){
-  return displayed(feed) && !["paused","retrying","queued","connecting"].includes(feed.state) && frameAge(feed)<=3;
+  return displayed(feed) && !["paused","retrying","queued","connecting","image_still"].includes(feed.state) && frameAge(feed)<=3;
 }
 function updateMetrics() {
   $("camera-count").textContent = String(currentStatus?.devices.length || 0);
@@ -104,8 +106,10 @@ async function economyCycle(id) {
   render();
 }
 function savePreferences() {
+  preferenceSavesPending++;
   const ids = [...preferredEconomy].filter(id => currentStatus?.devices.some(camera => camera.id === id));
   const payload = {economy_ids: ids, detection_ids:[...detectionIds].filter(id=>currentStatus?.devices.some(camera=>camera.id===id)), mosaic_limit: mosaicLimit,webcam_enabled_ids:[...webcamEnabled].filter(id=>currentStatus?.devices.some(c=>c.id===id))};
+  payload.expected_chat_detection_revision=currentStatus?.preferences?.chat_detection_revision||0;
   const owner=currentStatus?.preferences_key;
   preferenceSave = preferenceSave.then(() => {
     if(owner!==currentStatus?.preferences_key)throw new Error("A conta mudou. Salve novamente.");
@@ -118,9 +122,27 @@ function savePreferences() {
     });
   }).catch(error => {
     $("message").textContent = `Não foi possível confirmar as preferências. Recarregue para verificar: ${error.message}`;
-  });
+  }).finally(()=>{preferenceSavesPending--;});
   return preferenceSave;
 }
+
+async function syncChatDetection(){
+  if(detectionSyncing||preferenceSavesPending||!currentStatus?.authenticated||!currentStatus?.preferences_key)return;
+  detectionSyncing=true;const owner=currentStatus.preferences_key;
+  try{
+    const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)return;
+    const data=await readResponse(response);
+    if(preferenceSavesPending||data.preferences_key!==owner||currentStatus?.preferences_key!==owner||!data.authenticated)return;
+    const revision=data.preferences?.chat_detection_revision||0;
+    if(revision===(currentStatus.preferences?.chat_detection_revision||0))return;
+    detectionIds.clear();for(const id of data.preferences?.detection_ids||[])detectionIds.add(id);
+    currentStatus.preferences={...currentStatus.preferences,detection_ids:[...detectionIds],chat_detection_revision:revision};
+    for(const {id,detector} of cameraControls){detector.className='person-detector'+(detectionIds.has(id)?' selected':'');detector.setAttribute?.('aria-pressed',String(detectionIds.has(id)));}
+    $('message').textContent='Detecção atualizada pelo chat. Preferências sincronizadas com o servidor.';
+    buttons();
+  }catch{}finally{detectionSyncing=false;}
+}
+setInterval(syncChatDetection,15000);
 async function toggleWebcam(id){
   const was=webcamEnabled.has(id);
   if(was)webcamEnabled.delete(id);else webcamEnabled.add(id);
@@ -181,6 +203,7 @@ function paint(id) {
   const fresh = isFresh(feed);
   view.card.className = "camera-card" + (id===expandedCamera ? " camera-expanded" : "") + (fresh ? " is-live" : errors.has(id) ? " is-error" : "");
   view.badge.textContent = feed ? feed.state === "paused" ? "ECONOMIA · PAUSADA" : fresh ? "● AO VIVO" : ["retrying","connecting"].includes(feed.state) ? "RECONECTANDO" : feed.state === "queued" ? "NA FILA" : feed.image ? "AGUARDANDO" : "CONECTANDO" : errors.has(id) ? "ATENÇÃO" : snapshot ? "CAPTURA" : "EM ESPERA";
+  if(feed?.state==='image_still')view.badge.textContent='IMAGEM PARADA';
   view.img.hidden = !image || (!!feed?.mjpeg && !feed.sequence);
   view.placeholder.hidden = !!image;
   if(feed?.mjpeg&&feed.onTransportError)view.img.onerror=feed.onTransportError;
@@ -201,6 +224,7 @@ function paint(id) {
     view.caption.textContent = `Último quadro · câmera desconectada. Próxima abertura: ${new Date(saving.nextAt).toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"})}.`;
   }
   view.overlay.textContent = (saving?.paused || feed?.state === "paused") ? "IMAGEM PAUSADA · ECONOMIA DE DADOS" : feed ? fresh ? "TRANSMISSÃO CONTÍNUA · SEM ÁUDIO" : "AGUARDANDO NOVOS QUADROS" : snapshot ? "CAPTURA PONTUAL" : "DCS · MONITORAMENTO";
+  if(feed?.state==='image_still')view.overlay.textContent='ÚLTIMO QUADRO · IMAGEM PARADA';
 }
 function render() {
   updateFullscreenActions();
@@ -548,6 +572,7 @@ async function pollFeed(feed) {
       : data.state === "retrying" ? `${data.message || "Reconectando a câmera."} Nova tentativa em ${data.retry_seconds || 0}s pelo servidor.`
       : data.state === "queued" ? "Na fila de conexão. A abertura é limitada para proteger o servidor."
       : data.state === "connecting" ? "Reconectando a fonte. O último quadro não é ao vivo."
+      : data.state === "image_still" ? `Imagem parada há ${Math.floor(data.age_seconds||0)}s. Último quadro preservado; isso não confirma falha se a cena for estática.`
       : Number.isFinite(data.age_seconds) && data.age_seconds > 3 ? `Sem novos quadros há ${Math.floor(data.age_seconds)} segundos…`
       : !Number.isFinite(data.age_seconds) ? "Aguardando o primeiro quadro válido…"
       : !displayed(feed) ? "Servidor recebendo quadros; aguardando a imagem no navegador…"
