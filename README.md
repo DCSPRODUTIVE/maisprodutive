@@ -888,3 +888,79 @@ Para comparar outro detector sem alterar a produção, `python3 benchmark_people
 representativas. Use imagens anotadas para medir precisão e erros; sem anotações o
 teste mede somente tempo e quantidade de detecções. Nenhum modelo novo é baixado
 ou ativado automaticamente. Compare no servidor real antes de substituir o atual.
+
+## Assistente Google Gemini no Telegram (opcional)
+
+Nos **Reports → Assistente Google IA e conversa no Telegram**, configure uma chave
+Google, o modelo e as opções da conta. A chave é de escrita: não volta nas respostas
+da API nem nos logs. Chaves por conta ficam criptografadas no armazenamento local
+já usado pelos aparelhos autorizados (`python3-cryptography`). A IA fica desativada
+por padrão. O modelo inicial é `gemini-2.5-flash`, editável conforme os modelos
+habilitados na sua conta Google. Não é feita troca automática de modelo.
+
+Antes, salve e ative o Telegram. Para conversar, configure seu **chat privado** e
+use um bot exclusivo do DCS. Grupos e remetentes diferentes do dono do chat são
+ignorados. Um webhook existente não é removido: nesse caso use outro bot. Apenas
+um servidor deve ler as mensagens de cada bot. Após ativar, aguarde alguns segundos
+e envie uma mensagem nova; mensagens antigas são ignoradas na primeira ativação.
+
+Comandos e exemplos:
+
+- `/ajuda`: capacidades e limites, sem consultar o Google.
+- `/status`: pergunta à IA sobre o estado disponível das câmeras, sem enviar fotos.
+- `/eventos` ou `/resumo`: consulta até seis detecções recentes e até seis registros
+  recentes de vídeo; envia até três fotos de eventos para descrição.
+- “O que aconteceu nas últimas detecções?” ou “Há alguma câmera sem imagens?”:
+  perguntas livres, com os mesmos dados recentes e fotos. Há memória textual curta
+  da conversa, somente em RAM, por até 15 minutos, isolada por conta.
+
+Quando **Descrever fotos das novas detecções** estiver marcado, o alerta original
+continua sendo enviado como antes. Uma fila independente analisa a foto escolhida
+para o evento e envia uma segunda mensagem, identificada como descrição por IA,
+com número do evento e horário UTC. Descrições são guardadas junto da referência
+local ao evento para consultas posteriores. Nenhum vídeo contínuo é enviado:
+fotos são instantes e não confirmam toda a sequência de ações. Não há reconhecimento
+facial, decisão automática de bloquear alertas, ferramentas ou execução de comandos.
+
+Para responder sobre o sistema, a IA recebe somente estado das câmeras da conta,
+programação de Economia, registros recentes e até 12 entradas de diagnóstico
+sanitizadas. Não recebe senha Yoosee, tokens de Telegram ou de acesso ao painel.
+Imagens e nomes dos eventos escolhidos são enviados ao Google, sujeitos às condições
+e custos da sua modalidade da API. Configure também cotas/orçamento no Google.
+O limite local padrão é **60 tentativas por dia UTC**, compartilhadas entre perguntas
+e descrições; é ajustável de 1 a 300. Não é um teto de cobrança em dinheiro.
+Fila limitada a 12 trabalhos, imagens reduzidas a até 960 pixels e no máximo três
+por pergunta. Perguntas em sequência têm intervalo mínimo de 10 segundos. Falhas
+na API geram espera de cinco minutos, sem repetir chamadas continuamente.
+Se a IA falhar, exceder a cota ou não estiver configurada, os alertas e gravações
+locais continuam normalmente.
+
+Atualização desta integração, sem recompilar o adaptador:
+
+```bash
+cd ~/maisprodutive
+git pull
+sudo apt install -y python3-cryptography
+sudo systemctl restart dcs-control.service
+```
+
+Reabra os Reports e configure a IA. O teste real é enviar `/status` ao bot depois
+de ativar a conversa. “Chave salva” significa armazenamento configurado, não
+validação da credencial pelo Google. Se houver recusa, confira chave, permissões,
+modelo e cota. Nunca compartilhe a chave em capturas de tela.
+
+Alternativamente, configure uma chave comum somente no servidor com o prompt
+oculto abaixo. Ela ficará em `.local/google-ai.key`, ignorada pelo Git e legível
+somente pelo usuário local. Contas que ativarem a IA podem usar essa chave comum;
+a configuração por conta nos Reports tem preferência.
+
+```bash
+python3 configure_ai.py
+python3 configure_ai.py --check
+```
+
+`--check` faz uma consulta curta real, sem imagens, que pode consumir cota.
+Chaves privadas não acompanham `git pull`: devem existir no próprio servidor.
+A integração foi validada com respostas simuladas e testes de navegador. A rede
+do ambiente de desenvolvimento não permite acesso ao endpoint Google Gemini;
+a chave fornecida e as descrições reais precisam ser validadas no servidor instalado.

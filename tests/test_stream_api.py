@@ -69,6 +69,20 @@ class StreamApiTests(unittest.TestCase):
         self.assertNotIn(b'private-account-token',raw)
         return code,json.loads(raw)
 
+    def test_ai_settings_require_account_csrf_and_never_return_the_key(self):
+        code,data=self.post('/api/ai/status',{},csrf='wrong')
+        self.assertEqual(code,403)
+        key='test-key-'+'x'*30
+        code,data=self.post('/api/ai/save',{'api_key':key,'daily_limit':3})
+        self.assertEqual(code,200);self.assertEqual(data['daily_limit'],3)
+        self.assertTrue(data['configured']);self.assertNotIn(key,json.dumps(data))
+        cookie,csrf,state=self.new_session()
+        code,data=self.post('/api/ai/status',{},cookie=cookie,csrf=csrf)
+        self.assertEqual(code,401)
+        state['client']=self.state['client'];state['report_owner']='another-owner'
+        code,data=self.post('/api/ai/status',{},cookie=cookie,csrf=csrf)
+        self.assertEqual(code,200);self.assertEqual(data['daily_limit'],60)
+
     def test_late_old_source_auth_failure_does_not_invalidate_new_account_token(self):
         from background import Entry
         old=DesktopAccount('id','old-private-session-token')

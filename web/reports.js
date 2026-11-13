@@ -92,7 +92,7 @@ async function settingsRequest(action,body={}){
     if(response.status===401){window.location.replace('/access');throw new Error('Entre no sistema.');}
     const session=await response.json();if(!session.authenticated)throw new Error('Abra Câmeras e entre na conta.');csrf=session.csrf;
   }
-  const path=action.startsWith('card/')?'/api/'+action:'/api/telegram/'+action;
+  const path=/^(card|ai)\//.test(action)?'/api/'+action:'/api/telegram/'+action;
   const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});
   const data=await response.json();if(!response.ok)throw new Error(data.message||'Não foi possível completar a solicitação.');return data;
 }

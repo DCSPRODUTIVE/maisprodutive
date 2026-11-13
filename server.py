@@ -39,6 +39,7 @@ def current_config():
 
 
 from telegram_alerts import TelegramAlerts
+from ai_assistant import AIAssistant
 
 
 class Workbench(ThreadingHTTPServer):
@@ -72,6 +73,7 @@ class Workbench(ThreadingHTTPServer):
         self.background.start()
         # Restore only previously authorized account sessions, with no password login.
         self.health=SystemHealth(self);self.health.start()
+        self.ai = AIAssistant(self)
         restored=set()
         for payload,expiry in self.device_vault.providers(self.device_scope):
             decoded=self.provider_sessions.decode(payload)
@@ -153,6 +155,7 @@ class Workbench(ThreadingHTTPServer):
         self.health.close()
         self.background.close()
         self.reports.close()
+        self.ai.close()
         self.archive.close()
         self.telegram.close()
         with self.stream_guard:
@@ -398,6 +401,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/reports.js": ("reports.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/diagnostics.js": ("diagnostics.js", "text/javascript; charset=utf-8"),
+                  "/ai.js": ("ai.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/icon.svg": ("icon.svg", "image/svg+xml")}
         if self.path in assets:
@@ -549,6 +553,16 @@ class Handler(BaseHTTPRequestHandler):
                     try:key=self.server.archive.submit(owner,client.account,camera,float(start),float(end),action,deadline)
                     except RuntimeError:return self.send(429,{'message':'Fila de cartões cheia. Aguarde uma solicitação terminar.'})
                     return self.send(200,{'job_id':key,'message':'Solicitação enfileirada.'})
+                if self.path in ('/api/ai/status', '/api/ai/save'):
+                    if not isinstance(state['client'], DesktopClient):
+                        return self.send(401, {'message':'Entre na conta para configurar IA.', 'error':'authentication'})
+                    owner = self.report_owner(state)
+                    if self.path.endswith('/save'):
+                        try:
+                            self.server.ai.config(owner, body)
+                        except ValueError as error:
+                            return self.send(400, {'message':str(error)})
+                    return self.send(200, self.server.ai.status(owner))
                 if self.path in ("/api/telegram/status", "/api/telegram/save", "/api/telegram/test"):
                     if not isinstance(state["client"], DesktopClient):
                         raise IntegrationError("authentication", "Entre na conta para configurar Telegram.")

@@ -295,6 +295,10 @@ class ReportMonitor:
                 labels={'presence':'Pessoa detectada','dwell':'Permanência prolongada','line_positive':'Cruzamento de linha','line_negative':'Cruzamento de linha'}
                 name=item['name']+' · '+', '.join(labels[r] for r in item['info']['reasons'])
                 alerts.enqueue(key[0],name,item['jpeg'],max(r['confidence'] for r in item['rows']))
+            assistant=getattr(self.server,'ai',None)
+            if assistant:
+                try:assistant.enqueue_event(key[0],item['id'])
+                except Exception:pass # optional cloud analysis must not interrupt detection
 
     def run(self):
         try:

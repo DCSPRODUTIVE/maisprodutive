@@ -59,6 +59,18 @@ class TelegramAlerts:
                 self.results[owner] = 'Fila de alertas cheia; este alerta não foi enviado.'
             return False
 
+    def send_text(self, owner, text):
+        """Plain text to the configured chat only; never accepts a destination from AI."""
+        config = self.config(owner)
+        if not config['enabled']:
+            return
+        request = urllib.request.Request('https://api.telegram.org/bot'+config['token']+'/sendMessage',
+            data=json.dumps({'chat_id':config['chat_id'], 'text':text[:3900]}).encode(),
+            headers={'Content-Type':'application/json'})
+        with urllib.request.build_opener(NoRedirect()).open(request,timeout=15) as response:
+            if not json.loads(response.read(65536)).get('ok'):
+                raise ValueError('delivery')
+
     def deliver(self, owner, name, jpeg, confidence, created):
         config = self.config(owner)
         if not config['enabled'] or time.time()-created > 300:
